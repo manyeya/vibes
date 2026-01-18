@@ -1,4 +1,5 @@
 import { LanguageModel, stepCountIs, tool, ToolLoopAgent, UIMessageStreamWriter } from "ai";
+
 import { Middleware } from ".";
 import { AgentUIMessage } from '..';
 import StateBackend from "../backend/statebackend";
@@ -29,7 +30,6 @@ export default class SubAgentMiddleware implements Middleware {
     private writer?: UIMessageStreamWriter<AgentUIMessage>;
 
     constructor(
-        private backend: StateBackend,
         private subAgents: Map<string, SubAgent>,
         private baseModel: LanguageModel,
         private getGlobalTools: () => Record<string, any>
@@ -100,15 +100,21 @@ DO NOT use sub - agents for:
                 });
 
                 // Results are saved to the shared filesystem for context offloading
-                const resultPath = `/subagent_results/${agent_name}_${Date.now()}.md`;
-                await this.backend.writeFile(resultPath, result.text);
+                const resultDir = `${process.cwd()}/subagent_results`;
+                const resultPath = `${resultDir}/${agent_name}_${Date.now()}.md`;
+
+                // Ensure directory exists using Bun native spawn (avoiding node:fs)
+                await Bun.spawn(["mkdir", "-p", resultDir]).exited;
+                await Bun.write(resultPath, result.text);
 
                 this.writer?.write({
                     type: 'data-status',
                     data: { message: `Task delegated to ${agent_name}` },
                 });
+
                 return {
-                    result: result.text,
+                    status: "completed",
+                    summary: `Task completed by ${agent_name}. Results saved to file. Read this file if you need the full details.`,
                     savedTo: resultPath,
                 };
             },
@@ -130,6 +136,6 @@ You can delegate tasks to specialized sub - agents using the task() tool.
 Available sub - agents:
 ${agentList}
 
-Sub - agents run in isolated contexts and save their results to files.`;
+Sub - agents run in isolated contexts. They save their results to the project filesystem and return a file path. You MUST use readFile() on the returned path if you need to see their full output.`;
     }
 }

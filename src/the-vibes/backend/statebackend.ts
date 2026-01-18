@@ -11,7 +11,6 @@ export default class StateBackend {
     constructor() {
         this.state = {
             messages: [],
-            files: {},
             todos: [],
             metadata: {},
         };
@@ -25,37 +24,6 @@ export default class StateBackend {
     /** Partially updates the internal state */
     setState(state: Partial<AgentState>): void {
         this.state = { ...this.state, ...state };
-    }
-
-    // File operations
-
-    /** 
-     * Writes content to a virtual path in the state storage.
-     * @deprecated Use real filesystem via BashMiddleware/write_file instead.
-     */
-    async writeFile(path: string, content: string): Promise<void> {
-        this.state.files[path] = content;
-    }
-
-    /** 
-     * Reads content from a virtual path.
-     * @deprecated Use real filesystem via BashMiddleware/read_file instead.
-     */
-    async readFile(path: string): Promise<string> {
-        if (!this.state.files[path]) {
-            throw new Error(`File not found: ${path} `);
-        }
-        return this.state.files[path];
-    }
-
-    /** Lists paths in the virtual storage starting with a prefix */
-    async listFiles(dir: string = '/'): Promise<string[]> {
-        return Object.keys(this.state.files).filter(p => p.startsWith(dir));
-    }
-
-    /** Deletes virtual file from state */
-    async deleteFile(path: string): Promise<void> {
-        delete this.state.files[path];
     }
 
     // Todo operations

@@ -31,8 +31,6 @@ import MemoryMiddleware from './middleware/memory';
 interface AgentState {
     /** Array of conversation messages in AI SDK format */
     messages: ModelMessage[];
-    /** Virtual filesystem storage (legacy, replaced by real FS in BashMiddleware) */
-    files: Record<string, string>;
     /** Structured task list for tracking agent progress */
     todos: TodoItem[];
     /** Arbitrary metadata storage for middleware use */
@@ -137,20 +135,24 @@ export class DeepAgent {
         this.onStepFinish = config.onStepFinish;
         this.baseSystemPrompt = `You are a capable AI assistant that can tackle complex, multi-step tasks.
 
-You have access to planning tools, a filesystem, and the ability to spawn sub-agents.
+You have access to planning tools (todos), modular skills, memory systems, the REAL project filesystem, and the ability to spawn specialized sub-agents.
 
 ## Core Principles
-1. PLAN before acting: Use todos to break down complex tasks
-2. OFFLOAD context: Save large outputs to files to prevent context overflow
-3. DELEGATE: Use sub-agents for specialized or isolated tasks
-4. ITERATE: Check your work and refine as needed
+1. PLAN before acting: Use todos to break down complex tasks and track progress.
+2. LOAD SKILLS: Use modular skills for specialized expertise. Search and load them when tackling domains you're unfamiliar with.
+3. USE MEMORY: Use your scratchpad to maintain your current cognitive state and reflections for long-term learning.
+4. LAZY LOAD: Use the filesystem to offload large context. Sub-agents save their work to files rather than returning full text to keep your context window clean.
+5. DELEGATE: Use sub-agents for specialized expertise or to isolate focused research threads.
+6. ITERATE: Always verify results. Read files to review sub-agent outputs or your own previous work.
 
 ## Best Practices
-- For complex tasks, create a todo list FIRST
-- Save intermediate results to files
-- Use sub-agents to isolate context and run parallel workstreams
-- Mark todos as completed as you make progress
-- Read files to review previous work
+- For complex tasks, ALWAYS create a todo list first.
+- Keep your scratchpad updated with \`update_scratchpad()\` to track your current thinking and status.
+- Search for available skills using \`list_skills()\` and load relevant ones with \`load_skill()\`.
+- Move large data, code blocks, or research reports to files in the project root or relevant subdirectories.
+- Sub-agent results are saved to \`subagent_results/\`. If you need to see what a sub-agent did, use \`readFile()\` on the path it provides.
+- Mark todos as completed as you finish each step.
+- Use \`bash()\` for advanced filesystem operations (grep, find, etc.).
 
 Think step by step and tackle tasks systematically.`;
 
@@ -184,7 +186,6 @@ Think step by step and tackle tasks systematically.`;
             });
         }
         this.middleware.push(new SubAgentMiddleware(
-            this.backend,
             subAgentMap,
             this.model,
             () => this.getAllTools()
