@@ -3,14 +3,8 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { logger } from "../logger";
 import { viper } from "../viper";
-import {
-    type AgentUIMessage
-} from "../deep-agent";
-import {
-    convertToModelMessages,
-    createUIMessageStream,
-    createUIMessageStreamResponse
-} from "ai";
+import { type AgentUIMessage } from "../the-vibes";
+import { createUIMessageStream, createUIMessageStreamResponse } from "ai";
 
 const viperSchema = z.object({
     messages: z.array(z.any()),
@@ -25,9 +19,9 @@ app.post('/viper', zValidator('json', viperSchema), async (c) => {
         logger.info({ messages: body.messages }, 'Viper agent request received');
 
         const startTime = Date.now();
-        // Re-typing messages to ModelMessage[] as required by DeepAgent
+        // DeepAgent handles message conversion internally
         const result = await viper.invoke({
-            messages: await convertToModelMessages(body.messages),
+            messages: body.messages,
         });
         const duration = Date.now() - startTime;
 
@@ -69,8 +63,9 @@ app.post('/viper/stream', zValidator('json', viperSchema), async (c) => {
                     transient: true,
                 });
 
+                // DeepAgent handles message conversion internally
                 const result = await viper.stream({
-                    state: { messages: await convertToModelMessages(body.messages) },
+                    messages: body.messages,
                     writer,
                 });
 

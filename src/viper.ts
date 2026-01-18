@@ -1,5 +1,6 @@
-import { createDeepAgent } from './deep-agent';
+
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
+import { createDeepAgent } from './the-vibes';
 
 const viperInstructions = `You are Viper, an elite AI agent designed for deep investigation, exhaustive research, and strategic execution. 
 Your purpose is to tackle complex, high-stakes tasks that require more than a single pass of reasoning.

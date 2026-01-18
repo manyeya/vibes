@@ -1,6 +1,6 @@
 import { tool, UIMessageStreamWriter } from "ai";
 import { Middleware } from ".";
-import { AgentUIMessage } from "../../deep-agent";
+import { AgentUIMessage } from '..';
 import z from "zod";
 import * as path from 'node:path';
 

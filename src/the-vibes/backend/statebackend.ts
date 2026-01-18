@@ -1,4 +1,4 @@
-import { AgentState } from "../../deep-agent";
+import { AgentState } from "..";
 import { TodoItem } from "../middleware/todos";
 
 /**

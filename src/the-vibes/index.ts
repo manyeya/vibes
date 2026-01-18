@@ -2,19 +2,26 @@
 import {
     generateText,
     streamText,
+    convertToModelMessages,
     type LanguageModel,
     type ModelMessage,
-    type AssistantModelMessage,
     type UIMessage,
     type UIMessageStreamWriter,
+    type Tool,
     stepCountIs,
 } from 'ai';
 
 import { openai } from '@ai-sdk/openai';
-import StateBackend from './the-vibes/backend/statebackend';
-import { SkillsMiddleware, TodoListMiddleware, BashMiddleware, Middleware } from './the-vibes/middleware';
-import { TodoItem } from './the-vibes/middleware/todos';
-import SubAgentMiddleware, { SubAgent } from './the-vibes/middleware/subagent';
+import StateBackend from './backend/statebackend';
+import {
+    SkillsMiddleware,
+    TodoListMiddleware,
+    BashMiddleware,
+    SubAgentMiddleware,
+    Middleware
+} from './middleware';
+import { TodoItem } from './middleware/todos';
+import { SubAgent } from './middleware/subagent';
 
 /**
  * Represents the persistent state of an agent session, including conversation history,
@@ -35,7 +42,7 @@ interface AgentState {
 /**
  * Defines the structure for custom data streamed to the UI.
  */
-export type AgentDataParts = {
+type AgentDataParts = {
     /** System or informational notifications */
     notification: {
         message: string;
@@ -54,7 +61,7 @@ export type AgentDataParts = {
 };
 
 /** Type-safe UI message with agent-specific data parts */
-export type AgentUIMessage = UIMessage<never, AgentDataParts>;
+type AgentUIMessage = UIMessage<never, AgentDataParts>;
 
 
 /**
@@ -66,7 +73,7 @@ interface DeepAgentConfig {
     /** Custom instructions to extend the base system prompt */
     systemPrompt?: string;
     /** Additional custom tools available to the agent */
-    tools?: any[];
+    tools?: Record<string, Tool<any, any>>;
     /** Custom middleware to extend agent behavior */
     middleware?: Middleware[];
     /** Registry of sub-agents available for delegation */
@@ -77,6 +84,8 @@ interface DeepAgentConfig {
     skipDefaultMiddleware?: boolean;
     /** Optional shared state backend for state inheritance (used in sub-agents) */
     backend?: StateBackend;
+    /** Enable telemetry for observability (default: false) */
+    enableTelemetry?: boolean;
 }
 
 
@@ -92,6 +101,7 @@ export class DeepAgent {
     private baseSystemPrompt: string;
     private customSystemPrompt: string;
     private maxSteps: number;
+    private enableTelemetry: boolean;
 
     /**
      * Initializes a new DeepAgent instance.
@@ -102,8 +112,7 @@ export class DeepAgent {
         this.model = config.model || openai('gpt-4o');
         this.maxSteps = config.maxSteps || 20;
         this.customSystemPrompt = config.systemPrompt || '';
-
-        // Default system prompt inspired by Claude Code
+        this.enableTelemetry = config.enableTelemetry || false;
         this.baseSystemPrompt = `You are a capable AI assistant that can tackle complex, multi - step tasks.
 
 You have access to planning tools, a filesystem, and the ability to spawn sub - agents.
@@ -203,11 +212,18 @@ Think step by step and tackle tasks systematically.`;
     /**
      * Executes the agent in a one-shot (non-streaming) request.
      * Automatically handles the reasoning loop and middleware hooks.
-     * @param state Optional external state to merge with the agent's current state.
+     * Accepts both UIMessage[] and ModelMessage[] formats - converts internally.
+     * @param input Optional input containing messages and partial state.
      * @returns Promise resolving to the agent response and updated state.
      */
-    async invoke(state: Partial<AgentState> = {}): Promise<any> {
-        this.importState({ ...this.backend.getState(), ...state } as AgentState);
+    async invoke(input: { messages?: UIMessage[] | ModelMessage[] } & Partial<Omit<AgentState, 'messages'>> = {}): Promise<any> {
+        // Convert UIMessages to ModelMessages if needed (internal conversion)
+        const modelMessages = input.messages
+            ? await this.convertMessages(input.messages)
+            : this.backend.getState().messages;
+
+        const stateToMerge = { ...input, messages: modelMessages };
+        this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
         const currentState = this.backend.getState();
         const tools = await this.getAllTools();
 
@@ -224,14 +240,26 @@ Think step by step and tackle tasks systematically.`;
             messages: currentState.messages,
             tools,
             stopWhen: stepCountIs(this.maxSteps),
+            experimental_telemetry: this.enableTelemetry ? {
+                isEnabled: true,
+                functionId: 'deep-agent-invoke',
+            } : undefined,
         });
 
-        // Add response to state
-        const assistantMessage: AssistantModelMessage = {
-            role: 'assistant',
-            content: [{ type: 'text', text: result.text }],
-        };
-        currentState.messages.push(assistantMessage);
+        // Check for tool execution errors (AI SDK v6 pattern)
+        const toolErrors = result.steps?.flatMap(step =>
+            step.content?.filter((part: any) => part.type === 'tool-error') ?? []
+        ) ?? [];
+
+        if (toolErrors.length > 0) {
+            console.warn('Tool execution errors:', toolErrors.map((e: any) => ({
+                toolName: e.toolName,
+                error: e.error,
+            })));
+        }
+
+        // Preserve full response messages (includes tool calls context)
+        currentState.messages.push(...result.response.messages);
         this.backend.setState({ messages: currentState.messages });
 
         // Run after hooks
@@ -245,21 +273,32 @@ Think step by step and tackle tasks systematically.`;
             text: result.text,
             state: this.backend.getState(),
             usage: result.usage,
+            toolErrors: toolErrors.length > 0 ? toolErrors : undefined,
         };
     }
 
     /**
      * Executes the agent and returns a stream of tool results and text content.
      * Useful for building real-time UI experiences.
-     * @param options Streaming options including external state and an optional UIMessageStreamWriter.
+     * Accepts both UIMessage[] and ModelMessage[] formats - converts internally.
+     * @param options Streaming options including messages, state, writer, and abort signal.
      * @returns A streaming object compatible with createUIMessageStream.
      */
     async stream(options: {
-        state?: Partial<AgentState>,
-        writer?: UIMessageStreamWriter<AgentUIMessage>
+        messages?: UIMessage[] | ModelMessage[],
+        state?: Partial<Omit<AgentState, 'messages'>>,
+        writer?: UIMessageStreamWriter<AgentUIMessage>,
+        abortSignal?: AbortSignal,
     } = {}): Promise<any> {
-        const { state = {}, writer } = options;
-        this.importState({ ...this.backend.getState(), ...state } as AgentState);
+        const { messages, state = {}, writer, abortSignal } = options;
+
+        // Convert UIMessages to ModelMessages if needed (internal conversion)
+        const modelMessages = messages
+            ? await this.convertMessages(messages)
+            : this.backend.getState().messages;
+
+        const stateToMerge = { ...state, messages: modelMessages };
+        this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
         const currentState = this.backend.getState();
         const tools = await this.getAllTools();
 
@@ -285,6 +324,24 @@ Think step by step and tackle tasks systematically.`;
             messages: currentState.messages,
             tools,
             stopWhen: stepCountIs(this.maxSteps),
+            abortSignal,
+            experimental_telemetry: this.enableTelemetry ? {
+                isEnabled: true,
+                functionId: 'deep-agent-stream',
+            } : undefined,
+            onError: (error) => {
+                console.error('Stream error:', error);
+                // Notify via writer if available
+                if (writer) {
+                    writer.write({
+                        type: 'data',
+                        value: {
+                            type: 'notification',
+                            data: { message: String(error), level: 'error' },
+                        },
+                    } as any);
+                }
+            },
             onFinish: async (finishResult) => {
                 this.backend.setState({ messages: finishResult.response.messages });
                 // Run finish hooks
@@ -297,6 +354,24 @@ Think step by step and tackle tasks systematically.`;
         });
 
         return result;
+    }
+
+    /**
+     * Converts UIMessage[] to ModelMessage[] if needed.
+     * This handles the internal conversion so callers don't need to import from 'ai'.
+     */
+    private async convertMessages(messages: UIMessage[] | ModelMessage[]): Promise<ModelMessage[]> {
+        // Check if already ModelMessage[] format (has 'content' as array with type/text)
+        if (messages.length === 0) return [];
+
+        const firstMsg = messages[0] as any;
+        // UIMessages have 'parts' array, ModelMessages have 'content' array with objects
+        if (firstMsg.parts !== undefined) {
+            // It's UIMessage format, convert it
+            return await convertToModelMessages(messages as UIMessage[]);
+        }
+        // Already ModelMessage format
+        return messages as ModelMessage[];
     }
 
     /** Gets the current internal state of the agent */
@@ -325,12 +400,14 @@ Think step by step and tackle tasks systematically.`;
  * Factory function to create a DeepAgent instance with a LangChain-style API.
  * @param config Agent configuration object.
  */
-export function createDeepAgent(config: DeepAgentConfig = {}): DeepAgent {
+function createDeepAgent(config: DeepAgentConfig = {}): DeepAgent {
     return new DeepAgent(config);
 }
-
 
 export {
     type AgentState,
     type DeepAgentConfig,
+    type AgentDataParts,
+    type AgentUIMessage,
+    createDeepAgent,
 };

@@ -1,8 +1,9 @@
 import { UIMessageStreamWriter } from "ai";
-import { AgentState, AgentUIMessage } from "../../deep-agent";
+import { AgentState, AgentUIMessage } from "..";
 import TodoListMiddleware from "./todos";
 import SkillsMiddleware from "./skill";
 import BashMiddleware from "./bash";
+import SubAgentMiddleware from "./subagent";
 
 /**
  * Interface for agent middleware that can extend capabilities,
@@ -32,6 +33,7 @@ export {
     Middleware,
     TodoListMiddleware,
     SkillsMiddleware,
-    BashMiddleware
+    BashMiddleware,
+    SubAgentMiddleware
 }
 

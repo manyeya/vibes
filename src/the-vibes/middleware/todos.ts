@@ -4,9 +4,9 @@ import {
 } from 'ai';
 import { z } from 'zod';
 
-import { AgentUIMessage } from '../../deep-agent';
 import StateBackend from '../backend/statebackend';
 import { Middleware } from '.';
+import { AgentUIMessage } from '..';
 
 /**
  * A single item in the agent's internal todo list.

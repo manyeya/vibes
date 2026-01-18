@@ -1,6 +1,6 @@
 import { tool, UIMessageStreamWriter } from "ai";
 import { Middleware } from ".";
-import { AgentUIMessage } from "../../deep-agent";
+import { AgentUIMessage } from "..";
 import { Bash, ReadWriteFs } from 'just-bash';
 import { createBashTool } from 'bash-tool';
 
