@@ -36,6 +36,8 @@ interface AgentState {
     todos: TodoItem[];
     /** Arbitrary metadata storage for middleware use */
     metadata: Record<string, any>;
+    /** Summarized context of past conversation to maintain continuity */
+    summary?: string;
 }
 
 
@@ -205,6 +207,12 @@ Think step by step and tackle tasks systematically.`;
             prompt += `\n\n## Custom Instructions\n${this.customSystemPrompt} `;
         }
 
+        // Inject Context Summary if available
+        const state = this.backend.getState();
+        if (state.summary) {
+            prompt += `\n\n## Previous Context Summary\n${state.summary}`;
+        }
+
         return prompt;
     }
 
@@ -235,26 +243,86 @@ Think step by step and tackle tasks systematically.`;
      * Creates a prepareStep callback for context compression.
      * Compresses message history when it exceeds maxContextMessages.
      */
+    /**
+     * Creates a prepareStep callback for context compression.
+     * Compresses message history when it exceeds maxContextMessages.
+     * Uses the model to summarize older messages and updates state.
+     */
     private createPrepareStep() {
         const maxMessages = this.maxContextMessages;
+
         return async ({ messages }: { messages: ModelMessage[] }) => {
-            if (messages.length > maxMessages) {
-                // Keep system context + recent messages
-                // We take the last N messages
-                let compressed = messages.slice(-Math.floor(maxMessages / 2));
-
-                // Sanitize: Ensure we don't start with a 'tool' message
-                // (as this causes "Unexpected role 'tool' after role 'system'" errors)
-                while (compressed.length > 0 && compressed[0].role === 'tool') {
-                    compressed.shift();
-                }
-
-                // Optional: Try to start with a user message if possible, or at least ensure valid sequence
-                // For now, removing leading tools is the critical fix.
-
-                return { messages: compressed };
+            if (messages.length <= maxMessages) {
+                return {};
             }
-            return {};
+
+            console.log(`[DeepAgent] Context limit exceeded (${messages.length} > ${maxMessages}). Summarizing...`);
+
+            // Strategy: Keep the last N messages (e.g., half of max), summarize the rest
+            const keepCount = Math.floor(maxMessages / 2);
+            // Ensure we keep at least 1 message and don't break strict tool sequences
+            const messagesToKeep = messages.slice(-keepCount);
+
+            // Sanitize: Ensure we don't start with a 'tool' message
+            while (messagesToKeep.length > 0 && messagesToKeep[0].role === 'tool') {
+                messagesToKeep.shift();
+            }
+
+            // Messages to summarize (everything before the kept ones)
+            const messagesToSummarize = messages.slice(0, messages.length - messagesToKeep.length);
+
+            if (messagesToSummarize.length === 0) {
+                return { messages: messagesToKeep };
+            }
+
+            try {
+                // Get existing summary to merge
+                const currentSummary = this.backend.getState().summary || 'No previous summary.';
+
+                // Generate new summary
+                const { text: newSummary } = await generateText({
+                    model: this.model,
+                    system: `You are a helpful assistant. Summarize the following conversation history into a concise, detailed narrative. 
+Retain key decisions, user requirements, current potential plan status, and important context.
+Merge this with the "Existing Summary" strictly.`,
+                    messages: [
+                        {
+                            role: 'user',
+                            content: `Existing Summary:\n${currentSummary}\n\nNew Conversation to Summarize:\n${JSON.stringify(messagesToSummarize)}`
+                        }
+                    ],
+                });
+
+                console.log(`[DeepAgent] Summary updated. Length: ${newSummary.length} chars.`);
+
+                // Update state persistence
+                this.backend.setState({
+                    summary: newSummary,
+                    // We DO NOT update 'messages' in backend here blindly, 
+                    // because the agent loop will append new responses to the full list.
+                    // Ideally, we should truncate the backend storage too to save disk/db space,
+                    // but for safety in this iteration, we keep full history in backend 
+                    // and only truncate the *active context window*.
+                    // If disk usage is a concern, we would truncate this.backend.state.messages here.
+                });
+
+                // Return the new context structure:
+                // [System Prompt (handled by sdk)] -> [Summary Injection] -> [Recent Messages]
+                // We inject the summary as a System message or User message depending on strictness.
+                // Best bet: System message.
+
+                return {
+                    messages: [
+                        { role: 'system', content: `## Previous Context Summary\n${newSummary}` },
+                        ...messagesToKeep
+                    ] as ModelMessage[]
+                };
+
+            } catch (error) {
+                console.error('[DeepAgent] Summarization failed:', error);
+                // Fallback: Just truncate without summary update if failed
+                return { messages: messagesToKeep };
+            }
         };
     }
 
