@@ -5,7 +5,7 @@ import {
 import { z } from 'zod';
 
 import StateBackend from '../backend/statebackend';
-import { Middleware } from '.';
+import { Middleware } from ".";
 import { AgentUIMessage } from '..';
 
 /**

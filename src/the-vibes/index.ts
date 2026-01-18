@@ -22,6 +22,7 @@ import {
 } from './middleware';
 import { TodoItem } from './middleware/todos';
 import { SubAgent } from './middleware/subagent';
+import MemoryMiddleware from './middleware/memory';
 
 /**
  * Represents the persistent state of an agent session, including conversation history,
@@ -170,6 +171,9 @@ Think step by step and tackle tasks systematically.`;
             // Bash middleware (replaces FilesystemMiddleware)
             const bashMiddleware = new BashMiddleware();
             this.middleware.push(bashMiddleware);
+
+            // Memory middleware (Scratchpad + Reflexion)
+            this.middleware.push(new MemoryMiddleware(this.backend));
         }
 
         // SubAgent middleware

@@ -29,11 +29,14 @@ interface Middleware {
     onStreamFinish?: (result: any) => Promise<void>;
 }
 
+import MemoryMiddleware from "./memory";
+
 export {
     Middleware,
     TodoListMiddleware,
     SkillsMiddleware,
     BashMiddleware,
-    SubAgentMiddleware
+    SubAgentMiddleware,
+    MemoryMiddleware
 }
 
