@@ -59,11 +59,10 @@ app.post('/viper/stream', zValidator('json', viperSchema), async (c) => {
                 // Send initial status
                 writer.write({
                     type: 'data-notification',
-                    data: { message: 'Viper is hunting...', level: 'info' },
-                    transient: true,
+                    data: { message: 'Viper is processing...', level: 'info' },
                 });
 
-                // DeepAgent handles message conversion internally
+                // Standard streaming - agent handles todo workflow internally via prompts
                 const result = await viper.stream({
                     messages: body.messages,
                     writer,
@@ -74,8 +73,7 @@ app.post('/viper/stream', zValidator('json', viperSchema), async (c) => {
                 // Send completion notification
                 writer.write({
                     type: 'data-notification',
-                    data: { message: 'Inquiry complete.', level: 'info' },
-                    transient: true,
+                    data: { message: 'Complete.', level: 'info' },
                 });
             },
         });

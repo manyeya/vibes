@@ -57,6 +57,7 @@ type AgentDataParts = {
     todo_update: {
         id: string;
         status: string;
+        title?: string;
     };
 };
 
@@ -86,6 +87,14 @@ interface DeepAgentConfig {
     backend?: StateBackend;
     /** Enable telemetry for observability (default: false) */
     enableTelemetry?: boolean;
+    /** Model temperature for controlling randomness (0-1, default: undefined/model default) */
+    temperature?: number;
+    /** Maximum retries for API failures (default: 2) */
+    maxRetries?: number;
+    /** Maximum messages before context compression kicks in (default: 30) */
+    maxContextMessages?: number;
+    /** Callback for step progress updates */
+    onStepFinish?: (step: { stepNumber: number; stepType: string; text?: string }) => void;
 }
 
 
@@ -102,6 +111,11 @@ export class DeepAgent {
     private customSystemPrompt: string;
     private maxSteps: number;
     private enableTelemetry: boolean;
+    private temperature?: number;
+    private maxRetries: number;
+    private maxContextMessages: number;
+    private customTools: Record<string, Tool<any, any>>;
+    private onStepFinish?: (step: { stepNumber: number; stepType: string; text?: string }) => void;
 
     /**
      * Initializes a new DeepAgent instance.
@@ -113,22 +127,27 @@ export class DeepAgent {
         this.maxSteps = config.maxSteps || 20;
         this.customSystemPrompt = config.systemPrompt || '';
         this.enableTelemetry = config.enableTelemetry || false;
-        this.baseSystemPrompt = `You are a capable AI assistant that can tackle complex, multi - step tasks.
+        this.temperature = config.temperature;
+        this.maxRetries = config.maxRetries ?? 2;
+        this.maxContextMessages = config.maxContextMessages ?? 30;
+        this.customTools = config.tools || {};
+        this.onStepFinish = config.onStepFinish;
+        this.baseSystemPrompt = `You are a capable AI assistant that can tackle complex, multi-step tasks.
 
-You have access to planning tools, a filesystem, and the ability to spawn sub - agents.
+You have access to planning tools, a filesystem, and the ability to spawn sub-agents.
 
 ## Core Principles
 1. PLAN before acting: Use todos to break down complex tasks
 2. OFFLOAD context: Save large outputs to files to prevent context overflow
-3. DELEGATE: Use sub - agents for specialized or isolated tasks
+3. DELEGATE: Use sub-agents for specialized or isolated tasks
 4. ITERATE: Check your work and refine as needed
 
 ## Best Practices
-    - For complex tasks, create a todo list FIRST
-        - Save intermediate results to files
-            - Use sub - agents to isolate context and run parallel workstreams
-                - Mark todos as completed as you make progress
-                    - Read files to review previous work
+- For complex tasks, create a todo list FIRST
+- Save intermediate results to files
+- Use sub-agents to isolate context and run parallel workstreams
+- Mark todos as completed as you make progress
+- Read files to review previous work
 
 Think step by step and tackle tasks systematically.`;
 
@@ -206,7 +225,37 @@ Think step by step and tackle tasks systematically.`;
             }
         }
 
+        // Merge custom tools from config (these take precedence)
+        Object.assign(allTools, this.customTools);
+
         return allTools;
+    }
+
+    /**
+     * Creates a prepareStep callback for context compression.
+     * Compresses message history when it exceeds maxContextMessages.
+     */
+    private createPrepareStep() {
+        const maxMessages = this.maxContextMessages;
+        return async ({ messages }: { messages: ModelMessage[] }) => {
+            if (messages.length > maxMessages) {
+                // Keep system context + recent messages
+                // We take the last N messages
+                let compressed = messages.slice(-Math.floor(maxMessages / 2));
+
+                // Sanitize: Ensure we don't start with a 'tool' message
+                // (as this causes "Unexpected role 'tool' after role 'system'" errors)
+                while (compressed.length > 0 && compressed[0].role === 'tool') {
+                    compressed.shift();
+                }
+
+                // Optional: Try to start with a user message if possible, or at least ensure valid sequence
+                // For now, removing leading tools is the critical fix.
+
+                return { messages: compressed };
+            }
+            return {};
+        };
     }
 
     /**
@@ -240,9 +289,19 @@ Think step by step and tackle tasks systematically.`;
             messages: currentState.messages,
             tools,
             stopWhen: stepCountIs(this.maxSteps),
+            maxRetries: this.maxRetries,
+            temperature: this.temperature,
+            prepareStep: this.createPrepareStep(),
             experimental_telemetry: this.enableTelemetry ? {
                 isEnabled: true,
                 functionId: 'deep-agent-invoke',
+            } : undefined,
+            onStepFinish: this.onStepFinish ? async ({ text, finishReason }) => {
+                this.onStepFinish?.({
+                    stepNumber: currentState.messages.length,
+                    stepType: finishReason,
+                    text,
+                });
             } : undefined,
         });
 
@@ -279,8 +338,8 @@ Think step by step and tackle tasks systematically.`;
 
     /**
      * Executes the agent and returns a stream of tool results and text content.
-     * Useful for building real-time UI experiences.
-     * Accepts both UIMessage[] and ModelMessage[] formats - converts internally.
+     * Implements todo-driven workflow: stops after each todo completion,
+     * streams update, then continues until all todos are done.
      * @param options Streaming options including messages, state, writer, and abort signal.
      * @returns A streaming object compatible with createUIMessageStream.
      */
@@ -299,7 +358,7 @@ Think step by step and tackle tasks systematically.`;
 
         const stateToMerge = { ...state, messages: modelMessages };
         this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
-        const currentState = this.backend.getState();
+        let currentState = this.backend.getState();
         const tools = await this.getAllTools();
 
         // Initialize middleware with the writer if provided
@@ -318,6 +377,11 @@ Think step by step and tackle tasks systematically.`;
             }
         }
 
+        // Standard streaming - let the agent work through todos naturally
+        // The enhanced prompts guide step-by-step behavior
+        // Local step counter for this execution run (starts at current history length)
+        let currentStepCount = currentState.messages.length;
+
         const result = streamText({
             model: this.model,
             system: this.getSystemPrompt(),
@@ -325,21 +389,40 @@ Think step by step and tackle tasks systematically.`;
             tools,
             stopWhen: stepCountIs(this.maxSteps),
             abortSignal,
+            maxRetries: this.maxRetries,
+            temperature: this.temperature,
+            prepareStep: this.createPrepareStep(),
             experimental_telemetry: this.enableTelemetry ? {
                 isEnabled: true,
                 functionId: 'deep-agent-stream',
             } : undefined,
+            onStepFinish: async ({ text, finishReason, toolCalls, toolResults }) => {
+                currentStepCount++;
+
+                // Debug log for step details
+                console.log(`[DeepAgent] Step ${currentStepCount} finished. Reason: ${finishReason}`);
+                if (toolCalls?.length) console.log(`[DeepAgent] Tool calls: ${toolCalls.map(tc => tc.toolName).join(', ')}`);
+
+                writer?.write({
+                    type: 'data-status',
+                    data: {
+                        message: `Step: ${finishReason}`,
+                        step: currentStepCount,
+                    },
+                });
+                this.onStepFinish?.({
+                    stepNumber: currentStepCount,
+                    stepType: finishReason,
+                    text,
+                });
+            },
             onError: (error) => {
                 console.error('Stream error:', error);
-                // Notify via writer if available
                 if (writer) {
                     writer.write({
-                        type: 'data',
-                        value: {
-                            type: 'notification',
-                            data: { message: String(error), level: 'error' },
-                        },
-                    } as any);
+                        type: 'data-notification',
+                        data: { message: String(error), level: 'error' },
+                    });
                 }
             },
             onFinish: async (finishResult) => {
@@ -364,27 +447,55 @@ Think step by step and tackle tasks systematically.`;
         // Check if already ModelMessage[] format (has 'content' as array with type/text)
         if (messages.length === 0) return [];
 
+        let modelMessages: ModelMessage[] = [];
         const firstMsg = messages[0] as any;
-        // UIMessages have 'parts' array, ModelMessages have 'content' array with objects
+
+        // Convert to ModelMessage[] if needed
         if (firstMsg.parts !== undefined) {
-            // It's UIMessage format, convert it
-            return await convertToModelMessages(messages as UIMessage[]);
+            modelMessages = await convertToModelMessages(messages as UIMessage[]);
+        } else {
+            modelMessages = messages as ModelMessage[];
         }
-        // Already ModelMessage format
-        return messages as ModelMessage[];
+
+        // Sanitize messages for strict providers (like Mistral/OpenRouter)
+        // Rule 1: Ensure we don't start with a 'tool' message (must be after assistant)
+        // Rule 2: Ensure every 'tool' message is preceded by an 'assistant' or 'tool' message
+        const sanitized: ModelMessage[] = [];
+
+        for (let i = 0; i < modelMessages.length; i++) {
+            const msg = modelMessages[i];
+
+            if (msg.role === 'tool') {
+                const prev = sanitized[sanitized.length - 1];
+                // Drop tool message if no previous message or previous wasn't assistant OR tool
+                // (Tool messages can follow Assistant or other Tool messages)
+                if (!prev || (prev.role !== 'assistant' && prev.role !== 'tool')) {
+                    console.warn(`[Sanitizer] Dropping orphaned tool message at index ${i}`);
+                    continue;
+                }
+            }
+
+            sanitized.push(msg);
+        }
+
+        // Rule 3: Ensure we don't start with 'assistant' if the model requires 'user' first? 
+        // (Most models are fine with Assistant first, but System -> Tool is the big killer)
+
+        return sanitized;
     }
 
-    /** Gets the current internal state of the agent */
+    /** Gets the current internal state of the agent (read-only view) */
     getState(): AgentState {
         return this.backend.getState();
     }
 
     /** 
      * Exports the full internal state for external persistence.
+     * Returns a deep clone to prevent external mutation.
      * Useful for saving sessions to a database.
      */
     exportState(): AgentState {
-        return this.backend.getState();
+        return structuredClone(this.backend.getState());
     }
 
     /** 

@@ -77,4 +77,24 @@ export default class StateBackend {
     async getTodos(): Promise<TodoItem[]> {
         return this.state.todos;
     }
+
+    /** Returns all pending (not completed) todos */
+    async getPendingTodos(): Promise<TodoItem[]> {
+        return this.state.todos.filter(t => t.status !== 'completed');
+    }
+
+    /** Returns the first pending todo, or null if none */
+    async getFirstPendingTodo(): Promise<TodoItem | null> {
+        return this.state.todos.find(t => t.status === 'pending' || t.status === 'in_progress') || null;
+    }
+
+    /** Returns true if there are any pending todos */
+    async hasPendingTodos(): Promise<boolean> {
+        return this.state.todos.some(t => t.status !== 'completed');
+    }
+
+    /** Clears all todos (for fresh task starts) */
+    async clearTodos(): Promise<void> {
+        this.state.todos = [];
+    }
 }

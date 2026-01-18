@@ -41,10 +41,22 @@ export default class TodoListMiddleware implements Middleware {
     get tools() {
         return {
             write_todos: tool({
-                description: `Create and manage structured task lists for tracking progress through complex workflows.
-Use this to break down complex tasks into discrete steps and track your progress.
-Mark todos as completed as you finish them.
-DO NOT use this for simple, single - step tasks.`,
+                description: `Manage a structured todo list to track progress through complex, multi-step tasks.
+
+When to use:
+- Complex tasks requiring multiple distinct steps
+- Research or investigation workflows
+- Tasks that need visible progress tracking
+
+When NOT to use:
+- Simple, single-step tasks
+- Quick answers or lookups
+
+Workflow:
+1. Create todos to break down the task
+2. Work on ONE todo at a time
+3. Mark it complete BEFORE starting the next
+4. Never work on multiple todos simultaneously`,
                 inputSchema: z.object({
                     action: z.enum(['create', 'update', 'read']),
                     todos: z.array(z.object({
@@ -66,10 +78,10 @@ DO NOT use this for simple, single - step tasks.`,
                             };
                             await this.backend.addTodo(newTodo);
 
-                            // Stream update if writer is available
+                            // Stream update with full info including title
                             this.writer?.write({
                                 type: 'data-todo_update',
-                                data: { id: newTodo.id, status: newTodo.status },
+                                data: { id: newTodo.id, status: newTodo.status, title: newTodo.title },
                             });
                         }
                         return { success: true, message: `Created ${todos.length} todos` };
@@ -78,12 +90,18 @@ DO NOT use this for simple, single - step tasks.`,
                     if (action === 'update' && todos) {
                         for (const todo of todos) {
                             if (todo.id) {
+                                // Get existing todo to get title
+                                const existingTodo = (await this.backend.getTodos()).find(t => t.id === todo.id);
                                 await this.backend.updateTodo(todo.id, todo as Partial<TodoItem>);
 
-                                // Stream update if writer is available
+                                // Stream update with title
                                 this.writer?.write({
                                     type: 'data-todo_update',
-                                    data: { id: todo.id, status: todo.status || 'updated' },
+                                    data: {
+                                        id: todo.id,
+                                        status: todo.status || 'updated',
+                                        title: existingTodo?.title || todo.title,
+                                    },
                                 });
                             }
                         }
@@ -113,31 +131,55 @@ DO NOT use this for simple, single - step tasks.`,
         return `${prompt}
 
 ## Todo List Management
-Use write_todos to plan complex tasks by breaking them into steps.
-Mark todos as completed as you progress.
-Use read_todos to check current task status.
-DO NOT create todos for simple, single - step tasks.`;
+
+You have access to a todo list for tracking progress through complex tasks.
+
+### When to use todos:
+- Multi-step research or investigation tasks
+- Complex workflows with distinct phases
+- Tasks where progress visibility matters
+
+### When NOT to use todos:
+- Simple questions or lookups
+- Single-step tasks
+- Quick calculations or conversions
+
+### CRITICAL WORKFLOW - Follow exactly:
+1. For complex tasks, call write_todos with action='create' to create todos FIRST
+2. IMMEDIATELY after creating todos, start working on the FIRST one:
+   - Call write_todos with action='update' to set the first todo's status to 'in_progress'
+   - Do the actual work for that todo
+   - Call write_todos with action='update' to set status to 'completed'
+3. Then move to the next todo - repeat step 2
+4. Continue until ALL todos are completed
+5. NEVER just create todos and stop - you MUST start working on them immediately
+
+### Status Flow (YOU MUST follow this):
+pending → in_progress → completed
+
+### Example after creating todos:
+\`\`\`
+// Create the plan
+write_todos({ action: 'create', todos: [...] })
+
+// IMMEDIATELY start the first todo
+write_todos({ action: 'update', todos: [{ id: 'todo_xxx', status: 'in_progress' }] })
+
+// Do the work...
+
+// Mark complete
+write_todos({ action: 'update', todos: [{ id: 'todo_xxx', status: 'completed' }] })
+
+// Move to next todo...
+\`\`\`
+
+This ensures visible, incremental progress to the user.`;
     }
 
     async onStreamFinish() {
-        const todos = await this.backend.getTodos();
-        const pendingTodos = todos.filter(t => t.status !== 'completed');
-
-        if (pendingTodos.length > 0) {
-            this.writer?.write({
-                type: 'data-status',
-                data: { message: 'Cleaning up pending tasks...' },
-            });
-
-            for (const todo of pendingTodos) {
-                todo.status = 'completed';
-                await this.backend.updateTodo(todo.id, { status: 'completed' });
-
-                this.writer?.write({
-                    type: 'data-todo_update',
-                    data: { id: todo.id, status: 'completed' },
-                });
-            }
-        }
+        // Note: We intentionally do NOT auto-complete pending todos.
+        // The agent is responsible for managing its own todo workflow.
+        // This follows the langchain-ai/deepagents pattern where todos
+        // are a tool the agent uses, not forced architecture.
     }
 }

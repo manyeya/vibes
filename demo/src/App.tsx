@@ -25,8 +25,8 @@ function cn(...inputs: ClassValue[]) {
 }
 
 // Define specific types for our DeepAgent data parts
-type DataStatusPart = { type: 'data-status'; data: { message: string } };
-type TodoUpdatePart = { type: 'data-todo_update'; data: { id: string; status: string } };
+type DataStatusPart = { type: 'data-status'; data: { message: string; step?: number } };
+type TodoUpdatePart = { type: 'data-todo_update'; data: { id: string; status: string; title?: string } };
 type NotificationPart = { type: 'data-notification'; data: { message: string; level: 'info' | 'error' } };
 type DeepAgentPart = DataStatusPart | TodoUpdatePart | NotificationPart | { type: 'text'; text: string };
 
@@ -117,24 +117,34 @@ export default function App() {
                 </span>
               </div>
 
-              <div className={cn(
-                "relative max-w-[90%] md:max-w-[75%] p-5 rounded-3xl border transition-all duration-500",
-                (m.role as string) === 'user'
-                  ? "bg-zinc-100 text-zinc-950 border-white font-medium shadow-xl shadow-white/5"
-                  : "bg-zinc-900/40 border-zinc-800/80 backdrop-blur-md shadow-2xl"
-              )}>
+              <div
+                className={cn(
+                  "relative max-w-[90%] md:max-w-[75%] p-5 rounded-3xl border transition-all duration-500",
+                  (m.role as string) === 'user'
+                    ? "bg-zinc-100 text-zinc-950 border-white font-medium shadow-xl shadow-white/5"
+                    : "bg-zinc-900/40 border-zinc-800/80 backdrop-blur-md shadow-2xl"
+                )}>
                 {/* AI SDK v6 Unified Parts Rendering */}
                 <div className="space-y-4">
                   {m.parts ? (() => {
-                    const todoState = new Map<string, { status: string, firstIndex: number }>();
+                    // Track todo state for deduplication and status updates
+                    const todoState = new Map<string, { status: string, firstIndex: number, title?: string }>();
                     m.parts.forEach((part, idx) => {
                       const p = part as any as DeepAgentPart;
                       if (p.type === 'data-todo_update') {
                         if (!todoState.has(p.data.id)) {
-                          todoState.set(p.data.id, { status: p.data.status, firstIndex: idx });
+                          // First time seeing this todo - store with title from data
+                          todoState.set(p.data.id, {
+                            status: p.data.status,
+                            firstIndex: idx,
+                            title: p.data.title
+                          });
                         } else {
+                          // Update existing todo
                           const state = todoState.get(p.data.id)!;
                           state.status = p.data.status;
+                          // Keep the title if we have one
+                          if (p.data.title) state.title = p.data.title;
                         }
                       }
                     });
@@ -151,15 +161,30 @@ export default function App() {
                       }
 
                       if (p.type === 'data-status') {
+                        const isWorkingOn = p.data.message.startsWith('Working on:');
+                        const isStep = p.data.message.startsWith('Step:');
+
                         return (
                           <motion.div
                             key={i}
                             initial={{ x: -5, opacity: 0 }}
                             animate={{ x: 0, opacity: 1 }}
-                            className="flex items-center gap-3 text-[11px] font-mono text-amber-500/80 bg-amber-500/5 p-3 rounded-xl border border-amber-500/10"
+                            className={cn(
+                              "flex items-center gap-3 text-[11px] font-mono p-3 rounded-xl border",
+                              isWorkingOn
+                                ? "text-emerald-400/90 bg-emerald-500/10 border-emerald-500/20"
+                                : "text-amber-500/80 bg-amber-500/5 border-amber-500/10"
+                            )}
                           >
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span className="uppercase tracking-wider">{p.data.message}</span>
+                            {isWorkingOn ? (
+                              <ChevronRight className="w-3.5 h-3.5" />
+                            ) : (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            )}
+                            <span className="uppercase tracking-wider">
+                              {p.data.step !== undefined && <span className="text-zinc-500 mr-2">[Step {p.data.step}]</span>}
+                              {p.data.message}
+                            </span>
                           </motion.div>
                         );
                       }
@@ -177,33 +202,45 @@ export default function App() {
                             initial={{ scale: 0.95, opacity: 0 }}
                             animate={{ scale: 1, opacity: 1 }}
                             layout
-                            className="flex items-center gap-3 p-3 rounded-xl bg-zinc-800/20 border border-zinc-700/20 group/todo hover:bg-zinc-800/40 transition-colors"
+                            className={cn(
+                              "flex items-center gap-3 p-3 rounded-xl border group/todo transition-all duration-300",
+                              isComplete
+                                ? "bg-emerald-500/5 border-emerald-500/20"
+                                : isInProgress
+                                  ? "bg-amber-500/10 border-amber-500/30 shadow-lg shadow-amber-500/5"
+                                  : "bg-zinc-800/20 border-zinc-700/20"
+                            )}
                           >
                             <div className={cn(
-                              "w-5 h-5 rounded-full border flex items-center justify-center transition-all duration-500",
-                              isComplete ? "bg-emerald-500/20 border-emerald-500/50" :
-                                isInProgress ? "bg-amber-500/20 border-amber-500/50" :
+                              "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all duration-500",
+                              isComplete ? "bg-emerald-500/20 border-emerald-500" :
+                                isInProgress ? "bg-amber-500/20 border-amber-500 animate-pulse" :
                                   "bg-zinc-800 border-zinc-600"
                             )}>
                               {isComplete ? (
-                                <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                                <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                               ) : isInProgress ? (
-                                <Loader2 className="w-3 h-3 text-amber-500 animate-spin" />
+                                <Loader2 className="w-4 h-4 text-amber-500 animate-spin" />
                               ) : (
-                                <Circle className="w-3 h-3 text-zinc-500" />
+                                <Circle className="w-4 h-4 text-zinc-500" />
                               )}
                             </div>
-                            <div className="flex flex-col">
-                              <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-tighter">Plan Synchronization</span>
+                            <div className="flex flex-col flex-1">
                               <span className={cn(
-                                "text-xs font-mono transition-all duration-500",
-                                isComplete ? "text-zinc-500 line-through opacity-50" :
-                                  isInProgress ? "text-amber-500" :
+                                "text-xs font-medium transition-all duration-500",
+                                isComplete ? "text-emerald-400/70 line-through" :
+                                  isInProgress ? "text-amber-400" :
                                     "text-zinc-300"
                               )}>
-                                {p.data.id}: {state.status}
+                                {state.title || `Task ${p.data.id.slice(-4)}`}
+                              </span>
+                              <span className="text-[9px] text-zinc-600 font-mono">
+                                {state.status.toUpperCase()}
                               </span>
                             </div>
+                            {isComplete && (
+                              <span className="text-[9px] text-emerald-500 font-mono">✓</span>
+                            )}
                           </motion.div>
                         );
                       }
