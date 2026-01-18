@@ -2,7 +2,6 @@ import { LanguageModel, stepCountIs, tool, ToolLoopAgent, UIMessageStreamWriter 
 
 import { Middleware } from ".";
 import { AgentUIMessage } from '..';
-import StateBackend from "../backend/statebackend";
 import z from "zod";
 
 /**
