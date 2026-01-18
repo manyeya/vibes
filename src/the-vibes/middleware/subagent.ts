@@ -1,28 +1,12 @@
-import { LanguageModel, stepCountIs, tool, ToolLoopAgent, UIMessageStreamWriter } from "ai";
-
-import { Middleware } from ".";
-import { AgentUIMessage } from '..';
+import { type LanguageModel, type UIMessageStreamWriter, type Tool, tool } from "ai";
+import { AgentUIMessage, Middleware, SubAgent } from "../core/types";
+import { VibeAgent } from "../core/agent";
 import z from "zod";
-
-/**
- * Configuration for a specialized sub-agent that can be delegated tasks.
- */
-export interface SubAgent {
-    /** Name used to identify the agent in the delegation tool */
-    name: string;
-    /** Description of what this agent specializes in */
-    description: string;
-    /** The core persona and operating rules for the sub-agent */
-    systemPrompt: string;
-    /** List of tool names to inherit from parent, or direct tool definitions */
-    tools?: string[] | Record<string, any>;
-    /** Optional specific model to use for this sub-agent */
-    model?: LanguageModel;
-}
+import * as path from "node:path";
 
 /**
  * Middleware that allows an agent to delegate tasks to specialized sub-agents.
- * Uses the ToolLoopAgent pattern from AI SDK v6 for standardized delegation.
+ * Uses the VibeAgent core for full middleware support in sub-agents.
  */
 export default class SubAgentMiddleware implements Middleware {
     name = 'SubAgentMiddleware';
@@ -31,7 +15,9 @@ export default class SubAgentMiddleware implements Middleware {
     constructor(
         private subAgents: Map<string, SubAgent>,
         private baseModel: LanguageModel,
-        private getGlobalTools: () => Record<string, any>
+        private getGlobalTools: () => Record<string, any>,
+        private getGlobalMiddleware: () => Middleware[] = () => [],
+        private workspaceDir: string = 'workspace'
     ) { }
 
     onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
@@ -40,26 +26,22 @@ export default class SubAgentMiddleware implements Middleware {
 
     get tools() {
         const taskTool = tool({
-            description: `Delegate tasks to specialized sub - agents with isolated context windows.
+            description: `Delegate tasks to specialized sub-agents with isolated context windows.
 
-Available sub - agents: ${Array.from(this.subAgents.keys()).map(name => {
+Available sub-agents: ${Array.from(this.subAgents.keys()).map(name => {
                 const agent = this.subAgents.get(name)!;
                 return `${name}: ${agent.description}`;
             }).join('\n')
                 }
 
-Use sub - agents when:
+Use sub-agents when:
 - Task needs specialized expertise
-    - You want to isolate context for a focused task
-        - Running multiple research threads in parallel
+- You want to isolate context for a focused task
+- Running multiple research threads in parallel
 
-DO NOT use sub - agents for:
-    - Simple, single - step tasks
-        - Tasks you can easily do yourself`,
-            inputSchema: z.object({
-                agent_name: z.string().describe('Name of the sub-agent to use'),
-                task: z.string().describe('The task to delegate'),
-            }),
+DO NOT use sub-agents for:
+- Simple, single-step tasks
+- Tasks you can easily do yourself`,
             execute: async ({ agent_name, task }) => {
                 const subAgentDesc = this.subAgents.get(agent_name);
                 if (!subAgentDesc) {
@@ -81,42 +63,58 @@ DO NOT use sub - agents for:
 
                 const model = subAgentDesc.model || this.baseModel;
 
-                // Use standard AI SDK v6 ToolLoopAgent
-                const agent = new ToolLoopAgent({
+                // Instantiate custom VibeAgent instead of standard ToolLoopAgent
+                const agent = new VibeAgent({
                     model,
                     instructions: subAgentDesc.systemPrompt,
                     tools: agentTools,
-                    stopWhen: stepCountIs(5),
+                    maxSteps: 10,
+                    workspaceDir: this.workspaceDir,
                 });
+
+                // Add shared middleware (e.g. SkillsMiddleware)
+                const sharedMiddleware = this.getGlobalMiddleware().filter(mw =>
+                    mw.name === 'SkillsMiddleware' ||
+                    mw.name === 'MemoryMiddleware' ||
+                    subAgentDesc.middleware?.some(sm => sm.name === mw.name)
+                );
+                agent.addMiddleware(sharedMiddleware);
 
                 this.writer?.write({
                     type: 'data-status',
                     data: { message: `Delegating task to ${agent_name}...` },
                 });
 
-                const result = await agent.generate({
-                    prompt: task,
+                // Execute the agent invocation
+                const result = await agent.invoke({
+                    messages: [{ role: 'user', content: task }]
                 });
 
                 // Results are saved to the shared filesystem for context offloading
-                const resultDir = `${process.cwd()}/subagent_results`;
-                const resultPath = `${resultDir}/${agent_name}_${Date.now()}.md`;
+                const resultDir = `${this.workspaceDir}/subagent_results`;
+                const filename = `${agent_name}_${Date.now()}.md`;
+                const relativePath = `subagent_results/${filename}`;
+                const fullPath = path.resolve(process.cwd(), this.workspaceDir, relativePath);
 
                 // Ensure directory exists using Bun native spawn (avoiding node:fs)
-                await Bun.spawn(["mkdir", "-p", resultDir]).exited;
-                await Bun.write(resultPath, result.text);
+                await Bun.spawn(["mkdir", "-p", path.resolve(process.cwd(), resultDir)]).exited;
+                await Bun.write(fullPath, result.text);
 
                 this.writer?.write({
                     type: 'data-status',
-                    data: { message: `Task delegated to ${agent_name}` },
+                    data: { message: `Task completed by ${agent_name}` },
                 });
 
                 return {
                     status: "completed",
                     summary: `Task completed by ${agent_name}. Results saved to file. Read this file if you need the full details.`,
-                    savedTo: resultPath,
+                    savedTo: relativePath,
                 };
             },
+            inputSchema: z.object({
+                agent_name: z.string().describe('Name of the sub-agent to use'),
+                task: z.string().describe('The task to delegate'),
+            }),
         });
 
         return { task: taskTool };

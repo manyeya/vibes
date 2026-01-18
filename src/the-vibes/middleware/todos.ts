@@ -5,24 +5,7 @@ import {
 import { z } from 'zod';
 
 import StateBackend from '../backend/statebackend';
-import { Middleware } from ".";
-import { AgentUIMessage } from '..';
-
-/**
- * A single item in the agent's internal todo list.
- */
-export interface TodoItem {
-    /** Unique identifier for the todo item */
-    id: string;
-    /** Human-readable title of the task */
-    title: string;
-    /** Current status of the task */
-    status: 'pending' | 'in_progress' | 'completed';
-    /** Task priority level */
-    priority: 'low' | 'medium' | 'high';
-    /** ISO timestamp when the task was created */
-    createdAt: string;
-}
+import { AgentUIMessage, Middleware, TodoItem } from '../core/types';
 
 /**
  * Middleware that provides a structured Todo List capability,

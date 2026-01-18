@@ -1,6 +1,5 @@
 import { tool, UIMessageStreamWriter } from "ai";
-import { Middleware } from ".";
-import { AgentUIMessage } from '..';
+import { AgentUIMessage, Middleware } from "../core/types";
 import z from "zod";
 import * as path from 'node:path';
 

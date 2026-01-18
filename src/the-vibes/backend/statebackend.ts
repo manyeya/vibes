@@ -1,5 +1,4 @@
-import { AgentState } from "..";
-import { TodoItem } from "../middleware/todos";
+import { AgentState, TodoItem } from "../core/types";
 
 /**
  * Internal state manager for the agent. Handles conversation history,

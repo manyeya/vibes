@@ -45,6 +45,7 @@ export const viper = createDeepAgent({
             name: 'Editor',
             description: 'Senior editor for prose, style, and grammar.',
             systemPrompt: 'You are Editor. Focus on polishing prose, fixing grammar, improving flow, and sharpening dialogue.',
+            
         }
     ]
 });

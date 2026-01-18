@@ -1,5 +1,5 @@
 import { tool } from "ai";
-import { Middleware } from ".";
+import { Middleware } from "../core/types";
 import StateBackend from "../backend/statebackend";
 import z from "zod";
 import { $ } from "bun";
