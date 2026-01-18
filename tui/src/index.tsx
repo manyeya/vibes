@@ -1,5 +1,13 @@
 import React from 'react';
-import { render, Box } from 'ink';
+import { render } from 'ink';
 import App from './components/App.js';
+import { AppProvider } from './contexts/AppContext';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
-render(<App />);
+render(
+  <ErrorBoundary>
+    <AppProvider>
+      <App />
+    </AppProvider>
+  </ErrorBoundary>
+);

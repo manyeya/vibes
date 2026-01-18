@@ -1,4 +1,5 @@
-import { todoListMiddleware } from "langchain";
+
+import { skillMiddleware } from "../middleware/skills-middleware";
 
 export const frontendUiUxEngineer = {
   name: "frontend-ui-ux-engineer",
@@ -32,5 +33,6 @@ When implementing UI:
 Your work should look like it came from a top-tier design agency - visually stunning and functionally perfect.
 
 You have access to filesystem tools (ls, read_file, write_file, edit_file, glob, grep) for working with frontend code.`,
-  tools: []
-  };
+  tools: [],
+  middleware: [skillMiddleware]
+};

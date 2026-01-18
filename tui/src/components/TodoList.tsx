@@ -58,7 +58,7 @@ const TodoList: React.FC<TodoListProps> = React.memo(({ todos }) => {
         <Text bold>Todo List</Text>
       </Box>
       {todos.map((todo, index) => (
-        <TodoItem key={index} todo={todo} index={index} />
+        <TodoItem key={todo.content || index} todo={todo} index={index} />
       ))}
     </Box>
   );

@@ -29,6 +29,7 @@ You coordinate specialized subagents to complete complex software tasks efficien
 - **frontend-ui-ux-engineer**: UI/UX design, styling, layout. Use for visual/frontend work.
 - **document-writer**: Technical writing, documentation, README files. Use for creating docs.
 - **multimodal-looker**: Visual content analysis. Use for PDFs, images, diagrams.
+- **viber**: Deep research, exhaustive reports, iterative search. Use for complex topics requiring thorough investigation.
 
 ## Workflow
 
@@ -45,7 +46,7 @@ For simple tasks:
 Always be concise, actionable, and focused on shipping working code.
 `;
 
-const compositeBackend = (rt:any) => new CompositeBackend(
+const compositeBackend = (rt: any) => new CompositeBackend(
   new StateBackend(rt),
   {
     "/memories/": new FilesystemBackend({ rootDir: "./myagent", virtualMode: true }),

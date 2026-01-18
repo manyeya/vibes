@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { marked } from 'marked';
 import { TitledBox, titleStyles } from "@mishieck/ink-titled-box";
@@ -148,7 +148,7 @@ const Message: React.FC<MessageProps> = React.memo(({ role, parts }) => {
     );
   }, []);
 
-  const renderParts = useCallback(() => {
+  const content = useMemo(() => {
     return parts.map((part, index) => {
       if (part.type === 'text') {
         return (
@@ -182,7 +182,7 @@ const Message: React.FC<MessageProps> = React.memo(({ role, parts }) => {
       titleStyles={titleStyles.rectangle}
       padding={1}
     >
-      {renderParts()}
+      {content}
     </TitledBox>
   );
 });

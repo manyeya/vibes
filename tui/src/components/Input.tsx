@@ -1,6 +1,7 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
 import TextInput from 'ink-text-input';
+import { useInputHistory } from '../hooks/useInputHistory';
 
 interface InputProps {
   value: string;
@@ -12,6 +13,20 @@ interface InputProps {
 
 const Input: React.FC<InputProps> = React.memo(({ value, onChange, onSubmit, placeholder = 'What is the vibes?', disabled = false }) => {
   const { exit } = useApp();
+  const { navigateUp, navigateDown, resetNavigation, addToHistory } = useInputHistory();
+  const [isNavigating, setIsNavigating] = useState(false);
+
+  useEffect(() => {
+    if (!isNavigating) {
+      resetNavigation();
+    }
+  }, [value, isNavigating, resetNavigation]);
+
+  const handleSubmit = useCallback(() => {
+    if (value.trim()) {
+      onSubmit();
+    }
+  }, [value, onSubmit]);
 
   const handleInput = useCallback(async (input: string, key: any) => {
     if (disabled) return;
@@ -21,14 +36,26 @@ const Input: React.FC<InputProps> = React.memo(({ value, onChange, onSubmit, pla
       return;
     }
 
-    if (key.return) {
-      if (value.trim()) {
-        onSubmit();
-      }
-
+    if (key.upArrow) {
+      setIsNavigating(true);
+      const previousInput = navigateUp(value);
+      onChange(previousInput);
+      return;
     }
 
-  }, [disabled, exit, value, onSubmit]);
+    if (key.downArrow) {
+      setIsNavigating(true);
+      const nextInput = navigateDown(value);
+      onChange(nextInput);
+      return;
+    }
+
+    setIsNavigating(false);
+
+    if (key.return && value.trim()) {
+      handleSubmit();
+    }
+  }, [disabled, exit, navigateUp, navigateDown, onChange, handleSubmit]);
 
   useInput(handleInput);
 
@@ -48,7 +75,6 @@ const Input: React.FC<InputProps> = React.memo(({ value, onChange, onSubmit, pla
       <TextInput
         value={value}
         onChange={onChange}
-        onSubmit={onSubmit}
         placeholder={placeholder}
         focus={!disabled}
       />

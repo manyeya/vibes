@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Box, Text } from 'ink';
 import Gradient from 'ink-gradient';
 import BigText from 'ink-big-text';
 
-const Header: React.FC = () => {
+const Header = memo(() => {
   return (
     <Box flexDirection="column" paddingX={0} marginTop={1} marginBottom={1}>
       <Box>
@@ -14,6 +14,8 @@ const Header: React.FC = () => {
       <Text color="gray"> AI Coding Assistant</Text>
     </Box>
   );
-};
+});
+
+Header.displayName = 'Header';
 
 export default Header;

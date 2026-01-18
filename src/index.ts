@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger as honoLogger } from "hono/logger";
 import agentRouter from "./routers/agent";
+import viperRouter from "./routers/viper";
 import 'dotenv/config';
 import { logger } from "./logger";
 
@@ -58,6 +59,7 @@ app.get('/api/', (c) => {
 });
 
 app.route('/api', agentRouter);
+app.route('/api', viperRouter);
 
 Bun.serve({
   fetch: app.fetch,

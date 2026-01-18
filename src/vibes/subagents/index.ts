@@ -5,6 +5,7 @@ import { frontendUiUxEngineer } from "./frontend-ui-ux-engineer";
 import { documentWriter } from "./document-writer";
 import { multimodalLooker } from "./multimodal-looker";
 
+
 export const vibesSubagents = [
   oracle,
   librarian,
@@ -12,4 +13,5 @@ export const vibesSubagents = [
   frontendUiUxEngineer,
   documentWriter,
   multimodalLooker,
+
 ];
