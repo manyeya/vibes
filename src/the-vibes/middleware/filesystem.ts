@@ -27,41 +27,6 @@ export default class FilesystemMiddleware implements Middleware {
 
     get tools() {
         return {
-            filesystem: tool({
-                description: `Execute shell commands directly on the host system.
-All commands run from the workspace root: ${this.baseDir}
-
-Common operations:
-  ls -la              # List files with details
-  find . -name '*.ts' # Find files by pattern
-  grep -r 'pattern' . # Search file contents
-
-Use this for advanced exploration, searching, and managing your work.`,
-                inputSchema: z.object({
-                    command: z.string().describe('The shell command to execute'),
-                }),
-                execute: async ({ command }) => {
-                    this.writer?.write({
-                        type: 'data-status',
-                        data: { message: `Running command: ${command}...` },
-                    });
-
-                    try {
-                        const result = await $`${{ raw: command }}`.cwd(this.baseDir).quiet();
-                        return {
-                            stdout: result.stdout.toString(),
-                            stderr: result.stderr.toString(),
-                            exitCode: result.exitCode,
-                        };
-                    } catch (error: any) {
-                        return {
-                            stdout: error.stdout?.toString() || '',
-                            stderr: error.stderr?.toString() || error.message,
-                            exitCode: error.exitCode ?? 1,
-                        };
-                    }
-                },
-            }),
 
             readFile: tool({
                 description: 'Read the contents of a file from the workspace.',
@@ -129,7 +94,6 @@ Use this for advanced exploration, searching, and managing your work.`,
 ## Workspace & Filesystem
 You have direct access to your designated workspace via FilesystemMiddleware.
 - Your workspace root is: ${this.baseDir}
-- Use filesystem() for advanced shell commands (ls, grep, find, etc.) inside the workspace.
 - Use readFile() and writeFile() to manage files in your workspace.
 - Use list_files() to explore your workspace structure.
 - **Sub-agent results** are saved to \`subagent_results/\` within your workspace. Always read them to understand sub-agent work.

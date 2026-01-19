@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { logger as honoLogger } from "hono/logger";
 import agentRouter from "./routers/agent";
 import viperRouter from "./routers/viper";
+import mimoCodeRouter from "./routers/mimo-code";
 import 'dotenv/config';
 import { logger } from "./logger";
 
@@ -60,6 +61,7 @@ app.get('/api/', (c) => {
 
 app.route('/api', agentRouter);
 app.route('/api', viperRouter);
+app.route('/api', mimoCodeRouter);
 
 Bun.serve({
   fetch: app.fetch,

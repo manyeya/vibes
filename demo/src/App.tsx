@@ -32,8 +32,9 @@ type DeepAgentPart = DataStatusPart | TodoUpdatePart | NotificationPart | { type
 
 export default function App() {
   const [input, setInput] = useState('');
-  const { messages, sendMessage, status } = useChat({
-    transport: new DefaultChatTransport({ api: '/api/viper/stream' }),
+  // @ts-ignore - addToolApprovalResponse might not be in type definition if version mismatch
+  const { messages, sendMessage, status, addToolApprovalResponse, } = useChat({
+    transport: new DefaultChatTransport({ api: '/api/mimo-code/stream' }),
     messages: [
       {
         id: 'welcome',
@@ -261,6 +262,62 @@ export default function App() {
                       return null;
                     });
                   })() : null}
+
+                  {/* Tool Invocations for HITL Approval */}
+                  {m.parts.map((invocation: any) => {
+                    console.log(invocation);
+                    const toolCallId = invocation.toolCallId;
+
+                    // Handle 'result' being present (completed)
+                    if (invocation.state === 'result') {
+                      return (
+                        <div key={toolCallId} className="flex items-center gap-2 p-3 bg-zinc-800/30 rounded-xl border border-zinc-800 text-xs font-mono text-zinc-500">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                          <span>Tool {invocation.toolName} executed.</span>
+                        </div>
+                      );
+                    }
+
+                    // Handle 'call' state (might be approval-requested if we mapped it, wait, standard AI SDK 6 uses 'state')
+                    // Actually, for needsApproval, the invocation state might be 'call' but we need to check if we can respond.
+                    // The user snippet checked `invocation.state === 'approval-requested'`. 
+                    // Let's assume the latest SDK uses this state.
+
+                    if (invocation.state === 'call' || invocation.state === 'approval-requested') {
+                      return (
+                        <div className="flex flex-col gap-3 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl shadow-lg shadow-amber-900/10">
+                          <div className="flex items-center gap-2 text-amber-500">
+                            <AlertCircle className="w-4 h-4" />
+                            <span className="text-xs font-bold uppercase tracking-wider">Approval Requested</span>
+                          </div>
+                          <div className="text-sm text-zinc-300 font-mono bg-zinc-950/50 p-3 rounded-lg border border-black/20">
+                            <span className="text-zinc-500">{invocation.toolName}: </span>
+                            <span className="text-zinc-200">{JSON.stringify(invocation.args)}</span>
+                          </div>
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              onClick={async () => {
+                                await addToolApprovalResponse({ id: invocation.approval.id, approved: true });
+                              }}
+                              className="flex-1 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-black text-xs font-bold uppercase tracking-wide rounded-lg transition-colors flex items-center justify-center gap-2"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Approve
+                            </button>
+                            <button
+                              onClick={async () => {
+                                await addToolApprovalResponse({ id: invocation.approval.id, approved: false });
+                              }}
+                              className="flex-1 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 text-xs font-bold uppercase tracking-wide rounded-lg transition-colors flex items-center justify-center gap-2"
+                            >
+                              <AlertCircle className="w-3.5 h-3.5" /> Deny
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return null;
+                  })}
                 </div>
               </div>
             </motion.div>

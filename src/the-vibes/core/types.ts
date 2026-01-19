@@ -130,4 +130,6 @@ export interface VibeAgentConfig {
     enableTelemetry?: boolean;
     /** The base directory for filesystem operations (e.g., 'workspace') */
     workspaceDir?: string;
+    /** List of tool names that require explicit user approval before execution */
+    toolsRequiringApproval?: string[] | Record<string, boolean | ((args: any) => boolean | Promise<boolean>)>;
 }

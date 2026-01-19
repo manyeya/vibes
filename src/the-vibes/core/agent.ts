@@ -13,6 +13,7 @@ import {
     AgentUIMessage,
     VibeAgentConfig,
     Middleware,
+    
 } from './types';
 import StateBackend from '../backend/statebackend';
 
@@ -32,6 +33,7 @@ export class VibeAgent {
     protected maxRetries: number;
     protected maxContextMessages: number;
     protected customTools: Record<string, any>;
+    protected toolsRequiringApproval: string[] | Record<string, boolean | ((args: any) => boolean | Promise<boolean>)> = [];
     protected onStepFinish?: (step: { stepNumber: number; stepType: string; text?: string }) => void;
 
     constructor(config: VibeAgentConfig, backend?: StateBackend) {
@@ -45,6 +47,7 @@ export class VibeAgent {
         this.maxRetries = config.maxRetries ?? 2;
         this.maxContextMessages = config.maxContextMessages ?? 30;
         this.customTools = config.tools || {};
+        this.toolsRequiringApproval = config.toolsRequiringApproval || [];
         this.onStepFinish = config.onStepFinish;
     }
 
@@ -99,6 +102,31 @@ export class VibeAgent {
 
         // Merge custom tools from config (these take precedence)
         Object.assign(allTools, this.customTools);
+
+        // Apply approval requirement to specified tools
+        const approvalConfig = this.toolsRequiringApproval;
+
+        if (Array.isArray(approvalConfig)) {
+            // Simple string array format: unconditional approval
+            for (const toolName of approvalConfig) {
+                if (allTools[toolName]) {
+                    allTools[toolName] = {
+                        ...allTools[toolName],
+                        needsApproval: true,
+                    };
+                }
+            }
+        } else if (approvalConfig && typeof approvalConfig === 'object') {
+            // Record format: supports conditional functions or booleans
+            for (const [toolName, policy] of Object.entries(approvalConfig)) {
+                if (allTools[toolName]) {
+                    allTools[toolName] = {
+                        ...allTools[toolName],
+                        needsApproval: policy,
+                    };
+                }
+            }
+        }
 
         return allTools;
     }
@@ -184,7 +212,8 @@ Merge this with the "Existing Summary" strictly.`,
                 isEnabled: true,
                 functionId: 'vibe-agent-invoke',
             } : undefined,
-            onStepFinish: this.onStepFinish ? async ({ text, finishReason }) => {
+            onStepFinish: this.onStepFinish ? async ({ text, finishReason, reasoning }) => {
+                console.log(reasoning);
                 this.onStepFinish?.({
                     stepNumber: currentState.messages.length,
                     stepType: finishReason,
@@ -261,12 +290,12 @@ Merge this with the "Existing Summary" strictly.`,
                 isEnabled: true,
                 functionId: 'vibe-agent-stream',
             } : undefined,
-            onStepFinish: async ({ text, finishReason, toolCalls }) => {
+            onStepFinish: async ({ text, finishReason, content }) => {
                 currentStepCount++;
                 writer?.write({
                     type: 'data-status',
                     data: {
-                        message: `Step: ${finishReason}, ${JSON.stringify(toolCalls)}`,
+                        message: `Step: ${finishReason}: ${JSON.stringify(content)}`,
                         step: currentStepCount,
                     },
                 });

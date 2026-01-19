@@ -6,9 +6,11 @@ import {
     SkillsMiddleware,
     TodoListMiddleware,
     FilesystemMiddleware,
+    BashMiddleware,
     SubAgentMiddleware,
 } from './middleware';
 import MemoryMiddleware from './middleware/memory';
+import SqliteBackend from './backend/sqlitebackend';
 
 import {
     AgentState,
@@ -30,7 +32,11 @@ interface DeepAgentConfig extends Partial<Omit<VibeAgentConfig, 'instructions'>>
     /** If true, standard middleware (Todos, Skills, Filesystem) will not be loaded */
     skipDefaultMiddleware?: boolean;
     /** Optional shared state backend for state inheritance (used in sub-agents) */
-    backend?: StateBackend;
+    backend?: any;
+    /** Unique session identifier for persistent SQLite storage */
+    sessionId?: string;
+    /** Path to the SQLite database file (default: workspace/vibes.db) */
+    dbPath?: string;
 }
 
 /**
@@ -62,17 +68,22 @@ You have access to planning tools (todos), modular skills, memory systems, the R
 - Search for available skills using \`list_skills()\` and load relevant ones with \`load_skill()\`.
 - Move large data, code blocks, or research reports to files in the project root or relevant subdirectories.
 - Sub-agent results are saved to \`subagent_results/\`. If you need to see what a sub-agent did, use \`readFile()\` on the path it provides.
-- Use \`filesystem()\` for advanced filesystem operations (grep, find, etc.).
+- Use \`bash()\` for advanced shell operations (grep, find, etc.).
 - Use \`list_files()\` to understand the project structure when navigating new areas.
 - Use \`readFile()\` and \`writeFile()\` for direct file management.
 
 Think step by step and tackle tasks systematically.`;
 
+        const backend = config.backend || new SqliteBackend(
+            config.dbPath || 'workspace/vibes.db',
+            config.sessionId || 'default'
+        );
+
         super({
             model: config.model || openai('gpt-4o'),
             instructions: baseInstructions,
             ...config,
-        }, config.backend);
+        }, backend);
 
         // Initialize built-in middleware
         this.initializeMiddleware(config);
@@ -86,6 +97,7 @@ Think step by step and tackle tasks systematically.`;
             this.middleware.push(new TodoListMiddleware(this.backend));
             this.middleware.push(new SkillsMiddleware());
             this.middleware.push(new FilesystemMiddleware(workspaceDir));
+            this.middleware.push(new BashMiddleware(workspaceDir));
             this.middleware.push(new MemoryMiddleware(this.backend));
         }
 
@@ -96,6 +108,7 @@ Think step by step and tackle tasks systematically.`;
                 subAgentMap.set(agent.name, agent);
             });
         }
+        
         this.middleware.push(new SubAgentMiddleware(
             subAgentMap,
             this.model,

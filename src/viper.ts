@@ -27,7 +27,7 @@ const openrouter = createOpenRouter({
 });
 
 export const viper = createDeepAgent({
-    model: openrouter('mistralai/devstral-2512:free'),
+    model: openrouter('xiaomi/mimo-v2-flash:free'),
     systemPrompt: viperInstructions,
     maxSteps: 50, // Increased for longer writing sessions
     subAgents: [
