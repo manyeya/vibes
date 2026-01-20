@@ -13,8 +13,13 @@ describe("DeepAgent AI SDK v6 Enhancements", () => {
 
     test("should have all default middleware loaded", () => {
         const agent = new DeepAgent();
-        const state = agent.getState();
-        // Default middleware should be present (checked via tools presence in invoke if we were to call it)
         expect(agent).toBeDefined();
+    });
+
+    test("should comply with AI SDK Agent interface", () => {
+        const agent = new DeepAgent();
+        expect(agent.version).toBe('agent-v1');
+        expect(agent.generate).toBeDefined();
+        expect(agent.stream).toBeDefined();
     });
 });

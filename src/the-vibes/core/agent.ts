@@ -8,6 +8,7 @@ import {
     type UIMessageStreamWriter,
     stepCountIs,
     Agent,
+    ToolLoopAgent,
 } from 'ai';
 import {
     AgentState,
@@ -20,9 +21,10 @@ import StateBackend from '../backend/statebackend';
 
 /**
  * VibeAgent is the core engine for autonomous multi-step reasoning.
- * It handles middleware hooks, prompt injection, and context compression.
+ * It extends the AI SDK v6 ToolLoopAgent to provide native agent support
+ * while maintaining middleware hooks and context compression.
  */
-export class VibeAgent {
+export class VibeAgent extends ToolLoopAgent {
     protected backend: StateBackend;
     protected middleware: Middleware[] = [];
     protected model: LanguageModel;
@@ -36,9 +38,58 @@ export class VibeAgent {
     protected customTools: Record<string, any>;
     protected toolsRequiringApproval: string[] | Record<string, boolean | ((args: any) => boolean | Promise<boolean>)> = [];
     protected allowedTools?: string[];
-    protected onStepFinish?: (step: { stepNumber: number; stepType: string; text?: string }) => void;
+    protected onStepFinishCallback?: (step: { stepNumber: number; stepType: string; text?: string }) => void;
 
     constructor(config: VibeAgentConfig, backend?: StateBackend) {
+        super({
+            model: config.model,
+            instructions: config.instructions,
+            stopWhen: stepCountIs(config.maxSteps || 20),
+            experimental_telemetry: config.enableTelemetry ? {
+                isEnabled: true,
+                functionId: 'vibe-agent'
+            } : undefined,
+            onStepFinish: async (step) => {
+                const stepData = {
+                    stepNumber: this.backend.getState().messages.length,
+                    stepType: step.finishReason,
+                    text: step.text,
+                    content: step.content,
+                };
+                this.onStepFinishCallback?.(stepData);
+                for (const mw of this.middleware) {
+                    mw.onStepFinish?.(stepData);
+                }
+            },
+       
+            prepareCall: async (settings) => {
+                const state = this.backend.getState();
+                const processedMessages = await this.pruneMessages(settings.messages || []);
+
+                let prompt = this.baseInstructions;
+                for (const mw of this.middleware) {
+                    if (mw.modifySystemPrompt) {
+                        prompt = mw.modifySystemPrompt(prompt);
+                    }
+                }
+                if (this.customSystemPrompt) {
+                    prompt += `\n\n## Custom Instructions\n${this.customSystemPrompt} `;
+                }
+                if (state.summary) {
+                    prompt += `\n\n## Previous Context Summary\n${state.summary}`;
+                }
+
+                const tools = await this.getAllTools(this.allowedTools);
+
+                return {
+                    ...settings,
+                    messages: processedMessages,
+                    instructions: prompt,
+                    tools: tools as any,
+                };
+            }
+        });
+
         this.backend = backend || new StateBackend();
         this.model = config.model;
         this.baseInstructions = config.instructions;
@@ -51,7 +102,7 @@ export class VibeAgent {
         this.customTools = config.tools || {};
         this.toolsRequiringApproval = config.toolsRequiringApproval || [];
         this.allowedTools = config.allowedTools;
-        this.onStepFinish = config.onStepFinish;
+        this.onStepFinishCallback = config.onStepFinish;
 
         if (config.middleware) {
             this.addMiddleware(config.middleware);
@@ -64,30 +115,6 @@ export class VibeAgent {
         } else {
             this.middleware.push(middleware);
         }
-    }
-
-    protected getSystemPrompt(): string {
-        let prompt = this.baseInstructions;
-
-        // Apply middleware modifications
-        for (const mw of this.middleware) {
-            if (mw.modifySystemPrompt) {
-                prompt = mw.modifySystemPrompt(prompt);
-            }
-        }
-
-        // Append custom instructions
-        if (this.customSystemPrompt) {
-            prompt += `\n\n## Custom Instructions\n${this.customSystemPrompt} `;
-        }
-
-        // Inject Context Summary if available
-        const state = this.backend.getState();
-        if (state.summary) {
-            prompt += `\n\n## Previous Context Summary\n${state.summary}`;
-        }
-
-        return prompt;
     }
 
     protected toolCache: Record<string, any> | null = null;
@@ -162,56 +189,50 @@ export class VibeAgent {
         return resolvedTools;
     }
 
-    protected createPrepareStep() {
+    protected async pruneMessages(messages: ModelMessage[]): Promise<ModelMessage[]> {
         const maxMessages = this.maxContextMessages;
+        if (messages.length <= maxMessages) {
+            return messages;
+        }
 
-        return async ({ messages }: { messages: ModelMessage[] }) => {
-            if (messages.length <= maxMessages) {
-                return {};
-            }
+        const keepCount = Math.floor(maxMessages / 2);
+        const messagesToKeep = messages.slice(-keepCount);
 
-            const keepCount = Math.floor(maxMessages / 2);
-            const messagesToKeep = messages.slice(-keepCount);
+        while (messagesToKeep.length > 0 && messagesToKeep[0].role === 'tool') {
+            messagesToKeep.shift();
+        }
 
-            while (messagesToKeep.length > 0 && messagesToKeep[0].role === 'tool') {
-                messagesToKeep.shift();
-            }
+        const messagesToSummarize = messages.slice(0, messages.length - messagesToKeep.length);
+        if (messagesToSummarize.length === 0) {
+            return messagesToKeep;
+        }
 
-            const messagesToSummarize = messages.slice(0, messages.length - messagesToKeep.length);
-
-            if (messagesToSummarize.length === 0) {
-                return { messages: messagesToKeep };
-            }
-
-            try {
-                const currentSummary = this.backend.getState().summary || 'No previous summary.';
-                const { text: newSummary } = await generateText({
-                    model: this.model,
-                    system: `You are a helpful assistant. Summarize the following conversation history into a concise, detailed narrative. 
+        try {
+            const currentSummary = this.backend.getState().summary || 'No previous summary.';
+            const { text: newSummary } = await generateText({
+                model: this.model,
+                system: `You are a helpful assistant. Summarize the following conversation history into a concise, detailed narrative. 
 Retain key decisions, user requirements, current potential plan status, and important context.
 Merge this with the "Existing Summary" strictly.`,
-                    messages: [
-                        {
-                            role: 'user',
-                            content: `Existing Summary:\n${currentSummary}\n\nNew Conversation to Summarize:\n${JSON.stringify(messagesToSummarize)}`
-                        }
-                    ],
-                });
+                messages: [
+                    {
+                        role: 'user',
+                        content: `Existing Summary:\n${currentSummary}\n\nNew Conversation to Summarize:\n${JSON.stringify(messagesToSummarize)}`
+                    }
+                ],
+            });
 
-                this.backend.setState({ summary: newSummary });
+            this.backend.setState({ summary: newSummary });
 
-                return {
-                    messages: [
-                        { role: 'system', content: `## Previous Context Summary\n${newSummary}` },
-                        ...messagesToKeep
-                    ] as ModelMessage[]
-                };
+            return [
+                { role: 'system', content: `## Previous Context Summary\n${newSummary}` },
+                ...messagesToKeep
+            ] as ModelMessage[];
 
-            } catch (error) {
-                console.error('[VibeAgent] Summarization failed:', error);
-                return { messages: messagesToKeep };
-            }
-        };
+        } catch (error) {
+            console.error('[VibeAgent] Summarization failed:', error);
+            return messagesToKeep;
+        }
     }
 
     async invoke(input: { messages?: UIMessage[] | ModelMessage[] } & Partial<Omit<AgentState, 'messages'>> = {}): Promise<any> {
@@ -223,51 +244,27 @@ Merge this with the "Existing Summary" strictly.`,
         this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
         const currentState = this.backend.getState();
 
-        const tools = await this.getAllTools(this.allowedTools);
-
         for (const mw of this.middleware) {
             if (mw.beforeModel) {
                 await mw.beforeModel(currentState);
             }
         }
 
-        const result = await generateText({
-            model: this.model,
-            system: this.getSystemPrompt(),
+        const result = await super.generate({
             messages: currentState.messages,
-            tools,
-            stopWhen: stepCountIs(this.maxSteps),
-            maxRetries: this.maxRetries,
-            temperature: this.temperature,
-            prepareStep: this.createPrepareStep(),
-            onStepFinish: async (step) => {
-                const stepData = {
-                    stepNumber: currentState.messages.length,
-                    stepType: step.finishReason,
-                    text: step.text,
-                    content: step.content,
-                };
-
-                // Trigger callback from config
-                this.onStepFinish?.(stepData);
-
-                // Trigger middleware hooks
-                for (const mw of this.middleware) {
-                    mw.onStepFinish?.(stepData);
-                }
-            },
         });
 
         const toolErrors = result.steps?.flatMap(step =>
             step.content?.filter((part: any) => part.type === 'tool-error') ?? []
         ) ?? [];
 
-        currentState.messages.push(...result.response.messages);
-        this.backend.setState({ messages: currentState.messages });
+        // result.response.messages are ONLY the new ones
+        const updatedMessages = [...currentState.messages, ...result.response.messages];
+        this.backend.setState({ messages: updatedMessages });
 
         for (const mw of this.middleware) {
             if (mw.afterModel) {
-                await mw.afterModel(currentState, result);
+                await mw.afterModel(this.backend.getState(), result);
             }
         }
 
@@ -294,7 +291,6 @@ Merge this with the "Existing Summary" strictly.`,
         const stateToMerge = { ...state, messages: modelMessages };
         this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
         let currentState = this.backend.getState();
-        const tools = await this.getAllTools(this.allowedTools);
 
         if (writer) {
             for (const mw of this.middleware) {
@@ -310,60 +306,20 @@ Merge this with the "Existing Summary" strictly.`,
             }
         }
 
-        let currentStepCount = currentState.messages.length;
-
-        const result = streamText({
-            model: this.model,
-            system: this.getSystemPrompt(),
+        const result = await super.stream({
             messages: currentState.messages,
-            tools,
-            stopWhen: stepCountIs(this.maxSteps),
             abortSignal,
-            maxRetries: this.maxRetries,
-            temperature: this.temperature,
-            prepareStep: this.createPrepareStep(),
-            experimental_telemetry: this.enableTelemetry ? {
-                isEnabled: true,
-                functionId: 'vibe-agent-stream',
-            } : undefined,
-            onStepFinish: async (step) => {
-                currentStepCount++;
-                const stepData = {
-                    stepNumber: currentStepCount,
-                    stepType: step.finishReason,
-                    text: step.text,
-                    content: step.content,
-                };
+        });
 
-                writer?.write({
-                    type: 'data-status',
-                    data: {
-                        message: `Step: ${step.finishReason}: ${JSON.stringify(step.content)}`,
-                        step: currentStepCount,
-                    },
-                });
+        result.response.then(async (finishResult) => {
+            const prevMessages = this.backend.getState().messages || [];
+            this.backend.setState({ messages: [...prevMessages, ...finishResult.messages] });
 
-                // Trigger callback from config
-                this.onStepFinish?.(stepData);
-
-                // Trigger middleware hooks
-                for (const mw of this.middleware) {
-                    mw.onStepFinish?.(stepData);
+            for (const mw of this.middleware) {
+                if (mw.onStreamFinish) {
+                    await mw.onStreamFinish(finishResult);
                 }
-            },
-            onFinish: async (finishResult) => {
-                // DON'T clobber history! We should at least keep the original messages if we are in a shared state,
-                // but usually the client manages history. For internal state consistency:
-                const prevMessages = this.backend.getState().messages || [];
-                // finishResult.response.messages are only the NEW ones generated in this call
-                this.backend.setState({ messages: [...prevMessages, ...finishResult.response.messages] });
-
-                for (const mw of this.middleware) {
-                    if (mw.onStreamFinish) {
-                        await mw.onStreamFinish(finishResult);
-                    }
-                }
-            },
+            }
         });
 
         return result;
@@ -384,7 +340,6 @@ Merge this with the "Existing Summary" strictly.`,
             modelMessages = messages as ModelMessage[];
         }
 
-        // Return the messages as is - AI SDK v6 is better at handling history validation than our heuristic
         if (process.env.DEBUG_VIBES) {
             console.log('[VibeAgent] Converted Messages:', JSON.stringify(modelMessages, null, 2));
         }
