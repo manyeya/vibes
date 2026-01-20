@@ -7,13 +7,14 @@ import {
     type UIMessage,
     type UIMessageStreamWriter,
     stepCountIs,
+    Agent,
 } from 'ai';
 import {
     AgentState,
     AgentUIMessage,
     VibeAgentConfig,
     Middleware,
-    
+
 } from './types';
 import StateBackend from '../backend/statebackend';
 
@@ -34,6 +35,7 @@ export class VibeAgent {
     protected maxContextMessages: number;
     protected customTools: Record<string, any>;
     protected toolsRequiringApproval: string[] | Record<string, boolean | ((args: any) => boolean | Promise<boolean>)> = [];
+    protected allowedTools?: string[];
     protected onStepFinish?: (step: { stepNumber: number; stepType: string; text?: string }) => void;
 
     constructor(config: VibeAgentConfig, backend?: StateBackend) {
@@ -48,7 +50,12 @@ export class VibeAgent {
         this.maxContextMessages = config.maxContextMessages ?? 30;
         this.customTools = config.tools || {};
         this.toolsRequiringApproval = config.toolsRequiringApproval || [];
+        this.allowedTools = config.allowedTools;
         this.onStepFinish = config.onStepFinish;
+
+        if (config.middleware) {
+            this.addMiddleware(config.middleware);
+        }
     }
 
     addMiddleware(middleware: Middleware | Middleware[]) {
@@ -83,10 +90,16 @@ export class VibeAgent {
         return prompt;
     }
 
-    protected async getAllTools(): Promise<Record<string, any>> {
+    protected toolCache: Record<string, any> | null = null;
+
+    protected async getAllTools(allowedTools?: string[]): Promise<Record<string, any>> {
+        if (this.toolCache && !allowedTools) {
+            return this.toolCache;
+        }
+
         const allTools: Record<string, any> = {};
 
-        // Wait for all middleware to be ready if they have a waitReady method
+        // Wait for all middleware to be ready
         for (const mw of this.middleware) {
             if (mw.waitReady) {
                 await mw.waitReady();
@@ -100,35 +113,53 @@ export class VibeAgent {
             }
         }
 
-        // Merge custom tools from config (these take precedence)
+        // Merge custom tools from config
         Object.assign(allTools, this.customTools);
 
-        // Apply approval requirement to specified tools
         const approvalConfig = this.toolsRequiringApproval;
+        const resolvedTools: Record<string, any> = {};
 
-        if (Array.isArray(approvalConfig)) {
-            // Simple string array format: unconditional approval
-            for (const toolName of approvalConfig) {
-                if (allTools[toolName]) {
-                    allTools[toolName] = {
-                        ...allTools[toolName],
-                        needsApproval: true,
-                    };
+        for (const [toolName, toolDef] of Object.entries(allTools)) {
+            const originalExecute = toolDef.execute;
+
+            // Determine if this tool needs approval
+            let needsApproval = false;
+            if (Array.isArray(approvalConfig)) {
+                needsApproval = approvalConfig.includes(toolName);
+            } else if (approvalConfig && typeof approvalConfig === 'object') {
+                const policy = (approvalConfig as Record<string, any>)[toolName];
+                if (policy !== undefined) {
+                    needsApproval = typeof policy === 'boolean' ? policy : true; // Keep it simple for now
                 }
             }
-        } else if (approvalConfig && typeof approvalConfig === 'object') {
-            // Record format: supports conditional functions or booleans
-            for (const [toolName, policy] of Object.entries(approvalConfig)) {
-                if (allTools[toolName]) {
-                    allTools[toolName] = {
-                        ...allTools[toolName],
-                        needsApproval: policy,
-                    };
-                }
-            }
+
+            // Create a stable wrapped tool
+            resolvedTools[toolName] = {
+                ...toolDef,
+                needsApproval: needsApproval || toolDef.needsApproval,
+                execute: originalExecute ? async (args: any, context: any) => {
+                    // Trigger lifecycle hooks
+                    for (const mw of this.middleware) {
+                        mw.onInputAvailable?.(args);
+                    }
+                    return originalExecute(args, context);
+                } : undefined
+            };
         }
 
-        return allTools;
+        // Apply filtering if specified
+        if (allowedTools) {
+            const filtered: Record<string, any> = {};
+            for (const name of allowedTools) {
+                if (resolvedTools[name]) {
+                    filtered[name] = resolvedTools[name];
+                }
+            }
+            return filtered;
+        }
+
+        this.toolCache = resolvedTools;
+        return resolvedTools;
     }
 
     protected createPrepareStep() {
@@ -191,7 +222,8 @@ Merge this with the "Existing Summary" strictly.`,
         const stateToMerge = { ...input, messages: modelMessages };
         this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
         const currentState = this.backend.getState();
-        const tools = await this.getAllTools();
+
+        const tools = await this.getAllTools(this.allowedTools);
 
         for (const mw of this.middleware) {
             if (mw.beforeModel) {
@@ -208,18 +240,22 @@ Merge this with the "Existing Summary" strictly.`,
             maxRetries: this.maxRetries,
             temperature: this.temperature,
             prepareStep: this.createPrepareStep(),
-            experimental_telemetry: this.enableTelemetry ? {
-                isEnabled: true,
-                functionId: 'vibe-agent-invoke',
-            } : undefined,
-            onStepFinish: this.onStepFinish ? async ({ text, finishReason, reasoning }) => {
-                console.log(reasoning);
-                this.onStepFinish?.({
+            onStepFinish: async (step) => {
+                const stepData = {
                     stepNumber: currentState.messages.length,
-                    stepType: finishReason,
-                    text,
-                });
-            } : undefined,
+                    stepType: step.finishReason,
+                    text: step.text,
+                    content: step.content,
+                };
+
+                // Trigger callback from config
+                this.onStepFinish?.(stepData);
+
+                // Trigger middleware hooks
+                for (const mw of this.middleware) {
+                    mw.onStepFinish?.(stepData);
+                }
+            },
         });
 
         const toolErrors = result.steps?.flatMap(step =>
@@ -258,7 +294,7 @@ Merge this with the "Existing Summary" strictly.`,
         const stateToMerge = { ...state, messages: modelMessages };
         this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
         let currentState = this.backend.getState();
-        const tools = await this.getAllTools();
+        const tools = await this.getAllTools(this.allowedTools);
 
         if (writer) {
             for (const mw of this.middleware) {
@@ -290,23 +326,38 @@ Merge this with the "Existing Summary" strictly.`,
                 isEnabled: true,
                 functionId: 'vibe-agent-stream',
             } : undefined,
-            onStepFinish: async ({ text, finishReason, content }) => {
+            onStepFinish: async (step) => {
                 currentStepCount++;
+                const stepData = {
+                    stepNumber: currentStepCount,
+                    stepType: step.finishReason,
+                    text: step.text,
+                    content: step.content,
+                };
+
                 writer?.write({
                     type: 'data-status',
                     data: {
-                        message: `Step: ${finishReason}: ${JSON.stringify(content)}`,
+                        message: `Step: ${step.finishReason}: ${JSON.stringify(step.content)}`,
                         step: currentStepCount,
                     },
                 });
-                this.onStepFinish?.({
-                    stepNumber: currentStepCount,
-                    stepType: finishReason,
-                    text,
-                });
+
+                // Trigger callback from config
+                this.onStepFinish?.(stepData);
+
+                // Trigger middleware hooks
+                for (const mw of this.middleware) {
+                    mw.onStepFinish?.(stepData);
+                }
             },
             onFinish: async (finishResult) => {
-                this.backend.setState({ messages: finishResult.response.messages });
+                // DON'T clobber history! We should at least keep the original messages if we are in a shared state,
+                // but usually the client manages history. For internal state consistency:
+                const prevMessages = this.backend.getState().messages || [];
+                // finishResult.response.messages are only the NEW ones generated in this call
+                this.backend.setState({ messages: [...prevMessages, ...finishResult.response.messages] });
+
                 for (const mw of this.middleware) {
                     if (mw.onStreamFinish) {
                         await mw.onStreamFinish(finishResult);
@@ -325,25 +376,19 @@ Merge this with the "Existing Summary" strictly.`,
         const firstMsg = messages[0] as any;
 
         if (firstMsg.parts !== undefined) {
-            modelMessages = await convertToModelMessages(messages as UIMessage[]);
+            const tools = await this.getAllTools();
+            modelMessages = await convertToModelMessages(messages as UIMessage[], {
+                tools,
+            });
         } else {
             modelMessages = messages as ModelMessage[];
         }
 
-        const sanitized: ModelMessage[] = [];
-
-        for (let i = 0; i < modelMessages.length; i++) {
-            const msg = modelMessages[i];
-            if (msg.role === 'tool') {
-                const prev = sanitized[sanitized.length - 1];
-                if (!prev || (prev.role !== 'assistant' && prev.role !== 'tool')) {
-                    continue;
-                }
-            }
-            sanitized.push(msg);
+        // Return the messages as is - AI SDK v6 is better at handling history validation than our heuristic
+        if (process.env.DEBUG_VIBES) {
+            console.log('[VibeAgent] Converted Messages:', JSON.stringify(modelMessages, null, 2));
         }
-
-        return sanitized;
+        return modelMessages;
     }
 
     getState(): AgentState {

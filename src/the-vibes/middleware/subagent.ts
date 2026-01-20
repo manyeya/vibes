@@ -1,4 +1,4 @@
-import { type LanguageModel, type UIMessageStreamWriter, type Tool, tool } from "ai";
+import { type LanguageModel, type UIMessageStreamWriter, type Tool, tool, Agent, ToolLoopAgent, stepCountIs } from "ai";
 import { AgentUIMessage, Middleware, SubAgent } from "../core/types";
 import { VibeAgent } from "../core/agent";
 import z from "zod";
@@ -48,44 +48,23 @@ DO NOT use sub-agents for:
                     throw new Error(`Sub-agent not found: ${agent_name}`);
                 }
 
-                // Resolve tools for sub-agent
-                let agentTools: Record<string, any> = {};
-                if (Array.isArray(subAgentDesc.tools)) {
-                    const allTools = this.getGlobalTools();
-                    for (const toolName of subAgentDesc.tools) {
-                        if (allTools[toolName]) {
-                            agentTools[toolName] = allTools[toolName];
-                        }
-                    }
-                } else if (subAgentDesc.tools) {
-                    agentTools = subAgentDesc.tools;
-                }
-
-                const model = subAgentDesc.model || this.baseModel;
-
-                // Instantiate custom VibeAgent instead of standard ToolLoopAgent
-                const agent = new VibeAgent({
-                    model,
-                    instructions: subAgentDesc.systemPrompt,
-                    tools: agentTools,
-                    maxSteps: 10,
-                    workspaceDir: this.workspaceDir,
-                });
-
-                // Add shared middleware (e.g. SkillsMiddleware)
-                const sharedMiddleware = this.getGlobalMiddleware().filter(mw =>
-                    mw.name === 'SkillsMiddleware' ||
-                    mw.name === 'MemoryMiddleware' ||
-                    subAgentDesc.middleware?.some(sm => sm.name === mw.name)
-                );
-                agent.addMiddleware(sharedMiddleware);
-
                 this.writer?.write({
                     type: 'data-status',
-                    data: { message: `Delegating task to ${agent_name}...` },
+                    data: { message: `Delegating task to ${agent_name} via Vibes core...` },
                 });
 
-                // Execute the agent invocation
+                // Create a VibeAgent for the sub-task to support full middleware stack
+                const agent = new VibeAgent({
+                    model: subAgentDesc.model || this.baseModel,
+                    instructions: subAgentDesc.systemPrompt,
+                    // Inherit global middleware if none specified for this sub-agent
+                    middleware: subAgentDesc.middleware || this.getGlobalMiddleware(),
+                    // Pass allowed tool names or custom tool definitions
+                    allowedTools: Array.isArray(subAgentDesc.tools) ? subAgentDesc.tools : undefined,
+                    tools: !Array.isArray(subAgentDesc.tools) ? subAgentDesc.tools as Record<string, any> : undefined,
+                });
+
+                // Execute the agent invocation (manages its own tool loop via generateText)
                 const result = await agent.invoke({
                     messages: [{ role: 'user', content: task }]
                 });
@@ -96,7 +75,7 @@ DO NOT use sub-agents for:
                 const relativePath = `subagent_results/${filename}`;
                 const fullPath = path.resolve(process.cwd(), this.workspaceDir, relativePath);
 
-                // Ensure directory exists using Bun native spawn (avoiding node:fs)
+                // Ensure directory exists
                 await Bun.spawn(["mkdir", "-p", path.resolve(process.cwd(), resultDir)]).exited;
                 await Bun.write(fullPath, result.text);
 
@@ -107,7 +86,7 @@ DO NOT use sub-agents for:
 
                 return {
                     status: "completed",
-                    summary: `Task completed by ${agent_name}. Results saved to file. Read this file if you need the full details.`,
+                    summary: `Task completed by ${agent_name}. Results saved to file.`,
                     savedTo: relativePath,
                 };
             },

@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useChat } from '@ai-sdk/react';
-import { DefaultChatTransport } from 'ai';
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses } from 'ai';
 import {
   Terminal,
   CheckCircle2,
@@ -35,6 +35,7 @@ export default function App() {
   // @ts-ignore - addToolApprovalResponse might not be in type definition if version mismatch
   const { messages, sendMessage, status, addToolApprovalResponse, } = useChat({
     transport: new DefaultChatTransport({ api: '/api/mimo-code/stream' }),
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     messages: [
       {
         id: 'welcome',

@@ -4,6 +4,8 @@ import {
     type UIMessage,
     type Tool,
     type UIMessageStreamWriter,
+    Agent,
+    ToolLoopAgent,
 } from 'ai';
 
 /**
@@ -53,6 +55,12 @@ export interface Middleware {
     beforeModel?: (state: AgentState) => Promise<void>;
     /** Hook executed after the model provides a response */
     afterModel?: (state: AgentState, response: any) => Promise<void>;
+    /** Hook executed when a tool execution starts (AI SDK v6) */
+    onInputStart?: (args: any) => void;
+    /** Hook executed when tool input delta is available (AI SDK v6) */
+    onInputDelta?: (delta: string) => void;
+    /** Hook executed when full tool input is available (AI SDK v6) */
+    onInputAvailable?: (args: any) => void;
     /** Function to modify or extend the system prompt */
     modifySystemPrompt?: (prompt: string) => string;
     /** Optional promise to wait for during initialization (e.g., sandbox startup) */
@@ -61,6 +69,8 @@ export interface Middleware {
     onStreamReady?: (writer: UIMessageStreamWriter<AgentUIMessage>) => void;
     /** Optional hook executed when the stream finishes (successful completion) */
     onStreamFinish?: (result: any) => Promise<void>;
+    /** Optional hook executed after each step in the reasoning loop */
+    onStepFinish?: (step: { stepNumber: number; stepType: string; text?: string; content?: any }) => void;
 }
 
 /**
@@ -132,4 +142,6 @@ export interface VibeAgentConfig {
     workspaceDir?: string;
     /** List of tool names that require explicit user approval before execution */
     toolsRequiringApproval?: string[] | Record<string, boolean | ((args: any) => boolean | Promise<boolean>)>;
+    /** Optional whitelist of tool names allowed for this agent instance */
+    allowedTools?: string[];
 }

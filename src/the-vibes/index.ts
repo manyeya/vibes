@@ -11,6 +11,7 @@ import {
 } from './middleware';
 import MemoryMiddleware from './middleware/memory';
 import SqliteBackend from './backend/sqlitebackend';
+import { McpMiddleware } from './middleware/mcp';
 
 import {
     AgentState,
@@ -108,7 +109,7 @@ Think step by step and tackle tasks systematically.`;
                 subAgentMap.set(agent.name, agent);
             });
         }
-        
+
         this.middleware.push(new SubAgentMiddleware(
             subAgentMap,
             this.model,
