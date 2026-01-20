@@ -20,7 +20,7 @@ app.post('/viper', zValidator('json', viperSchema), async (c) => {
 
         const startTime = Date.now();
         // DeepAgent handles message conversion internally
-        const result = await viper.invoke({
+        const result = await viper.generate({
             messages: body.messages,
         });
         const duration = Date.now() - startTime;

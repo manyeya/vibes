@@ -120,6 +120,8 @@ export interface VibeAgentConfig {
     model: LanguageModel;
     /** The base system instructions */
     instructions: string;
+    /** Optional display name for the agent (used in notifications) */
+    name?: string;
     /** Custom instructions to extend the base system prompt */
     systemPrompt?: string;
     /** Additional custom tools available to the agent */

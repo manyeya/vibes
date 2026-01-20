@@ -4,7 +4,6 @@ import { vibesSubagents } from "./subagents";
 import { internetSearch } from "./tools/search";
 import { skillMiddleware } from "./middleware/skills-middleware";
 
-
 const vibesInstructions = `You are Vibes, a powerful AI coding agent orchestrator.
 
 You coordinate specialized subagents to complete complex software tasks efficiently. Your role is to:

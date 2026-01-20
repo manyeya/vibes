@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useChat } from '@ai-sdk/react';
-import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses } from 'ai';
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses, } from 'ai';
 import {
   Terminal,
   CheckCircle2,
@@ -32,9 +32,8 @@ type DeepAgentPart = DataStatusPart | TodoUpdatePart | NotificationPart | { type
 
 export default function App() {
   const [input, setInput] = useState('');
-  // @ts-ignore - addToolApprovalResponse might not be in type definition if version mismatch
   const { messages, sendMessage, status, addToolApprovalResponse, } = useChat({
-    transport: new DefaultChatTransport({ api: '/api/mimo-code/stream' }),
+    transport: new DefaultChatTransport({ api: '/api/vibes/stream' }),
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     messages: [
       {
@@ -164,8 +163,7 @@ export default function App() {
 
                       if (p.type === 'data-status') {
                         const isWorkingOn = p.data.message.startsWith('Working on:');
-                        const isStep = p.data.message.startsWith('Step:');
-
+        
                         return (
                           <motion.div
                             key={i}
@@ -298,7 +296,7 @@ export default function App() {
                           <div className="flex gap-2 pt-1">
                             <button
                               onClick={async () => {
-                                await addToolApprovalResponse({ id: invocation.approval.id, approved: true });
+                                await addToolApprovalResponse({ id: invocation.approval.id, approved: true, reason: 'Approved' });
                               }}
                               className="flex-1 px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-black text-xs font-bold uppercase tracking-wide rounded-lg transition-colors flex items-center justify-center gap-2"
                             >
@@ -306,7 +304,7 @@ export default function App() {
                             </button>
                             <button
                               onClick={async () => {
-                                await addToolApprovalResponse({ id: invocation.approval.id, approved: false });
+                                await addToolApprovalResponse({ id: invocation.approval.id, approved: false, reason: 'user denied the request' });
                               }}
                               className="flex-1 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 text-xs font-bold uppercase tracking-wide rounded-lg transition-colors flex items-center justify-center gap-2"
                             >

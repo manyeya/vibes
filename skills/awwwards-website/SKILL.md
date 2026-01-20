@@ -7,6 +7,30 @@ description: Instructions and best practices for creating advanced, award-winnin
 
 This skill provides a definitive framework for building high-end, immersive websites that aim for technical and design excellence, all contained within a single `index.html` file.
 
+## Strategic Storytelling Framework
+
+Award-winning sites are not "pages"; they are **experiences**. Prioritize this narrative structure:
+
+1.  **The Hook (Hero)**: A visually explosive entry that sets the tone instantly. Must include a primary reveal (e.g., text splitting, mask reveal).
+2.  **The Setup (Narrative)**: A section that introduces the core message through kinetic typography and smooth transitions.
+3.  **The Journey (Chapters)**: Use at least 3 distinct "chapters" (sections) each with a unique visual trick (Parallax, Horizontal Scroll, Masking).
+4.  **The Climax (Showcase)**: The most interactive part—an immersive gallery, a 3D-effect product showcase, or a complex motion sequence.
+5.  **The Resolution (Footer)**: A high-impact closing that leaves a lasting impression, often with an oversized "magnetic" call-to-action.
+
+## Mandatory Premium Sections
+
+**NEVER generate less than 7 sections.** Every section must have a unique interactive hook:
+
+| Section | Interactive Hook | Visual Pattern |
+| :--- | :--- | :--- |
+| **01. Hero** | Liquid reveal / Large SplitText | Oversized Typography + Masking |
+| **02. Brand Narrative**| Scroll-triggered opacity fading | Floating decorative elements |
+| **03. Core Expertise** | Interactive Bento Grid | Hover-active glow / glassmorphism |
+| **04. Process/Legacy** | Horizontal sticky scroll | Large background numbers (Parallax) |
+| **05. Immersive Gallery**| Canvas based drag or Tilt effect | Mixed Aspect Ratios / Grainy masks |
+| **06. Testimonial** | Magnetic text tracking cursor | Minimalist fluid scaling |
+| **07. Grand Finale** | Full-screen liquid CTA | Inverted colors / Massive Footer |
+
 ## Core Principles
 
 0. **Experimental Inspiration**: Draw deeply from [Codrops](https://tympanus.net/codrops/) for experimental UI patterns, creative motion, and technical "blueprints."
@@ -63,6 +87,37 @@ const magnetic = (el) => {
 
 ### 4. Custom Responsive Cursor
 A custom circle cursor that expands on hover is a staple of Awwwards designs.
+
+### 5. Liquid Mask Reveal (GSAP)
+Use this for high-impact section entries:
+```javascript
+gsap.to(".mask-el", {
+  clipPath: "polygon(0% 0%, 100% 0%, 100% 100%, 0% 100%)",
+  duration: 1.5,
+  ease: "expo.out",
+  scrollTrigger: { trigger: ".target", start: "top 80%" }
+});
+```
+
+## Cinematic Excellence & Forbidden Patterns
+
+- **[FORBIDDEN]** Simple block backgrounds. **[USE]** Gradients, grainy textures, and noise overlays.
+- **[FORBIDDEN]** Standard scroll. **[USE]** Lenis for smooth momentum-based scrolling.
+- **[FORBIDDEN]** Static images. **[USE]** Parallax (GSAP ScrollTrigger) and subtle CSS scale on scroll.
+- **[FORBIDDEN]** Standard links. **[USE]** Magnetic buttons that track the cursor with a spring effect.
+
+## References & Deep Dives
+
+For detailed blueprints and technical deep dives, refer to the following local resources:
+
+- **[Cinematic Storytelling](file:///Users/manyeya/Documents/Code/Open-source/vibes/skills/awwwards-website/references/storytelling.md)**: Narrative flow and scrollytelling.
+- **[Motion Design & GSAP](file:///Users/manyeya/Documents/Code/Open-source/vibes/skills/awwwards-website/references/motion-design.md)**: Easing, parallax, and liquid reveals.
+- **[Typography & Editorial Layout](file:///Users/manyeya/Documents/Code/Open-source/vibes/skills/awwwards-website/references/typography.md)**: Fluid type and kinetic text.
+- **[Organic Interaction](file:///Users/manyeya/Documents/Code/Open-source/vibes/skills/awwwards-website/references/interaction.md)**: Magnetic effects and custom cursors.
+- **[Assets & Visual Polish](file:///Users/manyeya/Documents/Code/Open-source/vibes/skills/awwwards-website/references/assets.md)**: Typography pairing, noise textures, and media strategy.
+
+---
+Think of every page as a **piece of art**. The goal is a 10/10 Creative Excellence score.
 
 ## Implementation Workflow
 

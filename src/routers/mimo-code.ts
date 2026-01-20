@@ -19,7 +19,7 @@ app.post('/mimo-code', zValidator('json', mimoSchema), async (c) => {
         logger.info({ messages: body.messages }, 'Mimo-Code agent request received');
 
         const startTime = Date.now();
-        const result = await mimoCode.invoke({
+        const result = await mimoCode.generate({
             messages: body.messages,
         });
         const duration = Date.now() - startTime;

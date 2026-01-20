@@ -65,7 +65,7 @@ DO NOT use sub-agents for:
                 });
 
                 // Execute the agent invocation (manages its own tool loop via generateText)
-                const result = await agent.invoke({
+                const result = await agent.generate({
                     messages: [{ role: 'user', content: task }]
                 });
 

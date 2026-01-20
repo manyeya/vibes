@@ -1,7 +1,6 @@
 /// <reference types="bun-types" />
 
 import { openai } from '@ai-sdk/openai';
-import StateBackend from './backend/statebackend';
 import {
     SkillsMiddleware,
     TodoListMiddleware,
@@ -11,8 +10,6 @@ import {
 } from './middleware';
 import MemoryMiddleware from './middleware/memory';
 import SqliteBackend from './backend/sqlitebackend';
-import { McpMiddleware } from './middleware/mcp';
-
 import {
     AgentState,
     AgentDataParts,
@@ -127,7 +124,7 @@ Think step by step and tackle tasks systematically.`;
 
 
 /**
- * Factory function to create a DeepAgent instance with a LangChain-style API.
+ * Factory function to create a DeepAgent instance.
  * @param config Agent configuration object.
  */
 function createDeepAgent(config: DeepAgentConfig = {}): DeepAgent {

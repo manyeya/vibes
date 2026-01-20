@@ -1,13 +1,11 @@
 import {
     generateText,
-    streamText,
     convertToModelMessages,
     type LanguageModel,
     type ModelMessage,
     type UIMessage,
     type UIMessageStreamWriter,
     stepCountIs,
-    Agent,
     ToolLoopAgent,
 } from 'ai';
 import {
@@ -61,7 +59,7 @@ export class VibeAgent extends ToolLoopAgent {
                     mw.onStepFinish?.(stepData);
                 }
             },
-       
+
             prepareCall: async (settings) => {
                 const state = this.backend.getState();
                 const processedMessages = await this.pruneMessages(settings.messages || []);
@@ -235,7 +233,7 @@ Merge this with the "Existing Summary" strictly.`,
         }
     }
 
-    async invoke(input: { messages?: UIMessage[] | ModelMessage[] } & Partial<Omit<AgentState, 'messages'>> = {}): Promise<any> {
+    async generate(input: { messages?: UIMessage[] | ModelMessage[] } & Partial<Omit<AgentState, 'messages'>> = {}): Promise<any> {
         const modelMessages = input.messages
             ? await this.convertMessages(input.messages)
             : this.backend.getState().messages;
