@@ -214,9 +214,23 @@ const ApprovalCard = ({ toolName, args, approvalId, onApprove, onDeny }: Approva
     return () => window.removeEventListener('keydown', handleKeyPress);
   }, [approvalId, onApprove, onDeny]);
 
-  const formatJson = (obj: any): string => {
-    return JSON.stringify(obj, null, 2);
+  const formatJson = (obj: any, maxChars = 500): string => {
+    const jsonStr = JSON.stringify(obj, null, 2);
+    if (jsonStr.length <= maxChars) return jsonStr;
+    return jsonStr.slice(0, maxChars) + '\n... (truncated)';
   };
+
+  // Get a summary of the args for quick display
+  const getArgsSummary = (): string => {
+    if (!args || typeof args !== 'object') return '';
+    const keys = Object.keys(args);
+    if (keys.length === 0) return '';
+    if (keys.length === 1) return `${keys[0]}`;
+    return `${keys.length} parameters: ${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}`;
+  };
+
+  const argsSummary = getArgsSummary();
+  const isLargeArgs = JSON.stringify(args)?.length > 500;
 
   return (
     <motion.div
@@ -272,16 +286,29 @@ const ApprovalCard = ({ toolName, args, approvalId, onApprove, onDeny }: Approva
                 <span className="text-xs font-mono text-white">{toolName}</span>
               </div>
 
-              {/* Arguments */}
+              {/* Arguments Summary - always shown for large args */}
+              {isLargeArgs && argsSummary && (
+                <div className="px-3 py-2 bg-zinc-900/30 rounded-lg border border-zinc-800/50">
+                  <span className="text-[10px] text-zinc-500">{argsSummary}</span>
+                </div>
+              )}
+
+              {/* Arguments - collapsible for large content */}
               <div className="bg-[#0a0a0b] rounded-xl border border-zinc-800 overflow-hidden">
                 <div className="flex items-center justify-between px-3 py-2 bg-zinc-900/50 border-b border-zinc-800">
                   <div className="flex items-center gap-2">
                     <Terminal className="w-3.5 h-3.5 text-zinc-500" />
-                    <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider">Arguments</span>
+                    <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider">
+                      Arguments{isLargeArgs ? ' (truncated)' : ''}
+                    </span>
                   </div>
-                  <span className="text-[9px] font-mono text-zinc-600">JSON</span>
+                  {isLargeArgs && (
+                    <span className="text-[9px] font-mono text-zinc-600">
+                      {JSON.stringify(args)?.length || 0} chars
+                    </span>
+                  )}
                 </div>
-                <pre className="p-4 text-xs text-zinc-300 font-mono overflow-x-auto whitespace-pre-wrap break-all">
+                <pre className="p-4 text-xs text-zinc-300 font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
                   {formatJson(args)}
                 </pre>
               </div>
