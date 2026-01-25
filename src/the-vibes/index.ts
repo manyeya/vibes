@@ -97,36 +97,38 @@ Think step by step and tackle tasks systematically.`;
         const workspaceDir = config.workspaceDir || 'workspace';
 
         if (!skipDefaults) {
-            this.middleware.push(new TasksMiddleware(this.backend));
-            this.middleware.push(new SkillsMiddleware());
-            this.middleware.push(new FilesystemMiddleware(workspaceDir));
-            this.middleware.push(new BashMiddleware(workspaceDir));
-            this.middleware.push(new MemoryMiddleware(this.backend));
+            this.addMiddleware([
+                new TasksMiddleware(this.backend),
+                new SkillsMiddleware(),
+                new FilesystemMiddleware(workspaceDir),
+                new BashMiddleware(workspaceDir),
+                new MemoryMiddleware(this.backend)
+            ])
         }
 
         // SubAgent middleware
         const subAgentMap = new Map<string, SubAgent>();
+
         if (config.subAgents) {
             config.subAgents.forEach(agent => {
                 subAgentMap.set(agent.name, agent);
             });
         }
 
-        this.middleware.push(new SubAgentMiddleware(
+        this.addMiddleware(new SubAgentMiddleware(
             subAgentMap,
             this.model,
             () => this.getAllTools(),
             () => this.middleware,
             workspaceDir
-        ));
+        ))
 
         // Custom middleware
         if (config.middleware) {
-            this.middleware.push(...config.middleware);
+            this.addMiddleware([...config.middleware]);
         }
     }
 }
-
 
 /**
  * Factory function to create a DeepAgent instance.

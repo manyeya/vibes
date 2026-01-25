@@ -10,7 +10,6 @@ export const mimoCode = createDeepAgent({
     model: openrouter('xiaomi/mimo-v2-flash:free'),
     systemPrompt: mimoCodePrompt,
     maxSteps: 60,
-    toolsRequiringApproval: ['bash', 'readFile', 'writeFile'],
     subAgents: [
         {
             name: 'Planner',

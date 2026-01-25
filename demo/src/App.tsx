@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses } from 'ai';
 import { Streamdown } from 'streamdown';
@@ -20,6 +20,8 @@ import {
   ChevronDown,
   Info,
   Shield,
+  Square,
+  Brain,
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -30,18 +32,6 @@ function cn(...inputs: ClassValue[]) {
 }
 
 // ============ TYPES ============
-type DataStatusPart = { type: 'data-status'; data: { message: string; step?: number } };
-type TaskUpdatePart = { type: 'data-task_update'; data: { id: string; status: string; title?: string } };
-type TaskGraphPart = {
-  type: 'data-task_graph';
-  data: {
-    nodes: Array<{ id: string; title: string; status: string }>;
-    edges: Array<{ from: string; to: string; type: string }>;
-  };
-};
-type NotificationPart = { type: 'data-notification'; data: { message: string; level: 'info' | 'error' } };
-type DeepAgentPart = DataStatusPart | TaskUpdatePart | TaskGraphPart | NotificationPart | { type: 'text'; text: string };
-
 type TaskStatus = 'pending' | 'blocked' | 'in_progress' | 'completed' | 'failed';
 
 interface TaskNode {
@@ -140,18 +130,18 @@ const TaskFlow = ({ nodes }: { nodes: TaskNode[] }) => {
               className={cn(
                 "flex items-center gap-3 p-3 rounded-xl border transition-all duration-300",
                 node.status === 'completed' ? "bg-emerald-500/5 border-emerald-500/10" :
-                node.status === 'in_progress' ? "bg-cyan-500/10 border-cyan-500/20" :
-                node.status === 'blocked' ? "bg-red-500/5 border-red-500/10" :
-                "bg-zinc-800/30 border-zinc-800"
+                  node.status === 'in_progress' ? "bg-cyan-500/10 border-cyan-500/20" :
+                    node.status === 'blocked' ? "bg-red-500/5 border-red-500/10" :
+                      "bg-zinc-800/30 border-zinc-800"
               )}
             >
               <TaskBadge status={node.status} compact />
               <span className={cn(
                 "text-xs font-medium flex-1 truncate",
                 node.status === 'completed' ? "text-zinc-500 line-through" :
-                node.status === 'in_progress' ? "text-cyan-300" :
-                node.status === 'blocked' ? "text-red-400" :
-                "text-zinc-300"
+                  node.status === 'in_progress' ? "text-cyan-300" :
+                    node.status === 'blocked' ? "text-red-400" :
+                      "text-zinc-300"
               )}>
                 {node.title || node.id.slice(-8)}
               </span>
@@ -352,7 +342,10 @@ const ApprovalCard = ({ toolName, args, approvalId, onApprove, onDeny }: Approva
 export default function App() {
   const [input, setInput] = useState('');
   const [isInputFocused, setIsInputFocused] = useState(false);
-  const { messages, sendMessage, status, addToolApprovalResponse } = useChat({
+  const [tasks, setTasks] = useState<TaskNode[]>([]);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  const { messages, sendMessage, status, addToolApprovalResponse, error, stop } = useChat({
     transport: new DefaultChatTransport({ api: '/api/mimo-code/stream' }),
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     messages: [
@@ -365,6 +358,78 @@ export default function App() {
   });
 
   const isLoading = status === 'streaming' || status === 'submitted';
+
+  // Calculate token usage from messages
+  const sessionUsage = messages.reduce((acc, message) => {
+    const usage = (message as any).usage;
+    if (usage) {
+      acc.promptTokens += usage.promptTokens || 0;
+      acc.completionTokens += usage.completionTokens || 0;
+    }
+    return acc;
+  }, { promptTokens: 0, completionTokens: 0 });
+
+  const totalTokens = sessionUsage.promptTokens + sessionUsage.completionTokens;
+
+  // Track tasks from messages
+  useEffect(() => {
+    const newTasks: TaskNode[] = [];
+
+    messages.forEach((message) => {
+      message.parts?.forEach((part: any) => {
+        if (part.type === 'data-task_graph' && part.data?.nodes) {
+          // Batch update from task graph
+          part.data.nodes.forEach((node: any) => {
+            newTasks.push({
+              id: node.id,
+              title: node.title || node.id,
+              status: node.status,
+              blockedBy: node.blockedBy || [],
+              blocks: node.blocks || []
+            });
+          });
+        } else if (part.type === 'data-task_update' && part.data?.id) {
+          // Individual task update
+          const existingIndex = newTasks.findIndex(t => t.id === part.data.id);
+          if (existingIndex >= 0) {
+            newTasks[existingIndex] = {
+              id: part.data.id,
+              title: part.data.title || newTasks[existingIndex].title,
+              status: part.data.status,
+              blockedBy: part.data.blockedBy || [],
+              blocks: part.data.blocks || []
+            };
+          } else {
+            newTasks.push({
+              id: part.data.id,
+              title: part.data.title || part.data.id,
+              status: part.data.status,
+              blockedBy: [],
+              blocks: []
+            });
+          }
+        }
+      });
+    });
+
+    if (newTasks.length > 0) {
+      setTasks(prev => {
+        const merged = [...prev];
+        newTasks.forEach(newTask => {
+          const existingIndex = merged.findIndex(t => t.id === newTask.id);
+          if (existingIndex >= 0) {
+            merged[existingIndex] = newTask;
+          } else {
+            merged.push(newTask);
+          }
+        });
+        return merged;
+      });
+    }
+  }, [messages]);
+
+  const activeTaskCount = tasks.filter(t => t.status === 'in_progress' || t.status === 'pending').length;
+  const completedCount = tasks.filter(t => t.status === 'completed').length;
 
   const onSend = (e: React.FormEvent) => {
     e.preventDefault();
@@ -381,9 +446,20 @@ export default function App() {
       <motion.header
         initial={{ y: -20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
-        className="flex items-center justify-between px-6 py-4 border-b border-zinc-800/50 bg-zinc-950/50 backdrop-blur-sm"
+        className="flex items-center justify-between px-6 py-4 border-b border-zinc-800/50 bg-zinc-950/50 backdrop-blur-sm shrink-0"
       >
         <div className="flex items-center gap-4">
+          <button
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="relative p-2 rounded-lg hover:bg-zinc-800/50 transition-colors hidden lg:block"
+          >
+            <Layers className="w-5 h-5 text-zinc-400" />
+            {activeTaskCount > 0 && (
+              <span className="absolute -top-1 -right-1 w-5 h-5 bg-cyan-500 rounded-full text-[10px] font-bold text-white flex items-center justify-center">
+                {activeTaskCount}
+              </span>
+            )}
+          </button>
           <div className="relative">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-violet-500 flex items-center justify-center shadow-lg shadow-cyan-500/10">
               <Zap className="w-5 h-5 text-white" />
@@ -403,13 +479,116 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Token usage */}
+          {totalTokens > 0 && (
+            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-zinc-900/50 rounded-lg border border-zinc-800">
+              <span className="text-[10px] font-mono text-zinc-500">
+                {totalTokens.toLocaleString()} tokens
+              </span>
+              <span className="text-[9px] text-zinc-600">
+                ({sessionUsage.promptTokens.toLocaleString()} + {sessionUsage.completionTokens.toLocaleString()})
+              </span>
+            </div>
+          )}
+          {/* Mobile sidebar toggle */}
+          <button
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="lg:hidden relative p-2 rounded-lg hover:bg-zinc-800/50 transition-colors"
+          >
+            <Layers className="w-5 h-5 text-zinc-400" />
+            {activeTaskCount > 0 && (
+              <span className="absolute -top-1 -right-1 w-5 h-5 bg-cyan-500 rounded-full text-[10px] font-bold text-white flex items-center justify-center">
+                {activeTaskCount}
+              </span>
+            )}
+          </button>
           <StatusIndicator status={isLoading ? 'processing' : 'ready'} pulse={isLoading} />
         </div>
       </motion.header>
 
-      {/* ============ MAIN CONTENT ============ */}
-      <main className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-4 py-8">
+      {/* ============ CONTENT AREA (sidebar + main) ============ */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* ============ SIDEBAR ============ */}
+        <AnimatePresence>
+          {isSidebarOpen && (
+            <>
+              {/* Mobile backdrop */}
+              <div
+                className="fixed inset-0 bg-black/50 z-30 lg:hidden"
+                onClick={() => setIsSidebarOpen(false)}
+              />
+              {/* Sidebar */}
+              <motion.aside
+                initial={{ x: '-100%' }}
+                animate={{ x: 0 }}
+                exit={{ x: '-100%' }}
+                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+                className="fixed top-[73px] left-0 bottom-0 w-80 bg-zinc-900/95 border-r border-zinc-800/50 backdrop-blur-sm z-40 overflow-hidden flex flex-col lg:relative lg:top-0 lg:z-10"
+              >
+                <div className="p-4 border-b border-zinc-800/50">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-sm font-semibold text-zinc-300">All Tasks</h2>
+                    <span className="text-[10px] font-mono text-zinc-500">
+                      {completedCount}/{tasks.length} done
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                  {tasks.length === 0 ? (
+                    <div className="text-center py-8">
+                      <Layers className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
+                      <p className="text-xs text-zinc-600">No tasks yet</p>
+                    </div>
+                  ) : (
+                    tasks.map((task) => (
+                      <motion.div
+                        key={task.id}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className={cn(
+                          "flex items-center gap-3 p-3 rounded-xl border transition-all duration-300",
+                          task.status === 'completed' ? "bg-emerald-500/5 border-emerald-500/10" :
+                            task.status === 'in_progress' ? "bg-cyan-500/10 border-cyan-500/20" :
+                              task.status === 'blocked' ? "bg-red-500/5 border-red-500/10" :
+                                task.status === 'failed' ? "bg-red-500/5 border-red-500/10" :
+                                  "bg-zinc-800/30 border-zinc-800"
+                        )}
+                      >
+                        <TaskBadge status={task.status} compact />
+                        <span className={cn(
+                          "text-xs font-medium flex-1 truncate",
+                          task.status === 'completed' ? "text-zinc-500 line-through" :
+                            task.status === 'in_progress' ? "text-cyan-300" :
+                              task.status === 'blocked' ? "text-red-400" :
+                                task.status === 'failed' ? "text-red-400" :
+                                  "text-zinc-300"
+                        )}>
+                          {task.title}
+                        </span>
+                      </motion.div>
+                    ))
+                  )}
+                </div>
+
+                {tasks.length > 0 && (
+                  <div className="p-4 border-t border-zinc-800/50">
+                    <button
+                      onClick={() => setTasks([])}
+                      className="w-full text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+                    >
+                      Clear completed tasks
+                    </button>
+                  </div>
+                )}
+              </motion.aside>
+            </>
+          )}
+        </AnimatePresence>
+
+        {/* ============ MAIN CONTENT ============ */}
+        <main className="flex-1 overflow-y-auto">
+          <div className="max-w-3xl mx-auto px-4 py-8">
           <AnimatePresence mode="popLayout">
             {messages.map((message) => {
               const isUser = (message.role as string) === 'user';
@@ -445,110 +624,254 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* Content */}
+                    {/* Content - render parts in original order */}
                     <div className={cn(
-                      "flex-1 space-y-4",
+                      "flex-1 space-y-3 min-w-0",
                       isUser && "flex flex-col items-end"
                     )}>
-                      {/* Text content */}
-                      {message.parts?.filter((p: any) => p.type === 'text').map((part: any, i: number) => (
-                        <motion.div
-                          key={i}
-                          initial={{ opacity: 0, y: 5 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: i * 0.03 }}
-                          className={cn(
-                            "rounded-2xl px-4 py-3 text-sm leading-relaxed streamdown",
-                            isUser
-                              ? "bg-cyan-500 text-white [&_a]:underline [&_a]:text-white/80 [&_code]:bg-white/20 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded [&_pre]:bg-white/10 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:overflow-x-auto"
-                              : "bg-zinc-900 border border-zinc-800 text-zinc-200"
-                          )}
-                        >
-                          <Streamdown>{part.text}</Streamdown>
-                        </motion.div>
-                      ))}
-
-                      {/* Status updates */}
-                      {message.parts?.filter((p: any) => p.type === 'data-status').map((part: any, i: number) => {
-                        const p = part as DeepAgentPart;
-                        if (p.type !== 'data-status') return null;
-
-                        const isWorkingOn = p.data.message.includes('Working on');
-                        const isDelegating = p.data.message.includes('Delegating');
-
-                        return (
-                          <StatusPill
-                            key={i}
-                            message={p.data.message}
-                            step={p.data.step}
-                            type={isWorkingOn ? 'working' : isDelegating ? 'delegating' : 'default'}
-                          />
-                        );
-                      })}
-
-                      {/* Task graph */}
+                      {/* Track seen tool approvals to avoid duplicates */}
                       {(() => {
-                        const taskGraphPart = message.parts?.find((p: any) => p.type === 'data-task_graph') as any;
-                        if (taskGraphPart) {
-                          const nodes = taskGraphPart.data.nodes.map((n: any) => ({
-                            ...n,
-                            status: n.status,
-                            blockedBy: [],
-                            blocks: []
-                          }));
-                          return <TaskFlow key="graph" nodes={nodes} />;
-                        }
-                        return null;
-                      })()}
+                        const seenToolApprovals = new Set<string>();
+                        const seenToolResults = new Set<string>();
+                        let taskGraphRendered = false;
 
-                      {/* Tool approvals */}
-                      {(() => {
-                        // Track seen toolCallIds to avoid duplicate approval cards
-                        const seenToolCalls = new Set<string>();
-                        return message.parts?.filter((p: any) => {
-                          // Only show parts that need approval and haven't been seen yet
-                          const needsApproval = p.state === 'call' || p.state === 'approval-requested' || p.state === 'input-available';
-                          const isDuplicate = p.toolCallId && seenToolCalls.has(p.toolCallId);
-                          if (p.toolCallId) seenToolCalls.add(p.toolCallId);
-                          return needsApproval && !isDuplicate && p.approval?.id;
-                        }).map((invocation: any) => {
-                          // Extract tool name - handle both static and dynamic tools
-                          const toolName = invocation.toolName || invocation.name;
-                          // Extract args - might be args, input, or need to be constructed
-                          const args = invocation.args || invocation.input;
+                        return message.parts?.map((part: any, partIndex: number) => {
+                          // Text content
+                          if (part.type === 'text') {
+                            return (
+                              <motion.div
+                                key={`text-${partIndex}`}
+                                initial={{ opacity: 0, y: 5 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: partIndex * 0.02 }}
+                                className={cn(
+                                  "rounded-2xl px-4 py-3 text-sm leading-relaxed streamdown max-w-full overflow-hidden",
+                                  isUser
+                                    ? "bg-cyan-500 text-white [&_a]:underline [&_a]:text-white/80 [&_code]:bg-white/20 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded [&_code]:max-w-full [&_code]:overflow-x-auto [&_pre]:bg-white/10 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:overflow-x-auto [&_pre]:max-w-full"
+                                    : "bg-zinc-900 border border-zinc-800 text-zinc-200"
+                                )}
+                              >
+                                <Streamdown>{part.text}</Streamdown>
+                              </motion.div>
+                            );
+                          }
 
-                          return (
-                            <ApprovalCard
-                              key={invocation.toolCallId}
-                              toolName={toolName || 'Unknown Tool'}
-                              args={args || {}}
-                              approvalId={invocation.approval?.id}
-                              onApprove={(id) => addToolApprovalResponse({ id, approved: true, reason: 'Approved' })}
-                              onDeny={(id) => addToolApprovalResponse({ id, approved: false, reason: 'user denied' })}
-                            />
-                          );
+                          // Reasoning / Thinking (from o1, o3, Claude extended thinking)
+                          if (part.type === 'reasoning' || part.type === 'thinking') {
+                            return (
+                              <motion.div
+                                key={`reasoning-${partIndex}`}
+                                initial={{ opacity: 0, y: 5 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: partIndex * 0.02 }}
+                                className="rounded-xl border border-violet-500/20 bg-violet-500/5 overflow-hidden"
+                              >
+                                <details className="group">
+                                  <summary className="flex items-center gap-2 px-4 py-2 cursor-pointer hover:bg-violet-500/10 transition-colors select-none">
+                                    <Brain className="w-3.5 h-3.5 text-violet-400" />
+                                    <span className="text-xs font-medium text-violet-300">Thinking</span>
+                                    <span className="text-[10px] text-zinc-500 ml-2">
+                                      {part.text?.length || 0} chars
+                                    </span>
+                                    <ChevronDown className="w-3.5 h-3.5 text-zinc-500 ml-auto group-open:rotate-180 transition-transform" />
+                                  </summary>
+                                  <div className="px-4 pb-3 max-w-full overflow-hidden">
+                                    <pre className="text-xs text-zinc-400 whitespace-pre-wrap break-words max-w-full font-mono leading-relaxed">
+                                      {part.text || ''}
+                                    </pre>
+                                  </div>
+                                </details>
+                              </motion.div>
+                            );
+                          }
+
+                          // Status updates
+                          if (part.type === 'data-status') {
+                            const isWorkingOn = part.data?.message?.includes('Working on');
+                            const isDelegating = part.data?.message?.includes('Delegating');
+                            return (
+                              <StatusPill
+                                key={`status-${partIndex}`}
+                                message={part.data.message}
+                                step={part.data.step}
+                                type={isWorkingOn ? 'working' : isDelegating ? 'delegating' : 'default'}
+                              />
+                            );
+                          }
+
+                          // Individual task updates - only show pending/in_progress/blocked in chat
+                          if (part.type === 'data-task_update') {
+                            const taskStatus = part.data?.status as TaskStatus || 'pending';
+                            // Skip completed/failed tasks in chat - they're in the sidebar
+                            if (taskStatus === 'completed' || taskStatus === 'failed') {
+                              return null;
+                            }
+
+                            const taskTitle = part.data?.title || part.data?.id?.slice(-8) || 'Unknown task';
+                            const taskId = part.data?.id || `task-${partIndex}`;
+
+                            const statusConfig = {
+                              pending: { icon: Circle, color: 'text-zinc-500', bg: 'bg-zinc-500/10', border: 'border-zinc-500/20', label: 'Pending' },
+                              blocked: { icon: Circle, color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/20', label: 'Blocked' },
+                              in_progress: { icon: Loader2, color: 'text-cyan-400', bg: 'bg-cyan-500/10', border: 'border-cyan-500/20', label: 'In Progress' },
+                            };
+
+                            const config = statusConfig[taskStatus];
+                            const StatusIcon = config.icon;
+
+                            return (
+                              <motion.div
+                                key={`task-${taskId}-${partIndex}`}
+                                initial={{ opacity: 0, x: -10 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                className={cn(
+                                  "flex items-center gap-3 p-3 rounded-xl border",
+                                  config.bg, config.border
+                                )}
+                              >
+                                <div className={cn(
+                                  "w-7 h-7 rounded-lg border flex items-center justify-center shrink-0",
+                                  config.border, config.bg
+                                )}>
+                                  <StatusIcon className={cn("w-3.5 h-3.5", config.color, taskStatus === 'in_progress' && 'animate-spin')} />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className={cn("text-xs font-medium", config.color)}>
+                                      {taskTitle}
+                                    </span>
+                                    <span className={cn(
+                                      "text-[9px] px-1.5 py-0.5 rounded font-mono uppercase",
+                                      config.bg, config.color
+                                    )}>
+                                      {config.label}
+                                    </span>
+                                  </div>
+                                </div>
+                              </motion.div>
+                            );
+                          }
+
+                          // Task graph (render once)
+                          if (part.type === 'data-task_graph' && !taskGraphRendered) {
+                            taskGraphRendered = true;
+                            const nodes = part.data?.nodes?.map((n: any) => ({
+                              ...n,
+                              status: n.status,
+                              blockedBy: [],
+                              blocks: []
+                            }));
+                            return <TaskFlow key="graph" nodes={nodes || []} />;
+                          }
+
+                          // Tool approvals
+                          const needsApproval = part.state === 'call' || part.state === 'approval-requested' || part.state === 'input-available';
+                          if (needsApproval && part.toolCallId && !seenToolApprovals.has(part.toolCallId) && part.approval?.id) {
+                            seenToolApprovals.add(part.toolCallId);
+                            const toolName = part.toolName || part.name;
+                            const args = part.args || part.input;
+                            return (
+                              <ApprovalCard
+                                key={`approval-${part.toolCallId}`}
+                                toolName={toolName || 'Unknown Tool'}
+                                args={args || {}}
+                                approvalId={part.approval.id}
+                                onApprove={(id) => addToolApprovalResponse({ id, approved: true, reason: 'Approved' })}
+                                onDeny={(id) => addToolApprovalResponse({ id, approved: false, reason: 'user denied' })}
+                              />
+                            );
+                          }
+
+                          // Tool results (completed tools)
+                          const isToolPart = part.type?.startsWith('tool-') || part.type === 'dynamic-tool';
+                          const isComplete = ['output-available', 'output-error', 'output-denied'].includes(part.state);
+                          if (isToolPart && isComplete && part.toolCallId && !seenToolResults.has(part.toolCallId)) {
+                            seenToolResults.add(part.toolCallId);
+                            const isError = part.state === 'output-error' || part.state === 'output-denied';
+                            const toolOutput = part.output;
+                            const toolError = part.error;
+
+                            // Format output for display
+                            const formatOutput = (val: any): string | null => {
+                              if (val === undefined || val === null) return null;
+                              if (typeof val === 'string') return val;
+                              if (typeof val === 'object') {
+                                try {
+                                  const str = JSON.stringify(val, null, 2);
+                                  return str.length > 1000 ? str.slice(0, 1000) + '...(truncated)' : str;
+                                } catch {
+                                  return String(val);
+                                }
+                              }
+                              return String(val);
+                            };
+
+                            const outputText = toolError || formatOutput(toolOutput);
+
+                            return (
+                              <motion.div
+                                key={`result-${part.toolCallId}`}
+                                initial={{ opacity: 0, x: -10 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                className={cn(
+                                  "rounded-xl border overflow-hidden",
+                                  isError ? "bg-red-500/5 border-red-500/10" : "bg-emerald-500/5 border-emerald-500/10"
+                                )}
+                              >
+                                {/* Header - always visible */}
+                                <div
+                                  className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-white/5 transition-colors"
+                                >
+                                  <div className={cn(
+                                    "w-5 h-5 rounded-lg border flex items-center justify-center shrink-0",
+                                    isError ? "bg-red-500/20 border-red-500/30" : "bg-emerald-500/20 border-emerald-500/30"
+                                  )}>
+                                    {isError ? (
+                                      <X className="w-3 h-3 text-red-400" />
+                                    ) : (
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                    )}
+                                  </div>
+                                  <span className="text-xs font-mono text-zinc-400">
+                                    <span className={isError ? "text-red-400" : "text-emerald-400"}>
+                                      {part.toolName || part.name}
+                                    </span>
+                                  </span>
+                                  {outputText && (
+                                    <ChevronDown className="w-3.5 h-3.5 text-zinc-500 ml-auto" />
+                                  )}
+                                </div>
+
+                                {/* Output - show if available */}
+                                {outputText && (
+                                  <div className="px-4 pb-3 max-w-full overflow-hidden">
+                                    <pre className={cn(
+                                      "text-xs font-mono p-3 rounded-lg overflow-x-auto whitespace-pre-wrap break-words max-w-full",
+                                      isError ? "bg-red-500/10 text-red-300" : "bg-zinc-900 text-zinc-400"
+                                    )}>
+                                      {outputText}
+                                    </pre>
+                                  </div>
+                                )}
+                              </motion.div>
+                            );
+                          }
+
+                          return null;
                         });
                       })()}
 
-                      {/* Tool results */}
-                      {message.parts?.filter((p: any) => p.state === 'result').map((invocation: any) => (
-                        <motion.div
-                          key={invocation.toolCallId}
-                          initial={{ opacity: 0, x: -10 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          className="flex items-center gap-3 px-4 py-3 bg-emerald-500/5 rounded-xl border border-emerald-500/10"
-                        >
-                          <div className="w-6 h-6 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center shrink-0">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                          </div>
-                          <div className="flex-1">
-                            <span className="text-xs font-mono text-zinc-400">
-                              <span className="text-emerald-400">{invocation.toolName}</span>
-                            </span>
-                            <span className="text-[10px] text-zinc-500 ml-2">executed successfully</span>
-                          </div>
-                        </motion.div>
-                      ))}
+                      {/* Token usage per message */}
+                      {!isUser && (message as any).usage && (
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className="text-[9px] font-mono text-zinc-600">
+                            {(message as any).usage.promptTokens + (message as any).usage.completionTokens} tokens
+                          </span>
+                          <span className="text-[8px] text-zinc-700">
+            ({(message as any).usage.promptTokens}p + {(message as any).usage.completionTokens}c)
+          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </motion.div>
@@ -578,11 +901,38 @@ export default function App() {
               </div>
             </motion.div>
           )}
+
+          {/* Error display */}
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="mb-4 p-4 rounded-xl border border-red-500/20 bg-red-500/5"
+            >
+              <div className="flex items-start gap-3">
+                <div className="w-6 h-6 rounded-lg bg-red-500/20 border border-red-500/30 flex items-center justify-center shrink-0 mt-0.5">
+                  <AlertCircle className="w-3.5 h-3.5 text-red-400" />
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-red-400">Error</p>
+                  <p className="text-xs text-red-300/70 mt-1">{error.message || String(error)}</p>
+                </div>
+                <button
+                  onClick={() => window.location.reload()}
+                  className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                >
+                  Retry
+                </button>
+              </div>
+            </motion.div>
+          )}
         </div>
       </main>
+      </div> {/* End content area wrapper */}
 
       {/* ============ INPUT AREA ============ */}
-      <footer className="border-t border-zinc-800/50 bg-zinc-950/50 backdrop-blur-sm">
+      <footer className="border-t border-zinc-800/50 bg-zinc-950/50 backdrop-blur-sm shrink-0">
         <div className="max-w-2xl mx-auto p-4">
           <form onSubmit={onSend} className="relative">
             <div className={cn(
@@ -605,24 +955,31 @@ export default function App() {
                 }}
               />
               <button
-                type="submit"
-                disabled={isLoading || !input.trim()}
+                type={isLoading ? "button" : "submit"}
+                onClick={isLoading ? () => stop?.() : undefined}
+                disabled={!isLoading && !input.trim()}
                 className={cn(
                   "w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200",
-                  (isLoading || !input.trim())
+                  !isLoading && !input.trim()
                     ? "bg-zinc-800 text-zinc-600 cursor-not-allowed"
-                    : "bg-cyan-500 text-white hover:bg-cyan-400 shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/30"
+                    : isLoading
+                      ? "bg-red-500 text-white hover:bg-red-400 shadow-lg shadow-red-500/20"
+                      : "bg-cyan-500 text-white hover:bg-cyan-400 shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/30"
                 )}
               >
                 {isLoading ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <Square className="w-4 h-4" />
                 ) : (
                   <Send className="w-4 h-4" />
                 )}
               </button>
             </div>
             <p className="text-[10px] text-zinc-600 font-mono text-center mt-3">
-              Press Enter to send · Shift+Enter for new line
+              {isLoading ? (
+                <span className="text-red-500/70">Click the stop button to halt the agent</span>
+              ) : (
+                <>Press Enter to send · Shift+Enter for new line</>
+              )}
             </p>
           </form>
         </div>

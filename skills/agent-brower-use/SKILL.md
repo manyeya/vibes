@@ -6,7 +6,6 @@ allowed-tools: Bash(agent-browser:*)
 
 # Browser Automation with agent-browser
 
-Start by connecting to existing browser using `agent-browser connect 9222`
 
 ## Quick start
 
