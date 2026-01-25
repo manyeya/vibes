@@ -12,8 +12,9 @@ import {
     AgentState,
     AgentUIMessage,
     VibeAgentConfig,
+    VibeAgentGenerateResult,
+    VibeAgentStreamResult,
     Middleware,
-
 } from './types';
 import StateBackend from '../backend/statebackend';
 
@@ -36,7 +37,12 @@ export class VibeAgent extends ToolLoopAgent {
     protected customTools: Record<string, any>;
     protected toolsRequiringApproval: string[] | Record<string, boolean | ((args: any) => boolean | Promise<boolean>)> = [];
     protected allowedTools?: string[];
+    protected blockedTools?: string[];
     protected onStepFinishCallback?: (step: { stepNumber: number; stepType: string; text?: string }) => void;
+    /** Writer for sending data updates to UI during stream */
+    protected writer?: any;
+    /** Track last message count to prevent duplicate summarization notifications */
+    protected lastSummarizedCount: number = 0;
 
     constructor(config: VibeAgentConfig, backend?: StateBackend) {
         super({
@@ -62,7 +68,7 @@ export class VibeAgent extends ToolLoopAgent {
             
             prepareCall: async (settings) => {
                 const state = this.backend.getState();
-                const processedMessages = await this.pruneMessages(settings.messages || []);
+                const processedMessages = await this.pruneMessages(settings.messages || [], this.writer);
 
                 let prompt = this.baseInstructions;
                 for (const mw of this.middleware) {
@@ -102,6 +108,7 @@ export class VibeAgent extends ToolLoopAgent {
         this.customTools = config.tools || {};
         this.toolsRequiringApproval = config.toolsRequiringApproval || [];
         this.allowedTools = config.allowedTools;
+        this.blockedTools = config.blockedTools;
         this.onStepFinishCallback = config.onStepFinish;
 
         if (config.middleware) {
@@ -197,7 +204,14 @@ export class VibeAgent extends ToolLoopAgent {
             };
         }
 
-        // Apply filtering if specified
+        // Apply blockedTools filter (takes precedence over allowedTools)
+        if (this.blockedTools) {
+            for (const name of this.blockedTools) {
+                delete resolvedTools[name];
+            }
+        }
+
+        // Apply allowedTools filter if specified
         if (allowedTools) {
             const filtered: Record<string, any> = {};
             for (const name of allowedTools) {
@@ -213,7 +227,55 @@ export class VibeAgent extends ToolLoopAgent {
         return resolvedTools;
     }
 
-    protected async pruneMessages(messages: ModelMessage[]): Promise<ModelMessage[]> {
+    /**
+     * Format messages into a readable format for summarization.
+     * Converts message structures into natural conversation format.
+     */
+    protected formatMessagesForSummary(messages: ModelMessage[]): string {
+        const MAX_CONTENT_LENGTH = 2000;
+
+        const formatContent = (content: any): string => {
+            if (typeof content === 'string') {
+                return content.length > MAX_CONTENT_LENGTH
+                    ? content.slice(0, MAX_CONTENT_LENGTH) + '...[truncated]'
+                    : content;
+            }
+            if (Array.isArray(content)) {
+                return content
+                    .map(part => {
+                        if (part.type === 'text') {
+                            return formatContent(part.text);
+                        }
+                        if (part.type === 'tool-call') {
+                            return `[Tool Call: ${part.toolName} with args: ${JSON.stringify(part.args).slice(0, 200)}]`;
+                        }
+                        return `[${part.type}]`;
+                    })
+                    .join('\n');
+            }
+            return String(content).slice(0, MAX_CONTENT_LENGTH);
+        };
+
+        return messages
+            .map((msg, index) => {
+                const roleLabel = {
+                    system: 'System',
+                    user: 'User',
+                    assistant: 'Assistant',
+                    tool: 'Tool Result'
+                }[msg.role] || msg.role;
+
+                const content = formatContent(msg.content);
+                return `[${index + 1}] ${roleLabel}:\n${content}`;
+            })
+            .join('\n\n---\n\n');
+    }
+
+    /**
+     * Prune messages by summarizing old context when exceeding maxContextMessages.
+     * Returns a new array with a system message containing the summary followed by recent messages.
+     */
+    protected async pruneMessages(messages: ModelMessage[], writer?: any): Promise<ModelMessage[]> {
         const maxMessages = this.maxContextMessages;
         if (messages.length <= maxMessages) {
             return messages;
@@ -222,6 +284,7 @@ export class VibeAgent extends ToolLoopAgent {
         const keepCount = Math.floor(maxMessages / 2);
         const messagesToKeep = messages.slice(-keepCount);
 
+        // Remove leading tool messages to ensure we start with meaningful content
         while (messagesToKeep.length > 0 && messagesToKeep[0].role === 'tool') {
             messagesToKeep.shift();
         }
@@ -231,22 +294,91 @@ export class VibeAgent extends ToolLoopAgent {
             return messagesToKeep;
         }
 
+        // Skip if we already summarized this exact message count (deduplicate)
+        if (messages.length === this.lastSummarizedCount) {
+            // Return with the existing summary prepended
+            const existingSummary = this.backend.getState().summary;
+            if (existingSummary) {
+                return [
+                    { role: 'system', content: `## Previous Context Summary\n${existingSummary}` },
+                    ...messagesToKeep
+                ] as ModelMessage[];
+            }
+            return messagesToKeep;
+        }
+
+        // Send starting status if writer is available
+        if (writer) {
+            writer.write({
+                type: 'data-summarization',
+                data: {
+                    stage: 'starting',
+                    messageCount: messagesToSummarize.length,
+                    keepingCount: messagesToKeep.length
+                }
+            });
+        }
+
+        if (process.env.DEBUG_VIBES) {
+            console.log(`[VibeAgent] Summarizing ${messagesToSummarize.length} messages, keeping ${messagesToKeep.length}`);
+        }
+
         try {
             const currentSummary = this.backend.getState().summary || 'No previous summary.';
+
+            // Send in_progress status
+            if (writer) {
+                writer.write({
+                    type: 'data-summarization',
+                    data: {
+                        stage: 'in_progress',
+                        messageCount: messagesToSummarize.length,
+                        keepingCount: messagesToKeep.length
+                    }
+                });
+            }
+
+            // Format messages into readable conversation format instead of JSON
+            const formattedMessages = this.formatMessagesForSummary(messagesToSummarize);
+
             const { text: newSummary } = await generateText({
                 model: this.model,
-                system: `You are a helpful assistant. Summarize the following conversation history into a concise, detailed narrative. 
+                system: `You are a helpful assistant. Summarize the following conversation history into a concise, detailed narrative.
 Retain key decisions, user requirements, current potential plan status, and important context.
-Merge this with the "Existing Summary" strictly.`,
+Merge this with the "Existing Summary" strictly.
+
+The conversation is formatted with:
+- [N] Role: prefix indicating message number and role (System, User, Assistant, Tool Result)
+- Content follows the role label
+- --- separates messages`,
                 messages: [
                     {
                         role: 'user',
-                        content: `Existing Summary:\n${currentSummary}\n\nNew Conversation to Summarize:\n${JSON.stringify(messagesToSummarize)}`
+                        content: `Existing Summary:\n${currentSummary}\n\nNew Conversation to Summarize:\n${formattedMessages}`
                     }
                 ],
             });
 
             this.backend.setState({ summary: newSummary });
+
+            // Track that we've summarized this message count
+            this.lastSummarizedCount = messages.length;
+
+            if (process.env.DEBUG_VIBES) {
+                console.log('[VibeAgent] Summarization complete:', newSummary.slice(0, 200) + '...');
+            }
+
+            // Send complete status
+            if (writer) {
+                writer.write({
+                    type: 'data-summarization',
+                    data: {
+                        stage: 'complete',
+                        messageCount: messagesToSummarize.length,
+                        keepingCount: messagesToKeep.length
+                    }
+                });
+            }
 
             return [
                 { role: 'system', content: `## Previous Context Summary\n${newSummary}` },
@@ -254,12 +386,32 @@ Merge this with the "Existing Summary" strictly.`,
             ] as ModelMessage[];
 
         } catch (error) {
-            console.error('[VibeAgent] Summarization failed:', error);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('[VibeAgent] Summarization failed:', errorMessage);
+
+            if (process.env.DEBUG_VIBES) {
+                console.error('[VibeAgent] Summarization error details:', error);
+            }
+
+            // Send failed status
+            if (writer) {
+                writer.write({
+                    type: 'data-summarization',
+                    data: {
+                        stage: 'failed',
+                        messageCount: messagesToSummarize.length,
+                        keepingCount: messagesToKeep.length,
+                        error: errorMessage
+                    }
+                });
+            }
+
+            // Fallback: keep recent messages even if summarization fails
             return messagesToKeep;
         }
     }
 
-    async generate(input: { messages?: UIMessage[] | ModelMessage[] } & Partial<Omit<AgentState, 'messages'>> = {}): Promise<any> {
+    async generate(input: { messages?: UIMessage[] | ModelMessage[] } & Partial<Omit<AgentState, 'messages'>> = {}): Promise<VibeAgentGenerateResult> {
         const modelMessages = input.messages
             ? await this.convertMessages(input.messages)
             : this.backend.getState().messages;
@@ -293,9 +445,8 @@ Merge this with the "Existing Summary" strictly.`,
         }
 
         return {
-            text: result.text,
+            ...result,
             state: this.backend.getState(),
-            usage: result.usage,
             toolErrors: toolErrors.length > 0 ? toolErrors : undefined,
         };
     }
@@ -305,8 +456,11 @@ Merge this with the "Existing Summary" strictly.`,
         state?: Partial<Omit<AgentState, 'messages'>>,
         writer?: UIMessageStreamWriter<AgentUIMessage>,
         abortSignal?: AbortSignal,
-    } = {}): Promise<any> {
+    } = {}): Promise<VibeAgentStreamResult> {
         const { messages, state = {}, writer, abortSignal } = options;
+
+        // Store writer for use in prepareCall/pruneMessages
+        this.writer = writer;
 
         const modelMessages = messages
             ? await this.convertMessages(messages)

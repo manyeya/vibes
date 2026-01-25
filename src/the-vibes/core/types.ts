@@ -4,8 +4,12 @@ import {
     type UIMessage,
     type Tool,
     type UIMessageStreamWriter,
+    type LanguageModelUsage,
     Agent,
     ToolLoopAgent,
+    type StreamTextResult,
+    type GenerateTextResult,
+    type ToolSet,
 } from 'ai';
 
 /**
@@ -105,8 +109,12 @@ export interface SubAgent {
     description: string;
     /** The core persona and operating rules for the sub-agent */
     systemPrompt: string;
-    /** List of tool names to inherit from parent, or direct tool definitions */
+    /** Custom tool definitions (object) or explicit tool names to include (deprecated, use allowedTools) */
     tools?: string[] | Record<string, Tool<any, any>>;
+    /** Whitelist of inherited tool names to allow (undefined = all inherited tools allowed) */
+    allowedTools?: string[];
+    /** Blacklist of tool names to block (takes precedence over allowedTools) */
+    blockedTools?: string[];
     /** Optional specific model to use for this sub-agent */
     model?: LanguageModel;
     /** Optional existing middleware instances to share with this sub-agent */
@@ -191,6 +199,13 @@ export type AgentDataParts = {
         nodes: Array<{ id: string; title: string; status: string }>;
         edges: Array<{ from: string; to: string; type: 'blocks' | 'blockedBy' | 'related' }>;
     };
+    /** Context summarization progress updates */
+    summarization: {
+        stage: 'starting' | 'in_progress' | 'complete' | 'failed';
+        messageCount: number;
+        keepingCount: number;
+        error?: string;
+    };
 };
 
 /** Type-safe UI message with agent-specific data parts */
@@ -230,4 +245,24 @@ export interface VibeAgentConfig {
     toolsRequiringApproval?: string[] | Record<string, boolean | ((args: any) => boolean | Promise<boolean>)>;
     /** Optional whitelist of tool names allowed for this agent instance */
     allowedTools?: string[];
+    /** Optional blacklist of tool names to block (takes precedence over allowedTools) */
+    blockedTools?: string[];
 }
+
+/**
+ * Result returned by VibeAgent.generate()
+ * Extends GenerateTextResult with additional agent-specific fields
+ */
+export interface VibeAgentGenerateResult<TOOLS extends ToolSet = {}>
+    extends GenerateTextResult<TOOLS, never> {
+    /** The current agent state after generation */
+    state: AgentState;
+    /** Tool errors that occurred during generation (if any) */
+    toolErrors?: Array<unknown>;
+}
+
+/**
+ * Result returned by VibeAgent.stream() - same as StreamTextResult from AI SDK
+ * Using any for tool types due to dynamic tool registration
+ */
+export type VibeAgentStreamResult = StreamTextResult<any, never>;

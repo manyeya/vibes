@@ -50,3 +50,4 @@ package-lock.json
 **/*.bun
 
 workspace
+.devtools

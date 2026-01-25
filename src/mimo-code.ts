@@ -1,13 +1,21 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { createDeepAgent } from './the-vibes';
 import { mimoCodePrompt } from './prompts/mimo-code';
+import { wrapLanguageModel } from 'ai';
+import { devToolsMiddleware } from '@ai-sdk/devtools';
 
 const openrouter = createOpenRouter({
     apiKey: process.env.OPENROUTER_API_KEY,
 });
 
+const model = wrapLanguageModel({
+    model: openrouter('xiaomi/mimo-v2-flash:free') as any,
+    middleware: devToolsMiddleware(),
+});
+
 export const mimoCode = createDeepAgent({
-    model: openrouter('xiaomi/mimo-v2-flash:free'),
+    maxContextMessages: 30,
+    model: model,
     systemPrompt: mimoCodePrompt,
     maxSteps: 60,
     subAgents: [
@@ -21,6 +29,7 @@ export const mimoCode = createDeepAgent({
             - **Task Decomposition**: Split massive goals into small, verifiable chunks.
             - **Execution Strategy**: Determine the optimal order of operations.
             - **Progress Monitoring**: Regularly update the todo list as sub-agents complete their work.`,
+            allowedTools: ["writeFile", "readFile"]
         },
         {
             name: 'Librarian',
@@ -31,6 +40,7 @@ export const mimoCode = createDeepAgent({
             - **Documentation**: Write and maintain READMEs, design docs, and API specs.
             - **Pattern Discovery**: Identify re-usable patterns and components in the codebase.
             - **Context Management**: Ensure all agents have the necessary background information.`,
+            allowedTools: ["writeFile", "readFile"]
         },
         {
             name: 'Explorer',
@@ -41,6 +51,7 @@ export const mimoCode = createDeepAgent({
             - **Code Search**: Use grep, find, and file listings to locate specific logic.
             - **Dependency Mapping**: Understand how different parts of the system interact.
             - **Entry Point Identification**: Find where to start making changes.`,
+            allowedTools: ["writeFile", "readFile", "bash"]
         },
         {
             name: 'Oracle',
@@ -51,6 +62,7 @@ export const mimoCode = createDeepAgent({
             - **Logic Explanation**: Explain *why* certain code is written the way it is.
             - **Constraint Analysis**: Identify potential side-effects or breaking changes.
             - **Architectural Guidance**: Provide advice on how to integrate new features.`,
+            allowedTools: ["writeFile", "readFile"]
         },
         {
             name: 'SuperCoder',
@@ -63,6 +75,8 @@ export const mimoCode = createDeepAgent({
             - **Visual Design**: High-end aesthetics and layout.
             - **Implementation**: Writing clean, robust, and performant code.
             - **Component Architecture**: Scalable design systems.`,
+            allowedTools: ["writeFile", "readFile", "bash","activate_skill"],
+            blockedTools: ["task"]
         },
         {
             name: 'BrowserAgent',
@@ -73,6 +87,7 @@ export const mimoCode = createDeepAgent({
             - **Research**: Find design inspiration or technical solutions on the web.
             - **UI Testing**: Automate browser actions to verify functionality and accessibility.
             - **Visual Auditing**: Check for visual regressions and layout issues.`,
+            allowedTools: ["writeFile", "readFile", "bash"]
         }
     ]
 });

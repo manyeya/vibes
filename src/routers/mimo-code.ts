@@ -71,7 +71,7 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
                 const streamPromise = mimoCode.stream({
                     messages: body.messages,
                     writer,
-                }).then(result => {
+                }).then(async (result) => {
                     // Merge the result stream immediately - AI SDK includes usage automatically
                     writer.merge(result.toUIMessageStream());
 

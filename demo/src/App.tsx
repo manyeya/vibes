@@ -22,6 +22,7 @@ import {
   Shield,
   Square,
   Brain,
+  Minimize2,
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -176,6 +177,49 @@ const StatusPill = ({ message, step, type = 'default' }: { message: string; step
       {step !== undefined && <span className="text-[10px] font-mono text-zinc-500">Step {step}</span>}
       <span className={cn("text-xs font-medium", text)}>{message}</span>
     </div>
+  );
+};
+
+// ============ SUMMARIZATION PILL ============
+const SummarizationPill = ({ stage, messageCount, keepingCount, error }: {
+  stage: 'starting' | 'in_progress' | 'complete' | 'failed';
+  messageCount: number;
+  keepingCount: number;
+  error?: string;
+}) => {
+  const config = {
+    starting: { bg: 'bg-violet-500/10', border: 'border-violet-500/20', text: 'text-violet-400', icon: Loader2 },
+    in_progress: { bg: 'bg-violet-500/10', border: 'border-violet-500/20', text: 'text-violet-400', icon: Minimize2 },
+    complete: { bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', text: 'text-emerald-400', icon: CheckCircle2 },
+    failed: { bg: 'bg-red-500/10', border: 'border-red-500/20', text: 'text-red-400', icon: AlertCircle },
+  };
+
+  const { bg, border, text, icon: Icon } = config[stage];
+
+  const getLabel = () => {
+    if (stage === 'failed') return 'Summarization failed';
+    if (stage === 'complete') return 'Context compressed';
+    return 'Compressing context...';
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 5 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -5 }}
+      className={cn("flex items-center gap-2 px-3 py-2 rounded-xl border w-full", bg, border)}
+    >
+      <Icon className={cn("w-3.5 h-3.5", text, stage === 'in_progress' && 'animate-pulse')} />
+      <span className={cn("text-xs font-medium", text)}>
+        {getLabel()}
+      </span>
+      <span className={cn("text-[10px] font-mono text-zinc-500 ml-auto")}>
+        {messageCount} → {keepingCount} messages
+      </span>
+      {error && (
+        <span className={cn("text-[10px] text-red-400 truncate max-w-[100px]")}>({error.slice(0, 30)})</span>
+      )}
+    </motion.div>
   );
 };
 
@@ -356,6 +400,8 @@ export default function App() {
       }
     ],
   });
+
+  console.log(messages);
 
   const isLoading = status === 'streaming' || status === 'submitted';
 
@@ -695,6 +741,19 @@ export default function App() {
                                 message={part.data.message}
                                 step={part.data.step}
                                 type={isWorkingOn ? 'working' : isDelegating ? 'delegating' : 'default'}
+                              />
+                            );
+                          }
+
+                          // Summarization progress
+                          if (part.type === 'data-summarization') {
+                            return (
+                              <SummarizationPill
+                                key={`summarization-${partIndex}`}
+                                stage={part.data?.stage || 'starting'}
+                                messageCount={part.data?.messageCount || 0}
+                                keepingCount={part.data?.keepingCount || 0}
+                                error={part.data?.error}
                               />
                             );
                           }
