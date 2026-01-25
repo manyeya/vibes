@@ -1,4 +1,4 @@
-import { type LanguageModel, type UIMessageStreamWriter, type Tool, tool, Agent, ToolLoopAgent, stepCountIs } from "ai";
+import { type LanguageModel, type UIMessageStreamWriter, tool } from "ai";
 import { AgentUIMessage, Middleware, SubAgent } from "../core/types";
 import { VibeAgent } from "../core/agent";
 import z from "zod";
@@ -15,7 +15,7 @@ export default class SubAgentMiddleware implements Middleware {
     constructor(
         private subAgents: Map<string, SubAgent>,
         private baseModel: LanguageModel,
-        private getGlobalTools: () => Record<string, any>,
+        private _getGlobalTools: () => Record<string, any>,
         private getGlobalMiddleware: () => Middleware[] = () => [],
         private workspaceDir: string = 'workspace'
     ) { }

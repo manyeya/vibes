@@ -1,11 +1,12 @@
 import { z } from "zod";
-import { context, createMiddleware,tool } from "langchain";
+import { context, createMiddleware, tool } from "langchain";
 
 const SKILLS: Skill[] = [
   {
     name: "sales_analytics",
     description:
       "Database schema and business logic for sales data analysis including customers, orders, and revenue.",
+    keywords: ["sales", "analytics", "revenue", "customers"],
     content: context`
     # Sales Analytics Schema
 
@@ -70,6 +71,7 @@ const SKILLS: Skill[] = [
     name: "inventory_management",
     description:
       "Database schema and business logic for inventory tracking including products, warehouses, and stock levels.",
+    keywords: ["inventory", "stock", "warehouse", "products"],
     content: context`
     # Inventory Management Schema
 
@@ -141,40 +143,146 @@ const SKILLS: Skill[] = [
 ];
 
 // A skill that can be progressively disclosed to the agent
-const SkillSchema = z.object({  
-  name: z.string(),  // Unique identifier for the skill
-  description: z.string(),  // 1-2 sentence description to show in system prompt
-  content: z.string(),  // Full skill content with detailed instructions
+const SkillSchema = z.object({
+  name: z.string(), // Unique identifier for the skill
+  description: z.string(), // 1-2 sentence description to show in system prompt
+  content: z.string(), // Full skill content with detailed instructions
+  keywords: z.array(z.string()).optional(), // Alternative names/aliases for the skill
 });
 
 type Skill = z.infer<typeof SkillSchema>;
 
+// Skills cache to track active skills
+class SkillsCache {
+  private activeSkills: Set<string> = new Set();
 
-const loadSkill = tool(  
-  async ({ skillName }) => {
-    // Find and return the requested skill
-    const skill = SKILLS.find((s) => s.name === skillName);
-    if (skill) {
-      return `Loaded skill: ${skillName}\n\n${skill.content}`;  
+  findSkill(query: string): Skill | undefined {
+    const normalizedQuery = query.toLowerCase().trim();
+
+    // Direct name match
+    for (const skill of SKILLS) {
+      if (skill.name.toLowerCase() === normalizedQuery) {
+        return skill;
+      }
     }
 
-    // Skill not found
-    const available = SKILLS.map((s) => s.name).join(", ");
-    return `Skill '${skillName}' not found. Available skills: ${available}`;
+    // Partial name or keyword match
+    for (const skill of SKILLS) {
+      if (skill.name.toLowerCase().includes(normalizedQuery) || normalizedQuery.includes(skill.name.toLowerCase())) {
+        return skill;
+      }
+      if (skill.keywords?.some(k => k.toLowerCase() === normalizedQuery)) {
+        return skill;
+      }
+    }
+
+    return undefined;
+  }
+
+  activateSkill(name: string): { success: boolean; message: string; skill?: Skill } {
+    const skill = this.findSkill(name);
+
+    if (!skill) {
+      const available = SKILLS.map((s) => s.name).sort().join(', ');
+      return {
+        success: false,
+        message: `Skill "${name}" not found. Available skills: ${available}`
+      };
+    }
+
+    this.activeSkills.add(skill.name);
+    return {
+      success: true,
+      message: `✓ Activated skill: ${skill.name}`,
+      skill
+    };
+  }
+
+  deactivateSkill(name: string): { success: boolean; message: string } {
+    const skill = this.findSkill(name);
+
+    if (!skill) {
+      return { success: false, message: `Skill "${name}" not found.` };
+    }
+
+    if (this.activeSkills.has(skill.name)) {
+      this.activeSkills.delete(skill.name);
+      return { success: true, message: `Deactivated skill: ${skill.name}` };
+    }
+
+    return { success: false, message: `Skill "${name}" was not active.` };
+  }
+
+  listSkills() {
+    return SKILLS.map(s => ({
+      name: s.name,
+      description: s.description,
+      active: this.activeSkills.has(s.name),
+      keywords: s.keywords,
+    }));
+  }
+
+  getActiveSkillNames(): string[] {
+    return Array.from(this.activeSkills);
+  }
+
+  getActiveSkillContent(skillName: string): string | undefined {
+    const skill = SKILLS.find(s => s.name === skillName);
+    return skill?.content;
+  }
+
+  getAllSkillNames(): string[] {
+    return SKILLS.map(s => s.name).sort();
+  }
+}
+
+const cache = new SkillsCache();
+
+const activateSkill = tool(
+  async ({ name }) => {
+    const result = cache.activateSkill(name);
+
+    if (result.success && result.skill) {
+      return `${result.message}\n\nThe skill instructions are now part of your system prompt.`;
+    }
+
+    return result.message;
   },
   {
-    name: "load_skill",
-    description: `Load the full content of a skill into the agent's context.
-
-Use this when you need detailed information about how to handle a specific
-type of request. This will provide you with comprehensive instructions,
-policies, and guidelines for the skill area.`,
+    name: "activate_skill",
+    description: `Activate a skill to load its instructions into context. Use when the user asks to 'activate' or 'use' a specific skill.`,
     schema: z.object({
-      skillName: z.string().describe("The name of the skill to load"),
+      name: z.string().describe("The name or keyword of the skill to activate (e.g., 'sales_analytics', 'inventory', 'revenue')"),
     }),
   }
 );
 
+const deactivateSkill = tool(
+  async ({ name }) => {
+    const result = cache.deactivateSkill(name);
+    return result.message;
+  },
+  {
+    name: "deactivate_skill",
+    description: "Deactivate an active skill to remove its instructions from context",
+    schema: z.object({
+      name: z.string().describe("The name of the skill to deactivate"),
+    }),
+  }
+);
+
+const listSkills = tool(
+  async () => {
+    return {
+      skills: cache.listSkills()
+    };
+  },
+  {
+    name: "list_skills",
+    description: "List all available skills with their descriptions and active status",
+    schema: z.object({}),
+  }
+);
 
 // Build skills prompt from the SKILLS list
 const skillsPrompt = SKILLS.map(
@@ -182,18 +290,42 @@ const skillsPrompt = SKILLS.map(
 ).join("\n");
 
 
-export const skillMiddleware = createMiddleware({  
+export const skillMiddleware = createMiddleware({
   name: "skillMiddleware",
-  tools: [loadSkill],  
+  tools: [activateSkill, deactivateSkill, listSkills],
   wrapModelCall: async (request, handler) => {
-    // Build the skills addendum
-    const skillsAddendum =
-      `\n\n## Available Skills\n\n${skillsPrompt}\n\n` +
-      "Use the load_skill tool when you need detailed information " +
-      "about handling a specific type of request.";  
+    const activeSkillNames = cache.getActiveSkillNames();
 
-    // Append to system prompt
-    const newSystemPrompt = request.systemPrompt + skillsAddendum;
+    // No active skills - just show available skills briefly
+    if (activeSkillNames.length === 0) {
+      const skillsAddendum =
+        `\n\n## Skills System\n\n` +
+        `You have access to optional skill modules. Available skills: ${cache.getAllSkillNames().join(', ')}.\n` +
+        `When a user asks to "activate [skill]" or "use [skill]", use the activate_skill tool.`;
+
+      const newSystemPrompt = request.systemPrompt + skillsAddendum;
+      return handler({
+        ...request,
+        systemPrompt: newSystemPrompt,
+      });
+    }
+
+    // Build prompt with active skill content
+    let skillsPrompt = `\n\n---\n\n## Active Skills\n\nThe following skills are currently active:\n\n`;
+
+    for (const skillName of activeSkillNames) {
+      const content = cache.getActiveSkillContent(skillName);
+      const skill = SKILLS.find(s => s.name === skillName);
+
+      if (skill) {
+        skillsPrompt += `### ${skill.name}\n\n${skill.description}\n\n`;
+        if (content) {
+          skillsPrompt += `${content}\n\n`;
+        }
+      }
+    }
+
+    const newSystemPrompt = request.systemPrompt + skillsPrompt;
 
     return handler({
       ...request,

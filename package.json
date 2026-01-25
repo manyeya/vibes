@@ -7,10 +7,7 @@
     "dev": "bun run --watch src/index.ts",
     "tui:dev": "cd tui && bun run dev",
     "tui:build": "cd tui && bun run build",
-    "tui:start": "cd tui && bun run start",
-    "tui-go:dev": "cd tui-go && go run ./cmd/tui",
-    "tui-go:build": "cd tui-go && go build -o vibes-tui ./cmd/tui",
-    "tui-go:run": "./scripts/tui-go"
+    "tui:start": "cd tui && bun run start"
   },
   "dependencies": {
     "@ai-sdk/langchain": "^2.0.42",

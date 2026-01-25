@@ -10,18 +10,21 @@ interface SkillMetadata {
     path: string;
     instructions?: string;
     skillDir: string;
+    keywords?: string[];
 }
 
 /**
- * Middleware that implements an on-demand skill discovery system.
+ * Middleware that implements an on-demand skill activation system.
  * Skills are loaded from SKILL.md files in the skills/ directory.
+ *
+ * Usage: "activate <skill-name>" or "use <skill-name> skill"
  *
  * Supports Obsidian-style file includes: ![[path/to/file.md]]
  */
 export default class SkillsMiddleware implements Middleware {
     name = 'SkillsMiddleware';
     private skills: Map<string, SkillMetadata> = new Map();
-    private loadedSkills: Set<string> = new Set();
+    private activeSkills: Set<string> = new Set();
     private initializationPromise: Promise<void>;
     private writer?: UIMessageStreamWriter<AgentUIMessage>;
     private includeCache: Map<string, string> = new Map();
@@ -56,6 +59,7 @@ export default class SkillsMiddleware implements Middleware {
         const yaml = frontmatterMatch[1];
         const nameMatch = yaml.match(/^name:\s*(.*)$/m);
         const descMatch = yaml.match(/^description:\s*(.*)$/m);
+        const keywordsMatch = yaml.match(/^keywords:\s*\[(.*?)\]$/m);
 
         if (!nameMatch || !descMatch) return null;
 
@@ -64,6 +68,7 @@ export default class SkillsMiddleware implements Middleware {
             description: descMatch[1].trim(),
             path: filePath,
             skillDir,
+            keywords: keywordsMatch ? keywordsMatch[1].split(',').map(k => k.trim()) : [],
             instructions: content.slice(frontmatterMatch[0].length).trim()
         };
     }
@@ -133,40 +138,122 @@ export default class SkillsMiddleware implements Middleware {
         await this.initializationPromise;
     }
 
+    /**
+     * Find a skill by name or keyword/alias
+     */
+    private findSkill(query: string): SkillMetadata | undefined {
+        const normalizedQuery = query.toLowerCase().trim();
+
+        // Direct name match
+        for (const [name, skill] of this.skills) {
+            if (name.toLowerCase() === normalizedQuery) {
+                return skill;
+            }
+        }
+
+        // Partial name or keyword match
+        for (const [name, skill] of this.skills) {
+            if (name.toLowerCase().includes(normalizedQuery) || normalizedQuery.includes(name.toLowerCase())) {
+                return skill;
+            }
+            if (skill.keywords?.some(k => k.toLowerCase() === normalizedQuery)) {
+                return skill;
+            }
+        }
+
+        return undefined;
+    }
+
+    /**
+     * Activate a skill and return its processed content
+     */
+    async activateSkill(name: string): Promise<{ content: string; skill: SkillMetadata }> {
+        const skill = this.findSkill(name);
+        if (!skill) {
+            const available = Array.from(this.skills.keys()).sort().join(', ');
+            throw new Error(`Skill "${name}" not found. Available skills: ${available}`);
+        }
+
+        this.activeSkills.add(skill.name);
+
+        let instructions = skill.instructions || '';
+        if (instructions) {
+            instructions = await this.processIncludes(instructions, skill.skillDir);
+        }
+
+        return { content: instructions, skill };
+    }
+
+    /**
+     * Deactivate a skill
+     */
+    deactivateSkill(name: string): boolean {
+        const skill = this.findSkill(name);
+        if (skill) {
+            this.activeSkills.delete(skill.name);
+            return true;
+        }
+        return false;
+    }
+
     get tools() {
         return {
-            load_skill: tool({
-                description: 'Load detailed instructions and rules for a specific skill',
+            activate_skill: tool({
+                description: 'Activate a skill to load its instructions into context. Use this when the user asks to "activate" or "use" a specific skill.',
                 inputSchema: z.object({
-                    name: z.string().describe('The name of the skill to load'),
+                    name: z.string().describe('The name or keyword of the skill to activate (e.g., "frontend", "backend", "testing")'),
                 }),
                 execute: async ({ name }) => {
-                    const skill = this.skills.get(name);
-                    if (!skill) {
-                        throw new Error(`Skill "${name}" not found.`);
+                    try {
+                        const { skill } = await this.activateSkill(name);
+
+                        this.writer?.write({
+                            type: 'data-status',
+                            data: { message: `✓ Activated skill: ${skill.name}` },
+                        });
+
+                        return {
+                            success: true,
+                            skill: skill.name,
+                            message: `Skill "${skill.name}" has been activated. Its instructions are now part of your system prompt.`
+                        };
+                    } catch (error) {
+                        return {
+                            success: false,
+                            error: (error as Error).message
+                        };
                     }
-
-                    this.writer?.write({
-                        type: 'data-status',
-                        data: { message: `Loading skill: ${name}...` },
-                    });
-
-                    this.loadedSkills.add(name);
+                },
+            }),
+            deactivate_skill: tool({
+                description: 'Deactivate an active skill to remove its instructions from context',
+                inputSchema: z.object({
+                    name: z.string().describe('The name of the skill to deactivate'),
+                }),
+                execute: async ({ name }) => {
+                    const deactivated = this.deactivateSkill(name);
+                    if (deactivated) {
+                        return {
+                            success: true,
+                            message: `Skill "${name}" has been deactivated.`
+                        };
+                    }
                     return {
-                        success: true,
-                        message: `Skill "${name}" loaded. Detailed instructions are now available in your system prompt.`
+                        success: false,
+                        error: `Skill "${name}" not found or was not active.`
                     };
                 },
             }),
             list_skills: tool({
-                description: 'List all available modular skills',
+                description: 'List all available skills with their descriptions and active status',
                 inputSchema: z.object({}),
                 execute: async () => {
                     return {
                         skills: Array.from(this.skills.values()).map(s => ({
                             name: s.name,
                             description: s.description,
-                            loaded: this.loadedSkills.has(s.name)
+                            active: this.activeSkills.has(s.name),
+                            keywords: s.keywords
                         }))
                     };
                 }
@@ -175,27 +262,41 @@ export default class SkillsMiddleware implements Middleware {
     }
 
     async modifySystemPrompt(prompt: string): Promise<string> {
-        const availableSkills = Array.from(this.skills.values())
-            .map(s => `- ${s.name}: ${s.description}${this.loadedSkills.has(s.name) ? ' (LOADED)' : ''}`)
-            .join('\n');
+        if (this.activeSkills.size === 0) {
+            // No active skills - just mention availability briefly
+            const skillNames = Array.from(this.skills.keys()).sort();
+            return `${prompt}
 
+## Skills System
+You have access to optional skill modules. Available skills: ${skillNames.join(', ')}.
+When a user asks to "activate [skill]" or "use [skill]", use the activate_skill tool.
+`;
+        }
+
+        // Build prompt with active skill instructions
         let skillsPrompt = `${prompt}
 
-## Modular Skills
-You have access to a library of specialized skills. You only see their descriptions initially.
-If a task requires specialized knowledge from a skill, use load_skill() to reveal its full instructions.
+---
 
-Available Skills:
-${availableSkills || 'No skills found.'}
+## Active Skills
+The following skills are currently active:
+
 `;
 
-        // Inject instructions for loaded skills with includes processed
-        for (const skillName of this.loadedSkills) {
+        for (const skillName of this.activeSkills) {
             const skill = this.skills.get(skillName);
-            if (skill && skill.instructions) {
-                // Process ![[includes]] in the skill content
-                const processedInstructions = await this.processIncludes(skill.instructions, skill.skillDir);
-                skillsPrompt += `\n\n### Skill: ${skill.name}\n${processedInstructions}`;
+            if (skill) {
+                let instructions = skill.instructions || '';
+                if (instructions) {
+                    instructions = await this.processIncludes(instructions, skill.skillDir);
+                }
+                skillsPrompt += `### ${skill.name}\n\n`;
+                if (skill.description) {
+                    skillsPrompt += `${skill.description}\n\n`;
+                }
+                if (instructions) {
+                    skillsPrompt += `${instructions}\n\n`;
+                }
             }
         }
 

@@ -67,7 +67,8 @@ You have access to planning tools (tasks with dependencies), modular skills, mem
 - Use \`get_next_tasks\` to find available work (respects dependencies automatically).
 - Use \`get_execution_order\` to see which tasks can run in parallel.
 - Keep your scratchpad updated with \`update_scratchpad()\` to track your current thinking and status.
-- Search for available skills using \`list_skills()\` and load relevant ones with \`load_skill()\`.
+- Use \`activate_skill(name)\` to activate a skill when needed (e.g., "activate frontend" or "use frontend skill").
+- Use \`list_skills()\` to see all available skills and their descriptions.
 - Move large data, code blocks, or research reports to files in the project root or relevant subdirectories.
 - Sub-agent results are saved to \`subagent_results/\`. If you need to see what a sub-agent did, use \`readFile()\` on the path it provides.
 - Use \`bash()\` for advanced shell operations (grep, find, etc.).

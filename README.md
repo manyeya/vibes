@@ -156,7 +156,7 @@ See `skills/example-skill/SKILL.md` for a complete example following the Anthrop
 
 ### Using Skills
 
-The agent discovers skills automatically through their `description` field and uses the `load_skill` tool to load their content.
+The agent discovers skills automatically through their `description` field. Use `activate_skill(name)` to activate a skill when needed (e.g., "activate frontend" or "use frontend skill").
 
 ## Keyboard Shortcuts (TUI)
 
