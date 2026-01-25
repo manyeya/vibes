@@ -3,7 +3,7 @@
 import { openai } from '@ai-sdk/openai';
 import {
     SkillsMiddleware,
-    TodoListMiddleware,
+    TasksMiddleware,
     FilesystemMiddleware,
     BashMiddleware,
     SubAgentMiddleware,
@@ -16,6 +16,8 @@ import {
     AgentUIMessage,
     VibeAgentConfig,
     SubAgent,
+    TaskItem,
+    TaskTemplate,
 } from './core/types';
 import { VibeAgent } from './core/agent';
 
@@ -27,7 +29,7 @@ interface DeepAgentConfig extends Partial<Omit<VibeAgentConfig, 'instructions'>>
     systemPrompt?: string;
     /** Registry of sub-agents available for delegation */
     subAgents?: SubAgent[];
-    /** If true, standard middleware (Todos, Skills, Filesystem) will not be loaded */
+    /** If true, standard middleware (Tasks, Skills, Filesystem) will not be loaded */
     skipDefaultMiddleware?: boolean;
     /** Optional shared state backend for state inheritance (used in sub-agents) */
     backend?: any;
@@ -39,7 +41,7 @@ interface DeepAgentConfig extends Partial<Omit<VibeAgentConfig, 'instructions'>>
 
 /**
  * DeepAgent is a sophisticated AI agent framework built on Vercel AI SDK v6.
- * It supports multi-step reasoning, persistent state (todos/findings),
+ * It supports multi-step reasoning, persistent state with task dependencies,
  * real filesystem access, modular skills, and sub-agent delegation.
  */
 export class DeepAgent extends VibeAgent {
@@ -50,10 +52,10 @@ export class DeepAgent extends VibeAgent {
     constructor(config: DeepAgentConfig = {}) {
         const baseInstructions = `You are a capable AI assistant that can tackle complex, multi-step tasks.
 
-You have access to planning tools (todos), modular skills, memory systems, the REAL project filesystem, and the ability to spawn specialized sub-agents.
+You have access to planning tools (tasks with dependencies), modular skills, memory systems, the REAL project filesystem, and the ability to spawn specialized sub-agents.
 
 ## Core Principles
-1. PLAN before acting: Use todos to break down complex tasks and track progress.
+1. PLAN before acting: Use tasks to break down complex work with dependencies. Some tasks can run in parallel when they don't depend on each other.
 2. LOAD SKILLS: Use modular skills for specialized expertise. Search and load them when tackling domains you're unfamiliar with.
 3. USE MEMORY: Use your scratchpad to maintain your current cognitive state and reflections for long-term learning.
 4. LAZY LOAD: Use the filesystem to offload large context. Sub-agents save their work to files rather than returning full text to keep your context window clean.
@@ -61,7 +63,9 @@ You have access to planning tools (todos), modular skills, memory systems, the R
 6. ITERATE: Always verify results. Read files to review sub-agent outputs or your own previous work.
 
 ## Best Practices
-- For complex tasks, ALWAYS create a todo list first.
+- For complex tasks, ALWAYS create tasks first using \`create_tasks\` or \`generate_tasks\`.
+- Use \`get_next_tasks\` to find available work (respects dependencies automatically).
+- Use \`get_execution_order\` to see which tasks can run in parallel.
 - Keep your scratchpad updated with \`update_scratchpad()\` to track your current thinking and status.
 - Search for available skills using \`list_skills()\` and load relevant ones with \`load_skill()\`.
 - Move large data, code blocks, or research reports to files in the project root or relevant subdirectories.
@@ -92,7 +96,7 @@ Think step by step and tackle tasks systematically.`;
         const workspaceDir = config.workspaceDir || 'workspace';
 
         if (!skipDefaults) {
-            this.middleware.push(new TodoListMiddleware(this.backend));
+            this.middleware.push(new TasksMiddleware(this.backend));
             this.middleware.push(new SkillsMiddleware());
             this.middleware.push(new FilesystemMiddleware(workspaceDir));
             this.middleware.push(new BashMiddleware(workspaceDir));
@@ -136,5 +140,8 @@ export {
     type DeepAgentConfig,
     type AgentDataParts,
     type AgentUIMessage,
+    type TaskItem,
+    type TaskTemplate,
+    TasksMiddleware,
     createDeepAgent,
 };

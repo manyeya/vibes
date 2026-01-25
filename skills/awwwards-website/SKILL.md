@@ -110,11 +110,11 @@ gsap.to(".mask-el", {
 
 For detailed blueprints and technical deep dives, refer to the following local resources:
 
-- **[Cinematic Storytelling](file:///Users/manyeya/Documents/Code/Open-source/vibes/skills/awwwards-website/references/storytelling.md)**: Narrative flow and scrollytelling.
-- **[Motion Design & GSAP](file:///Users/manyeya/Documents/Code/Open-source/vibes/skills/awwwards-website/references/motion-design.md)**: Easing, parallax, and liquid reveals.
-- **[Typography & Editorial Layout](file:///Users/manyeya/Documents/Code/Open-source/vibes/skills/awwwards-website/references/typography.md)**: Fluid type and kinetic text.
-- **[Organic Interaction](file:///Users/manyeya/Documents/Code/Open-source/vibes/skills/awwwards-website/references/interaction.md)**: Magnetic effects and custom cursors.
-- **[Assets & Visual Polish](file:///Users/manyeya/Documents/Code/Open-source/vibes/skills/awwwards-website/references/assets.md)**: Typography pairing, noise textures, and media strategy.
+![[references/storytelling.md]]
+![[references/motion-design.md]]
+![[references/typography.md]]
+![[references/interaction.md]]
+![[references/assets.md]]
 
 ---
 Think of every page as a **piece of art**. The goal is a 10/10 Creative Excellence score.

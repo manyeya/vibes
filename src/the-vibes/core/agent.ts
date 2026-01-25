@@ -67,7 +67,8 @@ export class VibeAgent extends ToolLoopAgent {
                 let prompt = this.baseInstructions;
                 for (const mw of this.middleware) {
                     if (mw.modifySystemPrompt) {
-                        prompt = mw.modifySystemPrompt(prompt);
+                        const result = mw.modifySystemPrompt(prompt);
+                        prompt = result instanceof Promise ? await result : result;
                     }
                 }
                 if (this.customSystemPrompt) {

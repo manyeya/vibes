@@ -10,6 +10,7 @@ import {
 
 /**
  * A single item in the agent's internal todo list.
+ * @deprecated Consider using TaskItem for more advanced task management
  */
 export interface TodoItem {
     /** Unique identifier for the todo item */
@@ -22,6 +23,76 @@ export interface TodoItem {
     priority: 'low' | 'medium' | 'high';
     /** ISO timestamp when the task was created */
     createdAt: string;
+}
+
+/**
+ * A single item in the agent's advanced task management system.
+ * Supports dependencies, blocking, references, and metadata.
+ */
+export interface TaskItem {
+    /** Unique identifier for the task */
+    id: string;
+    /** Human-readable title of the task */
+    title: string;
+    /** Detailed description of the task */
+    description: string;
+    /** Current status of the task */
+    status: 'pending' | 'blocked' | 'in_progress' | 'completed' | 'failed';
+    /** Task priority level */
+    priority: 'low' | 'medium' | 'high' | 'critical';
+    /** ISO timestamp when the task was created */
+    createdAt: string;
+    /** ISO timestamp when the task was last updated */
+    updatedAt: string;
+    /** ISO timestamp when the task was completed (if applicable) */
+    completedAt?: string;
+    /** Task IDs that this task blocks (dependents that wait for this task) */
+    blocks: string[];
+    /** Task IDs that must complete before this task can start (dependencies) */
+    blockedBy: string[];
+    /** File paths to auto-read when working on this task */
+    fileReferences: string[];
+    /** Related task IDs that aren't strict dependencies */
+    taskReferences: string[];
+    /** URLs to docs, issues, PRs, or other external resources */
+    urlReferences: string[];
+    /** ID of the template used to create this task (if applicable) */
+    templateId?: string;
+    /** Additional metadata storage */
+    metadata: Record<string, any>;
+    /** Error message if the task failed */
+    error?: string;
+    /** Estimated complexity score (1-10) */
+    complexity?: number;
+    /** Owner of the task (agent name or user ID) */
+    owner?: string;
+    /** Tags for categorization and filtering */
+    tags: string[];
+}
+
+/**
+ * A reusable task template for common patterns.
+ */
+export interface TaskTemplate {
+    /** Unique identifier for the template */
+    id: string;
+    /** Human-readable name of the template */
+    name: string;
+    /** Description of what this template is for */
+    description: string;
+    /** Base task structure with parameter placeholders */
+    baseTask: Partial<Omit<TaskItem, 'id' | 'createdAt' | 'updatedAt'>>;
+    /** Parameter definitions for placeholder substitution */
+    parameters: Array<{
+        name: string;
+        description: string;
+        default?: any;
+        required: boolean;
+    }>;
+    /** Optional sub-tasks to create alongside the main task */
+    subTasks?: Partial<TaskItem>[];
+    /** Default file patterns to include as references */
+    defaultFilePatterns?: string[];
 }
 
 /**
@@ -61,8 +132,8 @@ export interface Middleware {
     onInputDelta?: (delta: string) => void;
     /** Hook executed when full tool input is available (AI SDK v6) */
     onInputAvailable?: (args: any) => void;
-    /** Function to modify or extend the system prompt */
-    modifySystemPrompt?: (prompt: string) => string;
+    /** Function to modify or extend the system prompt (can be async) */
+    modifySystemPrompt?: (prompt: string) => string | Promise<string>;
     /** Optional promise to wait for during initialization (e.g., sandbox startup) */
     waitReady?: () => Promise<void>;
     /** Optional hook to receive a data stream writer for real-time UI updates */
@@ -79,8 +150,10 @@ export interface Middleware {
 export interface AgentState {
     /** Array of conversation messages in AI SDK format */
     messages: ModelMessage[];
-    /** Structured task list for tracking agent progress */
+    /** Structured todo list for tracking agent progress */
     todos: TodoItem[];
+    /** Advanced task list with dependencies and blocking */
+    tasks: TaskItem[];
     /** Arbitrary metadata storage for middleware use */
     metadata: Record<string, any>;
     /** Summarized context of past conversation to maintain continuity */
@@ -106,6 +179,17 @@ export type AgentDataParts = {
         id: string;
         status: string;
         title?: string;
+    };
+    /** Updates to specific task items for UI synchronization */
+    task_update: {
+        id: string;
+        status: string;
+        title?: string;
+    };
+    /** Task dependency graph visualization */
+    task_graph: {
+        nodes: Array<{ id: string; title: string; status: string }>;
+        edges: Array<{ from: string; to: string; type: 'blocks' | 'blockedBy' | 'related' }>;
     };
 };
 

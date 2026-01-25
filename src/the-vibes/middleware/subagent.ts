@@ -2,7 +2,7 @@ import { type LanguageModel, type UIMessageStreamWriter, type Tool, tool, Agent,
 import { AgentUIMessage, Middleware, SubAgent } from "../core/types";
 import { VibeAgent } from "../core/agent";
 import z from "zod";
-import * as path from "node:path";
+import * as path from "path";
 
 /**
  * Middleware that allows an agent to delegate tasks to specialized sub-agents.

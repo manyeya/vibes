@@ -1,7 +1,7 @@
 import { tool, UIMessageStreamWriter } from "ai";
 import { AgentUIMessage, Middleware } from "../core/types";
 import z from "zod";
-import * as path from 'node:path';
+import * as path from "path";
 
 
 interface SkillMetadata {
@@ -9,11 +9,14 @@ interface SkillMetadata {
     description: string;
     path: string;
     instructions?: string;
+    skillDir: string;
 }
 
 /**
  * Middleware that implements an on-demand skill discovery system.
  * Skills are loaded from SKILL.md files in the skills/ directory.
+ *
+ * Supports Obsidian-style file includes: ![[path/to/file.md]]
  */
 export default class SkillsMiddleware implements Middleware {
     name = 'SkillsMiddleware';
@@ -21,6 +24,7 @@ export default class SkillsMiddleware implements Middleware {
     private loadedSkills: Set<string> = new Set();
     private initializationPromise: Promise<void>;
     private writer?: UIMessageStreamWriter<AgentUIMessage>;
+    private includeCache: Map<string, string> = new Map();
 
     constructor() {
         this.initializationPromise = this.init();
@@ -37,14 +41,15 @@ export default class SkillsMiddleware implements Middleware {
         for await (const relativePath of glob.scan(root)) {
             const skillMdPath = path.join(root, relativePath);
             const content = await Bun.file(skillMdPath).text();
-            const metadata = this.parseSkillMd(content, skillMdPath);
+            const skillDir = path.dirname(skillMdPath);
+            const metadata = this.parseSkillMd(content, skillMdPath, skillDir);
             if (metadata) {
                 this.skills.set(metadata.name, metadata);
             }
         }
     }
 
-    private parseSkillMd(content: string, filePath: string): SkillMetadata | null {
+    private parseSkillMd(content: string, filePath: string, skillDir: string): SkillMetadata | null {
         const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
         if (!frontmatterMatch) return null;
 
@@ -58,8 +63,70 @@ export default class SkillsMiddleware implements Middleware {
             name: nameMatch[1].trim(),
             description: descMatch[1].trim(),
             path: filePath,
+            skillDir,
             instructions: content.slice(frontmatterMatch[0].length).trim()
         };
+    }
+
+    /**
+     * Process Obsidian-style includes: ![[path/to/file.md]]
+     * Recursively inlines referenced files with cycle detection.
+     */
+    private async processIncludes(
+        content: string,
+        skillDir: string,
+        visited: Set<string> = new Set(),
+        depth: number = 0
+    ): Promise<string> {
+        const MAX_DEPTH = 10;
+        if (depth > MAX_DEPTH) {
+            return content; // Prevent infinite recursion
+        }
+
+        // Match ![[path]] or ![[path|title]]
+        const includeRegex = /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+        const processMatch = async (_match: string, filePath: string, _title?: string): Promise<string> => {
+            const fullPath = path.resolve(skillDir, filePath);
+
+            // Cycle detection
+            if (visited.has(fullPath)) {
+                return `<!-- [CYCLE: Already included ${filePath}] -->`;
+            }
+
+            // Check cache first
+            if (this.includeCache.has(fullPath)) {
+                return this.includeCache.get(fullPath)!;
+            }
+
+            try {
+                const fileContent = await Bun.file(fullPath).text();
+                const newVisited = new Set(visited);
+                newVisited.add(fullPath);
+
+                // Recursively process includes in the included file
+                const processedContent = await this.processIncludes(fileContent, path.dirname(fullPath), newVisited, depth + 1);
+
+                // Cache the result
+                this.includeCache.set(fullPath, processedContent);
+
+                return processedContent;
+            } catch (error) {
+                return `<!-- [ERROR: Could not include ${filePath}: ${(error as Error).message}] -->`;
+            }
+        };
+
+        // Process all includes (sequentially to handle async)
+        let result = content;
+        const matches = Array.from(content.matchAll(includeRegex));
+
+        for (const match of matches) {
+            const [fullMatch, filePath, title] = match;
+            const replacement = await processMatch(fullMatch, filePath, title);
+            result = result.replace(fullMatch, replacement);
+        }
+
+        return result;
     }
 
     async waitReady() {
@@ -107,7 +174,7 @@ export default class SkillsMiddleware implements Middleware {
         };
     }
 
-    modifySystemPrompt(prompt: string): string {
+    async modifySystemPrompt(prompt: string): Promise<string> {
         const availableSkills = Array.from(this.skills.values())
             .map(s => `- ${s.name}: ${s.description}${this.loadedSkills.has(s.name) ? ' (LOADED)' : ''}`)
             .join('\n');
@@ -122,13 +189,15 @@ Available Skills:
 ${availableSkills || 'No skills found.'}
 `;
 
-        // Inject instructions for loaded skills
-        this.loadedSkills.forEach(skillName => {
+        // Inject instructions for loaded skills with includes processed
+        for (const skillName of this.loadedSkills) {
             const skill = this.skills.get(skillName);
             if (skill && skill.instructions) {
-                skillsPrompt += `\n\n### Skill: ${skill.name}\n${skill.instructions}`;
+                // Process ![[includes]] in the skill content
+                const processedInstructions = await this.processIncludes(skill.instructions, skill.skillDir);
+                skillsPrompt += `\n\n### Skill: ${skill.name}\n${processedInstructions}`;
             }
-        });
+        }
 
         return skillsPrompt;
     }

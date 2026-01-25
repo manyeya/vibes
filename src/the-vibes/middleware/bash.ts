@@ -2,7 +2,7 @@ import { tool, type UIMessageStreamWriter } from "ai";
 import { AgentUIMessage, Middleware } from "../core/types";
 import z from "zod";
 import { $ } from "bun";
-import * as path from "node:path";
+import * as path from "path";
 
 /**
  * Middleware that grants the agent access to execute shell commands
