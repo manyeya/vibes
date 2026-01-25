@@ -96,7 +96,7 @@ Workflow:
                         return { todos: allTodos };
                     }
 
-                    return { error: 'Invalid action' };
+                    throw new Error('Invalid action');
                 },
             }),
 

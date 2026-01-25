@@ -1,6 +1,5 @@
 import { Database } from "bun:sqlite";
 import { AgentState, TodoItem } from "../core/types";
-import { $ } from "bun";
 import * as path from "node:path";
 
 /**

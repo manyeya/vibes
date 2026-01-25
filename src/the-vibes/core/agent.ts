@@ -59,7 +59,7 @@ export class VibeAgent extends ToolLoopAgent {
                     mw.onStepFinish?.(stepData);
                 }
             },
-
+            
             prepareCall: async (settings) => {
                 const state = this.backend.getState();
                 const processedMessages = await this.pruneMessages(settings.messages || []);
@@ -83,7 +83,8 @@ export class VibeAgent extends ToolLoopAgent {
                     ...settings,
                     messages: processedMessages,
                     instructions: prompt,
-                    tools: tools as any,
+                    tools,
+                    temperature: this.temperature,
                 };
             }
         });
@@ -116,10 +117,18 @@ export class VibeAgent extends ToolLoopAgent {
     }
 
     protected toolCache: Record<string, any> | null = null;
+    protected middlewareVersion: number = 0;
 
     protected async getAllTools(allowedTools?: string[]): Promise<Record<string, any>> {
+        // Cache bust: always rebuild if allowedTools filter is specified
         if (this.toolCache && !allowedTools) {
             return this.toolCache;
+        }
+
+        // Invalidate cache if middleware was added/removed
+        const currentMiddlewareVersion = this.middleware.length;
+        if (this.toolCache && this.middlewareVersion !== currentMiddlewareVersion) {
+            this.toolCache = null;
         }
 
         const allTools: Record<string, any> = {};
@@ -158,7 +167,7 @@ export class VibeAgent extends ToolLoopAgent {
                 }
             }
 
-            // Create a stable wrapped tool
+            // Create a stable wrapped tool with retry logic
             resolvedTools[toolName] = {
                 ...toolDef,
                 needsApproval: needsApproval || toolDef.needsApproval,
@@ -167,7 +176,22 @@ export class VibeAgent extends ToolLoopAgent {
                     for (const mw of this.middleware) {
                         mw.onInputAvailable?.(args);
                     }
-                    return originalExecute(args, context);
+
+                    // Retry logic for tool execution
+                    let lastError: Error | undefined;
+                    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+                        try {
+                            return await originalExecute(args, context);
+                        } catch (error) {
+                            lastError = error instanceof Error ? error : new Error(String(error));
+                            if (attempt < this.maxRetries) {
+                                // Exponential backoff before retry
+                                await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 100));
+                                console.warn(`[VibeAgent] Tool ${toolName} failed (attempt ${attempt + 1}/${this.maxRetries + 1}), retrying...`);
+                            }
+                        }
+                    }
+                    throw lastError;
                 } : undefined
             };
         }
@@ -184,6 +208,7 @@ export class VibeAgent extends ToolLoopAgent {
         }
 
         this.toolCache = resolvedTools;
+        this.middlewareVersion = this.middleware.length;
         return resolvedTools;
     }
 
@@ -309,7 +334,8 @@ Merge this with the "Existing Summary" strictly.`,
             abortSignal,
         });
 
-        result.response.then(async (finishResult) => {
+        // Handle stream completion with proper error handling
+        Promise.resolve(result.response).then(async (finishResult) => {
             const prevMessages = this.backend.getState().messages || [];
             this.backend.setState({ messages: [...prevMessages, ...finishResult.messages] });
 
@@ -318,6 +344,8 @@ Merge this with the "Existing Summary" strictly.`,
                     await mw.onStreamFinish(finishResult);
                 }
             }
+        }).catch((error: Error) => {
+            console.error('[VibeAgent] Stream completion error:', error);
         });
 
         return result;

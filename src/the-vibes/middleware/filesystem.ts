@@ -34,17 +34,12 @@ export default class FilesystemMiddleware implements Middleware {
                     path: z.string().describe('Relative path to the file from the workspace root'),
                 }),
                 execute: async ({ path: relativePath }) => {
-                    try {
-                        const fullPath = this.resolvePath(relativePath);
-                        const file = Bun.file(fullPath);
-                        if (!await file.exists()) {
-                            return { error: `File not found: ${relativePath} in workspace` };
-                        }
-                        const content = await file.text();
-                        return { content };
-                    } catch (error: any) {
-                        return { error: error.message };
+                    const fullPath = this.resolvePath(relativePath);
+                    const file = Bun.file(fullPath);
+                    if (!await file.exists()) {
+                        throw new Error(`File not found: ${relativePath} in workspace`);
                     }
+                    return { content: await file.text() };
                 },
             }),
 
@@ -55,13 +50,9 @@ export default class FilesystemMiddleware implements Middleware {
                     content: z.string().describe('Content to write'),
                 }),
                 execute: async ({ path: relativePath, content }) => {
-                    try {
-                        const fullPath = this.resolvePath(relativePath);
-                        const bytes = await Bun.write(fullPath, content);
-                        return { success: true, bytesWritten: bytes, savedTo: relativePath };
-                    } catch (error: any) {
-                        return { error: error.message };
-                    }
+                    const fullPath = this.resolvePath(relativePath);
+                    const bytes = await Bun.write(fullPath, content);
+                    return { success: true, bytesWritten: bytes, savedTo: relativePath };
                 },
             }),
 
@@ -72,17 +63,13 @@ export default class FilesystemMiddleware implements Middleware {
                     recursive: z.boolean().optional().default(false).describe('Whether to list recursively'),
                 }),
                 execute: async ({ directory, recursive }) => {
-                    try {
-                        const globPattern = recursive ? `${directory}/**/*` : `${directory}/*`;
-                        const glob = new Bun.Glob(globPattern);
-                        const files = [];
-                        for await (const file of glob.scan(this.baseDir)) {
-                            files.push(file);
-                        }
-                        return { files };
-                    } catch (error: any) {
-                        return { error: error.message };
+                    const globPattern = recursive ? `${directory}/**/*` : `${directory}/*`;
+                    const glob = new Bun.Glob(globPattern);
+                    const files = [];
+                    for await (const file of glob.scan(this.baseDir)) {
+                        files.push(file);
                     }
+                    return { files };
                 },
             }),
         };

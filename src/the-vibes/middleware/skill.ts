@@ -76,7 +76,7 @@ export default class SkillsMiddleware implements Middleware {
                 execute: async ({ name }) => {
                     const skill = this.skills.get(name);
                     if (!skill) {
-                        return { error: `Skill "${name}" not found.` };
+                        throw new Error(`Skill "${name}" not found.`);
                     }
 
                     this.writer?.write({
