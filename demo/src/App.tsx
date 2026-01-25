@@ -387,6 +387,12 @@ export default function App() {
             {messages.map((message) => {
               const isUser = (message.role as string) === 'user';
 
+              // Hide empty assistant messages that haven't received any content yet
+              const isEmptyAssistant = !isUser && (!message.parts || message.parts.length === 0);
+              if (isEmptyAssistant) {
+                return null;
+              }
+
               return (
                 <motion.div
                   key={message.id}
@@ -469,16 +475,33 @@ export default function App() {
                       })()}
 
                       {/* Tool approvals */}
-                      {message.parts?.filter((p: any) => p.state === 'call' || p.state === 'approval-requested').map((invocation: any) => (
-                        <ApprovalCard
-                          key={invocation.toolCallId}
-                          toolName={invocation.toolName}
-                          args={invocation.args}
-                          approvalId={invocation.approval.id}
-                          onApprove={(id) => addToolApprovalResponse({ id, approved: true, reason: 'Approved' })}
-                          onDeny={(id) => addToolApprovalResponse({ id, approved: false, reason: 'user denied' })}
-                        />
-                      ))}
+                      {(() => {
+                        // Track seen toolCallIds to avoid duplicate approval cards
+                        const seenToolCalls = new Set<string>();
+                        return message.parts?.filter((p: any) => {
+                          // Only show parts that need approval and haven't been seen yet
+                          const needsApproval = p.state === 'call' || p.state === 'approval-requested' || p.state === 'input-available';
+                          const isDuplicate = p.toolCallId && seenToolCalls.has(p.toolCallId);
+                          if (p.toolCallId) seenToolCalls.add(p.toolCallId);
+                          return needsApproval && !isDuplicate && p.approval?.id;
+                        }).map((invocation: any) => {
+                          // Extract tool name - handle both static and dynamic tools
+                          const toolName = invocation.toolName || invocation.name;
+                          // Extract args - might be args, input, or need to be constructed
+                          const args = invocation.args || invocation.input;
+
+                          return (
+                            <ApprovalCard
+                              key={invocation.toolCallId}
+                              toolName={toolName || 'Unknown Tool'}
+                              args={args || {}}
+                              approvalId={invocation.approval?.id}
+                              onApprove={(id) => addToolApprovalResponse({ id, approved: true, reason: 'Approved' })}
+                              onDeny={(id) => addToolApprovalResponse({ id, approved: false, reason: 'user denied' })}
+                            />
+                          );
+                        });
+                      })()}
 
                       {/* Tool results */}
                       {message.parts?.filter((p: any) => p.state === 'result').map((invocation: any) => (
