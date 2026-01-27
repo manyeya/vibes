@@ -247,7 +247,8 @@ export class VibeAgent extends ToolLoopAgent {
                             return formatContent(part.text);
                         }
                         if (part.type === 'tool-call') {
-                            return `[Tool Call: ${part.toolName} with args: ${JSON.stringify(part.args).slice(0, 200)}]`;
+                            const argsStr = part.args ? JSON.stringify(part.args).slice(0, 200) : 'no args';
+                            return `[Tool Call: ${part.toolName} with args: ${argsStr}]`;
                         }
                         return `[${part.type}]`;
                     })

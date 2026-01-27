@@ -3,6 +3,44 @@ import { AgentUIMessage, Middleware } from "../core/types";
 import z from "zod";
 import { $ } from "bun";
 import * as path from "path";
+import StateBackend from "../backend/statebackend";
+
+/**
+ * Get file type from extension
+ */
+function getFileType(filePath: string): string {
+    const ext = path.extname(filePath).toLowerCase();
+    const typeMap: Record<string, string> = {
+        '.ts': 'typescript',
+        '.tsx': 'typescript-react',
+        '.js': 'javascript',
+        '.jsx': 'javascript-react',
+        '.py': 'python',
+        '.rs': 'rust',
+        '.go': 'go',
+        '.java': 'java',
+        '.cpp': 'cpp',
+        '.c': 'c',
+        '.h': 'c-header',
+        '.css': 'css',
+        '.scss': 'scss',
+        '.html': 'html',
+        '.json': 'json',
+        '.md': 'markdown',
+        '.txt': 'text',
+        '.xml': 'xml',
+        '.yaml': 'yaml',
+        '.yml': 'yaml',
+        '.toml': 'toml',
+        '.sql': 'sql',
+        '.sh': 'shell',
+        '.bash': 'shell',
+        '.zsh': 'shell',
+        '.fish': 'shell',
+        '.ps1': 'powershell',
+    };
+    return typeMap[ext] || 'unknown';
+}
 
 /**
  * Middleware that grants the agent access to a specific directory
@@ -12,9 +50,11 @@ export default class FilesystemMiddleware implements Middleware {
     name = 'FilesystemMiddleware';
     private writer?: UIMessageStreamWriter<AgentUIMessage>;
     private baseDir: string;
+    private backend?: StateBackend;
 
-    constructor(baseDir: string = 'workspace') {
+    constructor(baseDir: string = 'workspace', backend?: StateBackend) {
         this.baseDir = path.resolve(process.cwd(), baseDir);
+        this.backend = backend;
     }
 
     onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
@@ -23,6 +63,20 @@ export default class FilesystemMiddleware implements Middleware {
 
     private resolvePath(relativePath: string): string {
         return path.resolve(this.baseDir, relativePath);
+    }
+
+    /**
+     * Track a file in the current session
+     */
+    private async trackFile(filePath: string): Promise<void> {
+        if (this.backend && 'addFile' in this.backend) {
+            try {
+                await (this.backend as any).addFile(filePath, getFileType(filePath));
+            } catch (error) {
+                // Silently fail if file tracking doesn't work
+                console.error('[FilesystemMiddleware] Failed to track file:', error);
+            }
+        }
     }
 
     get tools() {
@@ -51,7 +105,16 @@ export default class FilesystemMiddleware implements Middleware {
                 }),
                 execute: async ({ path: relativePath, content }) => {
                     const fullPath = this.resolvePath(relativePath);
+
+                    // Ensure parent directory exists
+                    const parentDir = path.dirname(fullPath);
+                    await $`mkdir -p ${parentDir}`.quiet();
+
                     const bytes = await Bun.write(fullPath, content);
+
+                    // Track the file in the current session
+                    await this.trackFile(relativePath);
+
                     return { success: true, bytesWritten: bytes, savedTo: relativePath };
                 },
             }),

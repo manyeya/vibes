@@ -11,6 +11,31 @@ interface ExecutionLevel {
 }
 
 /**
+ * File entry for tracking files created/modified during a session
+ */
+export interface FileEntry {
+    id: string;
+    sessionId: string;
+    path: string;
+    type: string;
+    createdAt: string;
+}
+
+/**
+ * Session metadata for listing sessions
+ */
+export interface SessionInfo {
+    id: string;
+    summary?: string;
+    metadata?: Record<string, any>;
+    createdAt?: string;
+    updatedAt?: string;
+    messageCount?: number;
+    taskCount?: number;
+    fileCount?: number;
+}
+
+/**
  * Persistent state manager for the agent using Bun SQLite.
  * Handles conversation history, structured todo list data, and session metadata.
  */
@@ -34,9 +59,26 @@ export default class SqliteBackend {
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 summary TEXT,
-                metadata TEXT
+                metadata TEXT,
+                created_at TEXT,
+                updated_at TEXT
             )
         `);
+
+        // Add columns to existing sessions table if they don't exist (migration)
+        // SQLite doesn't support DEFAULT in ALTER TABLE, so we add without default
+        try {
+            this.db.run(`ALTER TABLE sessions ADD COLUMN created_at TEXT`);
+            // Set current timestamp for existing rows
+            const now = new Date().toISOString();
+            this.db.run(`UPDATE sessions SET created_at = ? WHERE created_at IS NULL`, [now]);
+        } catch { /* Column already exists */ }
+        try {
+            this.db.run(`ALTER TABLE sessions ADD COLUMN updated_at TEXT`);
+            // Set current timestamp for existing rows
+            const now = new Date().toISOString();
+            this.db.run(`UPDATE sessions SET updated_at = ? WHERE updated_at IS NULL`, [now]);
+        } catch { /* Column already exists */ }
 
         this.db.run(`
             CREATE TABLE IF NOT EXISTS messages (
@@ -100,6 +142,18 @@ export default class SqliteBackend {
             )
         `);
 
+        this.db.run(`
+            CREATE TABLE IF NOT EXISTS files (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'unknown',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(session_id, path),
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )
+        `);
+
         // Indexes for common queries
         this.db.run(`
             CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id)
@@ -110,6 +164,9 @@ export default class SqliteBackend {
         this.db.run(`
             CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)
         `);
+        this.db.run(`
+            CREATE INDEX IF NOT EXISTS idx_files_session ON files(session_id)
+        `);
 
         // Initialize built-in templates if they don't exist
         this.initBuiltInTemplates();
@@ -117,7 +174,9 @@ export default class SqliteBackend {
         // Ensure session exists
         const session = this.db.query("SELECT id FROM sessions WHERE id = ?").get(this.sessionId);
         if (!session) {
-            this.db.run("INSERT INTO sessions (id, metadata) VALUES (?, ?)", [this.sessionId, JSON.stringify({})]);
+            const now = new Date().toISOString();
+            this.db.run("INSERT INTO sessions (id, metadata, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                [this.sessionId, JSON.stringify({}), now, now]);
         }
     }
 
@@ -305,12 +364,17 @@ export default class SqliteBackend {
 
     /** Partially updates the internal state */
     setState(state: Partial<AgentState>): void {
+        const now = new Date().toISOString();
         this.db.transaction(() => {
             if (state.summary !== undefined) {
-                this.db.run("UPDATE sessions SET summary = ? WHERE id = ?", [state.summary, this.sessionId]);
+                this.db.run("UPDATE sessions SET summary = ?, updated_at = ? WHERE id = ?", [state.summary, now, this.sessionId]);
             }
             if (state.metadata !== undefined) {
-                this.db.run("UPDATE sessions SET metadata = ? WHERE id = ?", [JSON.stringify(state.metadata), this.sessionId]);
+                this.db.run("UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?", [JSON.stringify(state.metadata), now, this.sessionId]);
+            }
+            // Always update updated_at when state changes
+            if (state.summary === undefined && state.metadata === undefined) {
+                this.db.run("UPDATE sessions SET updated_at = ? WHERE id = ?", [now, this.sessionId]);
             }
             if (state.messages !== undefined) {
                 // For simplicity in this implementation, we overwrite the message log for state synchronization
@@ -903,6 +967,175 @@ export default class SqliteBackend {
         await this.addTasks(tasks);
 
         return tasks;
+    }
+
+    // File operations
+
+    /**
+     * Register a file as created/modified in the current session
+     */
+    async addFile(filePath: string, fileType: string = 'unknown'): Promise<void> {
+        const fileId = `file_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+        const now = new Date().toISOString();
+
+        // Insert or replace (update timestamp if file already exists for this session)
+        this.db.run(
+            `INSERT OR REPLACE INTO files (id, session_id, path, type, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+            [fileId, this.sessionId, filePath, fileType, now]
+        );
+
+        // Update session's updated_at timestamp
+        this.db.run("UPDATE sessions SET updated_at = ? WHERE id = ?", [now, this.sessionId]);
+    }
+
+    /**
+     * Get all files for the current session
+     */
+    async getFiles(): Promise<FileEntry[]> {
+        const rows = this.db.query(
+            "SELECT id, session_id, path, type, created_at FROM files WHERE session_id = ? ORDER BY created_at DESC"
+        ).all(this.sessionId) as any[];
+
+        return rows.map(row => ({
+            id: row.id,
+            sessionId: row.session_id,
+            path: row.path,
+            type: row.type,
+            createdAt: row.created_at
+        }));
+    }
+
+    /**
+     * Delete a file record from the current session
+     */
+    async deleteFile(filePath: string): Promise<void> {
+        this.db.run("DELETE FROM files WHERE session_id = ? AND path = ?", [this.sessionId, filePath]);
+    }
+
+    /**
+     * Clear all file records for the current session
+     */
+    async clearFiles(): Promise<void> {
+        this.db.run("DELETE FROM files WHERE session_id = ?", [this.sessionId]);
+    }
+
+    // Session management operations
+
+    /**
+     * List all sessions with metadata
+     */
+    async listSessions(): Promise<SessionInfo[]> {
+        const sessions = this.db.query(`
+            SELECT s.id, s.summary, s.metadata, s.created_at, s.updated_at,
+                   COUNT(DISTINCT m.id) as message_count,
+                   COUNT(DISTINCT t.id) as task_count,
+                   COUNT(DISTINCT f.id) as file_count
+            FROM sessions s
+            LEFT JOIN messages m ON s.id = m.session_id
+            LEFT JOIN tasks t ON s.id = t.session_id
+            LEFT JOIN files f ON s.id = f.session_id
+            GROUP BY s.id
+            ORDER BY s.updated_at DESC
+        `).all() as any[];
+
+        return sessions.map(row => ({
+            id: row.id,
+            summary: row.summary || undefined,
+            metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+            messageCount: row.message_count || 0,
+            taskCount: row.task_count || 0,
+            fileCount: row.file_count || 0
+        }));
+    }
+
+    /**
+     * Get a specific session's metadata
+     */
+    async getSession(sessionId: string): Promise<SessionInfo | null> {
+        const row = this.db.query(`
+            SELECT s.id, s.summary, s.metadata, s.created_at, s.updated_at,
+                   COUNT(DISTINCT m.id) as message_count,
+                   COUNT(DISTINCT t.id) as task_count,
+                   COUNT(DISTINCT f.id) as file_count
+            FROM sessions s
+            LEFT JOIN messages m ON s.id = m.session_id
+            LEFT JOIN tasks t ON s.id = t.session_id
+            LEFT JOIN files f ON s.id = f.session_id
+            WHERE s.id = ?
+            GROUP BY s.id
+        `).get(sessionId) as any;
+
+        if (!row) return null;
+
+        return {
+            id: row.id,
+            summary: row.summary || undefined,
+            metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+            messageCount: row.message_count || 0,
+            taskCount: row.task_count || 0,
+            fileCount: row.file_count || 0
+        };
+    }
+
+    /**
+     * Create a new session
+     */
+    async createSession(title?: string, metadata: Record<string, any> = {}): Promise<string> {
+        const sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+        const now = new Date().toISOString();
+
+        const finalMetadata = title
+            ? { ...metadata, title }
+            : metadata;
+
+        this.db.run(
+            "INSERT INTO sessions (id, summary, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            [sessionId, null, JSON.stringify(finalMetadata), now, now]
+        );
+
+        return sessionId;
+    }
+
+    /**
+     * Delete a session and all its associated data
+     */
+    async deleteSession(sessionId: string): Promise<void> {
+        this.db.transaction(() => {
+            // Files will be deleted automatically due to ON DELETE CASCADE
+            this.db.run("DELETE FROM messages WHERE session_id = ?", [sessionId]);
+            this.db.run("DELETE FROM todos WHERE session_id = ?", [sessionId]);
+            this.db.run("DELETE FROM tasks WHERE session_id = ?", [sessionId]);
+            this.db.run("DELETE FROM sessions WHERE id = ?", [sessionId]);
+        })();
+    }
+
+    /**
+     * Update session metadata
+     */
+    async updateSession(sessionId: string, updates: { title?: string; summary?: string; metadata?: Record<string, any> }): Promise<void> {
+        const current = await this.getSession(sessionId);
+        if (!current) return;
+
+        const now = new Date().toISOString();
+        const finalMetadata = updates.metadata || current.metadata || {};
+        if (updates.title) {
+            finalMetadata.title = updates.title;
+        }
+
+        this.db.run(
+            `UPDATE sessions SET summary = ?, metadata = ?, updated_at = ? WHERE id = ?`,
+            [
+                updates.summary !== undefined ? updates.summary : current.summary || null,
+                JSON.stringify(finalMetadata),
+                now,
+                sessionId
+            ]
+        );
     }
 
     close() {

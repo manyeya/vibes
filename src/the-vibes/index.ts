@@ -100,7 +100,7 @@ Think step by step and tackle tasks systematically.`;
             this.addMiddleware([
                 new TasksMiddleware(this.backend),
                 new SkillsMiddleware(),
-                new FilesystemMiddleware(workspaceDir),
+                new FilesystemMiddleware(workspaceDir, this.backend),
                 new BashMiddleware(workspaceDir),
                 new MemoryMiddleware(this.backend)
             ])
