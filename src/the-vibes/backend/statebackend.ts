@@ -337,15 +337,19 @@ export default class StateBackend {
             updated.completedAt = undefined;
         }
 
+        // Track status changes BEFORE updating the task in place
+        const wasCompleted = task.status === 'completed';
+        const willBeCompleted = updated.status === 'completed';
+
         Object.assign(task, updated);
 
         // Auto-unblock dependent tasks when completing
-        if (updated.status === 'completed' && task.status !== 'completed') {
+        if (willBeCompleted && !wasCompleted) {
             await this.unblockDependentTasks(id);
         }
 
         // Re-block dependent tasks if un-completing
-        if (updates.status && updates.status !== 'completed' && task.status === 'completed') {
+        if (updates.status && !willBeCompleted && wasCompleted) {
             await this.reblockDependentTasks(id);
         }
     }

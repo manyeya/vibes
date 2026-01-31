@@ -9,7 +9,7 @@ const openrouter = createOpenRouter({
 });
 
 const model = wrapLanguageModel({
-    model: openrouter('xiaomi/mimo-v2-flash:free') as any,
+    model: openrouter('nvidia/nemotron-3-nano-30b-a3b:free') as any,
     middleware: devToolsMiddleware(),
 });
 

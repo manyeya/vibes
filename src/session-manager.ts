@@ -9,7 +9,7 @@ const openrouter = createOpenRouter({
 });
 
 const model = wrapLanguageModel({
-    model: openrouter('xiaomi/mimo-v2-flash:free') as any,
+    model: openrouter('upstage/solar-pro-3:free') as any,
     middleware: devToolsMiddleware(),
 });
 

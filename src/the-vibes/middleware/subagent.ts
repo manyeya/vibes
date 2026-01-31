@@ -118,6 +118,11 @@ class DelegationRegistry {
     }
 }
 
+interface CompletionData {
+    summary: string;
+    files: string[];
+}
+
 /**
  * Middleware that allows an agent to delegate tasks to specialized sub-agents.
  * Uses the VibeAgent core for full middleware support in sub-agents.
@@ -198,70 +203,122 @@ IMPORTANT: If a task was already delegated, you will receive a cached result.`,
                 });
 
                 try {
-                    // Append completion instructions to the task
-                    const taskWithSummaryInstructions = `${task}
+                    // Create a dedicated completion tracking tool for this subagent invocation
+                    // Using a wrapper object to avoid TypeScript closure type narrowing issues
+                    const completionRef = { data: null as CompletionData | null };
 
----
+                    const completionTool = tool({
+                        description: `Call this tool to formally report task completion. This signals that you have finished the assigned task.
 
-IMPORTANT: When you complete this task, you MUST end your response with a summary block in this exact format:
+IMPORTANT: You MUST call this tool when you are done with your task. This is how you report completion.
 
-\`\`\`SUMMARY
-Completed: [brief description of what you did]
-Files:
-- [file path 1]
-- [file path 2]
-- etc. (list all files you created or modified)
-\`\`\`
+After calling this tool, your work is considered complete. Do not continue working or make additional tool calls.`,
+                        execute: async ({ summary, files }) => {
+                            completionRef.data = {
+                                summary: summary || 'Task completed',
+                                files: files || []
+                            };
+                            return {
+                                status: 'completed',
+                                message: 'Task completion recorded. Your work has been saved.'
+                            };
+                        },
+                        inputSchema: z.object({
+                            summary: z.string().describe('A brief description of what you accomplished'),
+                            files: z.array(z.string()).optional().describe('List of files you created or modified (if any)')
+                        }),
+                    });
 
-List ALL files you created using writeFile(). If you didn't create any files, say "Files: none"`;
+                    // Create enhanced system prompt with explicit completion instructions
+                    const enhancedSystemPrompt = `${subAgentDesc.systemPrompt}
+
+## Task Completion Protocol
+
+You have been assigned a specific task to complete. When you finish your work, you MUST call the \`task_completion\` tool to report your results.
+
+### Required Completion Steps:
+1. Complete all assigned work
+2. Call the \`task_completion\` tool with a summary of what you did
+3. List any files you created or modified in the files parameter
+
+### After Calling task_completion:
+- Your task is COMPLETE
+- Do NOT make additional tool calls
+- Do NOT continue working
+- The main agent will receive your completion report
+
+This ensures the main agent knows your work is finished and can move forward.`;
 
                     // Create a VibeAgent for the sub-task to support full middleware stack
-                const agent = new VibeAgent({
-                    model: subAgentDesc.model || this.baseModel,
-                    instructions: subAgentDesc.systemPrompt,
-                    // Inherit global middleware if none specified for this sub-agent
-                    middleware: subAgentDesc.middleware || this.getGlobalMiddleware(),
-                    // Custom tool definitions (object format only, string arrays are deprecated)
-                    tools: typeof subAgentDesc.tools === 'object' && !Array.isArray(subAgentDesc.tools)
-                        ? subAgentDesc.tools as Record<string, any>
-                        : undefined,
-                    // Whitelist of inherited tools to allow (undefined = all allowed)
-                    allowedTools: subAgentDesc.allowedTools,
-                    // Blacklist of tool names to block (takes precedence over allowedTools)
-                    blockedTools: subAgentDesc.blockedTools,
-                });
+                    // CRITICAL: Always include task_completion in allowedTools
+                    const allowedToolsWithCompletion = subAgentDesc.allowedTools
+                        ? [...subAgentDesc.allowedTools, 'task_completion']
+                        : undefined;
 
-                // Execute the agent invocation (manages its own tool loop via generateText)
-                const result = await agent.generate({
-                    messages: [{ role: 'user', content: taskWithSummaryInstructions }]
-                });
+                    const agent = new VibeAgent({
+                        model: subAgentDesc.model || this.baseModel,
+                        instructions: enhancedSystemPrompt,
+                        maxSteps: 30, // Limit subagent steps to prevent infinite loops
+                        // Inherit global middleware if none specified for this sub-agent
+                        middleware: subAgentDesc.middleware || this.getGlobalMiddleware(),
+                        // Custom tool definitions (object format only, string arrays are deprecated)
+                        tools: (() => {
+                            const customTools = typeof subAgentDesc.tools === 'object' && !Array.isArray(subAgentDesc.tools)
+                                ? { ...subAgentDesc.tools as Record<string, any> }
+                                : {};
+                            // Add the completion tool
+                            customTools.task_completion = completionTool;
+                            return customTools;
+                        })(),
+                        // Whitelist of inherited tools to allow (undefined = all allowed)
+                        // IMPORTANT: task_completion is always included via allowedToolsWithCompletion
+                        allowedTools: allowedToolsWithCompletion,
+                        // Blacklist of tool names to block (takes precedence over allowedTools)
+                        blockedTools: subAgentDesc.blockedTools,
+                    });
 
-                // Parse the SUMMARY block from the agent's response
-                const summaryMatch = result.text?.match(/```SUMMARY\n([\s\S]+?)```/);
+                    // Execute the agent invocation (manages its own tool loop via generateText)
+                    const result = await agent.generate({
+                        messages: [{ role: 'user', content: `${task}
+
+When you complete this task, you MUST call the task_completion tool to report your results. This is required for proper completion signaling.` }]
+                    });
+
+                // Prioritize completion tool data (explicit completion signal)
                 let agentSummary = '';
                 let filesList: string[] = [];
+                let completionConfirmed = false;
 
-                if (summaryMatch) {
-                    const summaryContent = summaryMatch[1];
-                    agentSummary = summaryContent.trim();
-
-                    // Extract files from the summary
-                    const filesSection = summaryContent.match(/Files:\n([\s\S]+?)(?=\n\n|$)/);
-                    if (filesSection) {
-                        const filesText = filesSection[1];
-                        filesList = filesText
-                            .split('\n')
-                            .map(line => line.replace(/^[-*]\s*/, '').trim())
-                            .filter(line => line && line !== 'none' && !line.startsWith('['));
-                    }
+                if (completionRef.data) {
+                    // Subagent explicitly called task_completion tool - this is the most reliable signal
+                    agentSummary = completionRef.data.summary;
+                    filesList = completionRef.data.files;
+                    completionConfirmed = true;
                 } else {
-                    // Fallback: try to extract file paths from the text using regex
-                    const filePathRegex = /`([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+)`/g;
-                    const matches = result.text?.matchAll(filePathRegex);
-                    if (matches) {
-                        filesList = Array.from(matches).map(m => m[1]);
+                    // Fallback: Try to parse SUMMARY block from text (for backward compatibility)
+                    const summaryMatch = result.text?.match(/```SUMMARY\n([\s\S]+?)```/);
+                    if (summaryMatch) {
+                        const summaryContent = summaryMatch[1];
+                        agentSummary = summaryContent.trim();
+
+                        // Extract files from the summary
+                        const filesSection = summaryContent.match(/Files:\n([\s\S]+?)(?=\n\n|$)/);
+                        if (filesSection) {
+                            const filesText = filesSection[1];
+                            filesList = filesText
+                                .split('\n')
+                                .map(line => line.replace(/^[-*]\s*/, '').trim())
+                                .filter(line => line && line !== 'none' && !line.startsWith('['));
+                        }
+                    } else {
+                        // Last resort: try to extract file paths from the text using regex
+                        const filePathRegex = /`([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+)`/g;
+                        const matches = result.text?.matchAll(filePathRegex);
+                        if (matches) {
+                            filesList = Array.from(matches).map(m => m[1]);
+                        }
+                        agentSummary = result.text || 'Task completed but completion tool was not called. Output summarized from text.';
                     }
-                    agentSummary = result.text || 'Task completed with no detailed summary.';
                 }
 
                 // Build the final result file content
@@ -269,6 +326,9 @@ List ALL files you created using writeFile(). If you didn't create any files, sa
 
 ## Task
 ${task}
+
+## Completion Status
+${completionConfirmed ? '✅ **Confirmed** - Subagent explicitly reported completion via task_completion tool' : '⚠️ **Inferred** - Completion detected from text output'}
 
 ## What Was Done
 ${agentSummary}
@@ -292,6 +352,7 @@ ${filesList.length > 0 ? filesList.map(f => `- \`${f}\``).join('\n') : 'No files
                     console.log(`[SubAgentMiddleware] ${agent_name} completed:`, {
                         textLength: result.text?.length || 0,
                         filesCreated: filesList.length,
+                        completionConfirmed,
                     });
                 }
 
@@ -300,7 +361,7 @@ ${filesList.length > 0 ? filesList.map(f => `- \`${f}\``).join('\n') : 'No files
 
                 this.writer?.write({
                     type: 'data-status',
-                    data: { message: `Task completed by ${agent_name}` },
+                    data: { message: `Task completed by ${agent_name} ${completionConfirmed ? '(confirmed)' : '(inferred)'}` },
                 });
 
                 return {
@@ -309,6 +370,7 @@ ${filesList.length > 0 ? filesList.map(f => `- \`${f}\``).join('\n') : 'No files
                     savedTo: relativePath,
                     cached: false,
                     filesCreated: filesList.length > 0 ? filesList : undefined,
+                    completionConfirmed,
                 };
                 } catch (error) {
                     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -352,28 +414,52 @@ ${agentList}
 ### How Sub-Agent Delegation Works
 
 1. When you call task() with an agent_name and task, the sub-agent executes the work
-2. The sub-agent saves its complete output to a file on the filesystem
-3. The tool returns a file path (savedTo) where you can read the full result
-4. **IMPORTANT: The task is COMPLETE after delegation. You do not need to do anything else.**
+2. The sub-agent explicitly reports completion by calling a dedicated task_completion tool
+3. The sub-agent saves its complete output to a file on the filesystem
+4. The tool returns a response with:
+   - \`status: "completed"\` - The task finished successfully
+   - \`completionConfirmed: true\` - The subagent explicitly confirmed completion
+   - \`savedTo\` - Path to the full result file
+   - \`summary\` - Brief description of what was done
+   - \`filesCreated\` - List of any files created/modified
 
 ### CRITICAL - STOP RE-DELEGATING
 
 **READ THIS CAREFULLY:**
 
-When the task() tool returns with a \`savedTo\` file path:
+When the task() tool returns with \`status: "completed"\`:
 - The sub-agent has **ALREADY COMPLETED** the task
+- If \`completionConfirmed: true\`, the subagent explicitly called task_completion
 - The result is **COMPLETE AND FINAL**
-- Your job is to: (1) Read the file using readFile(), (2) Use the information, (3) Move on
+- Your job is to: (1) Read the result file if needed, (2) Use the information, (3) Move on
 
 **ABSOLUTELY DO NOT:**
 - Re-delegate the SAME task to the SAME sub-agent (it will return a CACHED result)
 - Re-delegate the SAME task to a DIFFERENT sub-agent (this is wasteful and redundant)
 - Break a completed task into smaller pieces and delegate those pieces
 - Attempt to "verify" or "double-check" a sub-agent's work by re-delegating
+- Continue delegating related work to the same subagent after completion
 
 **THE TASK IS COMPLETE AFTER DELEGATION. READ THE RESULT FILE AND MOVE ON.**
 
-If you receive a \`status: "cached"\` response:
+### Completion Signals You Will See
+
+A successful task delegation returns:
+\`\`\`json
+{
+  "status": "completed",
+  "completionConfirmed": true,
+  "summary": "Brief description of what was accomplished",
+  "savedTo": "subagent_results/agent_name_1234567890.md",
+  "filesCreated": ["path/to/file1.ext", "path/to/file2.ext"]
+}
+\`\`\`
+
+When you see this, the work is DONE. Proceed to your next task.
+
+### Cached Responses
+
+If you receive \`status: "cached"\`:
 - This means you already delegated this exact task
 - The cached result is being returned to prevent redundant work
 - Use the cached result - do NOT try to delegate again with different wording
@@ -381,12 +467,12 @@ If you receive a \`status: "cached"\` response:
 ### Result File Access
 
 Sub-agents run in isolated contexts. They save their results to the project filesystem and return a file path.
-You MUST use readFile() on the returned path if you need to see their full output.
+Use readFile() on the returned path if you need to see their full output.
 
 Example workflow:
-1. Call task({ agent_name: "researcher", task: "Find information about X" })
-2. Receive response with savedTo: "subagent_results/researcher_1234567890.md"
-3. Call readFile("workspace/subagent_results/researcher_1234567890.md")
+1. Call task({ agent_name: "Explorer", task: "Find the authentication logic" })
+2. Receive response with status: "completed", completionConfirmed: true, savedTo: "..."
+3. (Optional) Call readFile("workspace/subagent_results/Explorer_1234567890.md") for details
 4. Use the information from the file
 5. MOVE ON to your next task - do NOT re-delegate`;
     }
