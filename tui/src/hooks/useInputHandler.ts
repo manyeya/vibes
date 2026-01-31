@@ -17,7 +17,7 @@ export function useInputHandler(): UseInputHandlerReturn {
 
   const { messages, sendMessage, status, error, stop } = useChat({
     transport: new DefaultChatTransport({
-      api: 'http://0.0.0.0:3000/api/vibes/stream',
+      api: 'http://0.0.0.0:3000/api/mini-code/stream',
     }),
     onData: (dataPart) => {
       console.log('Received:', dataPart.type, dataPart.data);

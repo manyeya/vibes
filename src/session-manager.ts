@@ -3,13 +3,14 @@ import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { wrapLanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { mimoCodePrompt } from './prompts/mimo-code';
+import { zhipu } from 'zhipu-ai-provider';
 
 const openrouter = createOpenRouter({
     apiKey: process.env.OPENROUTER_API_KEY,
 });
 
 const model = wrapLanguageModel({
-    model: openrouter('upstage/solar-pro-3:free') as any,
+    model: zhipu('glm-4.7-flash') as any,
     middleware: devToolsMiddleware(),
 });
 
@@ -103,7 +104,6 @@ class SessionManager {
                         - **Implementation**: Writing clean, robust, and performant code.
                         - **Component Architecture**: Scalable design systems.`,
                         allowedTools: ["writeFile", "readFile", "bash","activate_skill"],
-                        blockedTools: ["task"]
                     },
                     {
                         name: 'BrowserAgent',

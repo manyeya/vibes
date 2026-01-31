@@ -100,6 +100,23 @@ export interface TaskTemplate {
 }
 
 /**
+ * Error entry for tracking failures separately from context.
+ * Errors are preserved and never included in summaries (Manus approach).
+ */
+export interface ErrorEntry {
+    /** ISO timestamp of when the error occurred */
+    timestamp: string;
+    /** Name of the tool that produced the error (if applicable) */
+    toolName?: string;
+    /** The error message or stack trace */
+    error: string;
+    /** Additional context about where/when the error occurred */
+    context?: string;
+    /** Number of times this same error recurred recently */
+    occurrenceCount: number;
+}
+
+/**
  * Configuration for a specialized sub-agent that can be delegated tasks.
  */
 export interface SubAgent {

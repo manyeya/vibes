@@ -3,10 +3,30 @@
 import { openai } from '@ai-sdk/openai';
 import {
     SkillsMiddleware,
-    TasksMiddleware,
+    PlanningMiddleware,
+    ReasoningMiddleware,
+    ReflexionMiddleware,
+    SemanticMemoryMiddleware,
+    ProceduralMemoryMiddleware,
+    SwarmMiddleware,
     FilesystemMiddleware,
     BashMiddleware,
     SubAgentMiddleware,
+    AgentSignal,
+    ProceduralMemoryConfig,
+    SharedStateEntry,
+    SwarmConfig,
+    ParallelDelegationResult,
+    FactMatch,
+    SemanticMemoryConfig,
+    ReflexionConfig,
+    Pattern,
+    ReasoningMode,
+    ReasoningConfig,
+    Lesson,
+    ErrorAnalysis,
+    Fact,
+    PatternApplication,
 } from './middleware';
 import MemoryMiddleware from './middleware/memory';
 import SqliteBackend from './backend/sqlitebackend';
@@ -37,6 +57,8 @@ interface DeepAgentConfig extends Partial<Omit<VibeAgentConfig, 'instructions'>>
     sessionId?: string;
     /** Path to the SQLite database file (default: workspace/vibes.db) */
     dbPath?: string;
+    /** Unique identifier for this agent in a swarm (used for swarm coordination) */
+    swarmId?: string;
 }
 
 /**
@@ -105,7 +127,70 @@ You have access to task management, modular skills, memory systems, the REAL pro
 
         if (!skipDefaults) {
             this.addMiddleware([
-                new TasksMiddleware(this.backend, this.model),
+                // PlanningMiddleware extends TasksMiddleware with deep agent features:
+                // - Task recitation (always-in-view current plan)
+                // - Plan save/load from filesystem
+                // - Hierarchical task support
+                new PlanningMiddleware(this.backend, this.model, {
+                    planPath: `${workspaceDir}/plan.md`,
+                    maxRecitationTasks: 10,
+                }),
+                // ReasoningMiddleware provides multiple reasoning patterns:
+                // - ReAct: Think-act loop (default)
+                // - ToT: Tree-of-Thoughts for parallel exploration
+                // - Plan-Execute: Separate planning and execution phases
+                new ReasoningMiddleware(this.model, {
+                    initialMode: 'tot',
+                    maxBranches: 5,
+                    autoExplore: true,
+                    complexityThreshold: 5,
+                }),
+                // ReflexionMiddleware adds self-improvement capabilities:
+                // - Automatic error analysis and lesson extraction
+                // - Structured lesson storage with metadata
+                // - Contextual lesson retrieval and suggestion
+                new ReflexionMiddleware(this.model, this.backend, {
+                    maxLessons: 100,
+                    lessonsPath: `${workspaceDir}/lessons.json`,
+                    autoAnalyzeErrors: true,
+                    analysisThreshold: 2,
+                    autoSuggestLessons: true,
+                }),
+                // SemanticMemoryMiddleware provides vector-based fact storage:
+                // - Store facts with optional embeddings for semantic search
+                // - Retrieve relevant facts by meaning (RAG-style memory)
+                // - Keyword-based fallback when embeddings unavailable
+                // - Persistent storage to workspace/facts.json
+                new SemanticMemoryMiddleware(this.model, {
+                    maxFacts: 200,
+                    factsPath: `${workspaceDir}/facts.json`,
+                    similarityThreshold: 0.3,
+                    autoExtract: true,
+                }),
+                // ProceduralMemoryMiddleware stores reusable patterns and workflows:
+                // - Store successful approaches as reusable patterns
+                // - Retrieve relevant patterns by context
+                // - Track pattern success rates over time
+                // - Persistent storage to workspace/patterns.json
+                new ProceduralMemoryMiddleware(this.model, {
+                    maxPatterns: 50,
+                    patternsPath: `${workspaceDir}/patterns.json`,
+                    autoSuggest: true,
+                }),
+                // SwarmMiddleware enables decentralized multi-agent collaboration:
+                // - Shared state between agents
+                // - Signaling between agents
+                // - Task proposal and claiming for swarm coordination
+                // - Persistent swarm state
+                new SwarmMiddleware(
+                    config.swarmId || config.sessionId || 'default',
+                    {
+                        maxStateEntries: 100,
+                        maxSignalHistory: 50,
+                        statePath: `${workspaceDir}/swarm-state.json`,
+                        persistState: true,
+                    }
+                ),
                 new SkillsMiddleware(),
                 new FilesystemMiddleware(workspaceDir, this.backend),
                 new BashMiddleware(workspaceDir),
@@ -152,6 +237,26 @@ export {
     type AgentUIMessage,
     type TaskItem,
     type TaskTemplate,
-    TasksMiddleware,
+    PlanningMiddleware,
+    ReasoningMiddleware,
+    ReflexionMiddleware,
+    SemanticMemoryMiddleware,
+    ProceduralMemoryMiddleware,
+    SwarmMiddleware,
+    type ReasoningMode,
+    type ReasoningConfig,
+    type Lesson,
+    type ErrorAnalysis,
+    type ReflexionConfig,
+    type Fact,
+    type FactMatch,
+    type SemanticMemoryConfig,  
+    type Pattern,
+    type PatternApplication,
+    type ProceduralMemoryConfig,
+    type AgentSignal,
+    type SharedStateEntry,
+    type SwarmConfig,
+    type ParallelDelegationResult,
     createDeepAgent,
 };

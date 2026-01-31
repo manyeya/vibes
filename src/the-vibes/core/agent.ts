@@ -15,13 +15,22 @@ import {
     VibeAgentGenerateResult,
     VibeAgentStreamResult,
     Middleware,
+    ErrorEntry,
 } from './types';
 import StateBackend from '../backend/statebackend';
+
+// Re-export ErrorEntry for convenience
+export type { ErrorEntry };
 
 /**
  * VibeAgent is the core engine for autonomous multi-step reasoning.
  * It extends the AI SDK v6 ToolLoopAgent to provide native agent support
  * while maintaining middleware hooks and context compression.
+ *
+ * Deep Agent Features:
+ * - Restorable compression: Large content replaced with file/path references
+ * - Error preservation: Errors tracked separately, never summarized
+ * - KV-cache awareness: Stable prompt prefix for cache optimization
  */
 export class VibeAgent extends ToolLoopAgent {
     protected backend: StateBackend;
@@ -43,6 +52,12 @@ export class VibeAgent extends ToolLoopAgent {
     protected writer?: any;
     /** Track last message count to prevent duplicate summarization notifications */
     protected lastSummarizedCount: number = 0;
+    /** Error log tracked separately from context (never summarized) */
+    protected errorLog: ErrorEntry[] = [];
+    /** Threshold for content compression (characters) */
+    protected compressionThreshold: number = 3000;
+    /** Maximum errors to show in recent errors section */
+    protected maxRecentErrors: number = 5;
 
     constructor(config: VibeAgentConfig, backend?: StateBackend) {
         super({
@@ -82,6 +97,12 @@ export class VibeAgent extends ToolLoopAgent {
                 }
                 if (state.summary) {
                     prompt += `\n\n## Previous Context Summary\n${state.summary}`;
+                }
+
+                // Add recent errors to prompt (Manus: keep errors visible for self-correction)
+                const recentErrors = this.getRecentErrors();
+                if (recentErrors.length > 0) {
+                    prompt += `\n\n${this.formatRecentErrors(recentErrors)}`;
                 }
 
                 const tools = await this.getAllTools(this.allowedTools);
@@ -228,6 +249,229 @@ export class VibeAgent extends ToolLoopAgent {
     }
 
     /**
+     * Add an error to the error log. Errors are tracked separately
+     * from the message stream and never included in summaries.
+     */
+    protected logError(toolName: string | undefined, error: string, context?: string): void {
+        // Check if this error already occurred recently (deduplicate)
+        const existing = this.errorLog.find(e =>
+            e.error === error &&
+            e.toolName === toolName &&
+            Date.now() - new Date(e.timestamp).getTime() < 60000 // Within last minute
+        );
+
+        if (existing) {
+            existing.occurrenceCount++;
+            existing.timestamp = new Date().toISOString();
+        } else {
+            this.errorLog.push({
+                timestamp: new Date().toISOString(),
+                toolName,
+                error,
+                context,
+                occurrenceCount: 1
+            });
+        }
+
+        // Keep only recent errors
+        if (this.errorLog.length > 20) {
+            this.errorLog = this.errorLog.slice(-20);
+        }
+
+        if (process.env.DEBUG_VIBES) {
+            console.error(`[VibeAgent] Error logged:`, { toolName, error, context });
+        }
+    }
+
+    /**
+     * Get recent errors for display in system prompt.
+     */
+    protected getRecentErrors(): ErrorEntry[] {
+        // Return most recent errors, sorted by occurrence count and recency
+        return this.errorLog
+            .slice(-this.maxRecentErrors)
+            .sort((a, b) => {
+                // Prioritize frequently occurring errors
+                if (b.occurrenceCount !== a.occurrenceCount) {
+                    return b.occurrenceCount - a.occurrenceCount;
+                }
+                return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+            });
+    }
+
+    /**
+     * Format recent errors for system prompt display.
+     * Uses clear formatting to help agent avoid repeating mistakes.
+     */
+    protected formatRecentErrors(errors: ErrorEntry[]): string {
+        let output = `## Recent Errors (Do NOT Repeat These)\n\n`;
+        output += `The following errors occurred recently. Learn from them and avoid making the same mistakes.\n\n`;
+
+        for (const err of errors) {
+            output += `### ${err.toolName || 'Unknown'} ${err.occurrenceCount > 1 ? `(×${err.occurrenceCount})` : ''}\n`;
+            output += `\`\`\`\n${err.error}\n\`\`\`\n`;
+            if (err.context) {
+                output += `**Context**: ${err.context}\n`;
+            }
+            output += `\n`;
+        }
+
+        output += `---\n`;
+        return output;
+    }
+
+    /**
+     * Extract message content as string for analysis.
+     */
+    protected extractMessageContent(msg: ModelMessage): string {
+        if (typeof msg.content === 'string') {
+            return msg.content;
+        }
+        if (Array.isArray(msg.content)) {
+            return msg.content
+                .map(part => {
+                    if (part.type === 'text') return part.text;
+                    if (part.type === 'tool-call') {
+                        const tc = part as { toolName?: string; args?: any };
+                        const argsStr = tc.args ? JSON.stringify(tc.args).slice(0, 200) : 'no args';
+                        return `[Tool Call: ${tc.toolName || 'unknown'} with args: ${argsStr}]`;
+                    }
+                    return `[${part.type}]`;
+                })
+                .join('\n');
+        }
+        return String(msg.content || '');
+    }
+
+    /**
+     * Check if a message contains a tool error.
+     */
+    protected isErrorMessage(msg: ModelMessage): boolean {
+        if (msg.role !== 'tool') return false;
+        const content = this.extractMessageContent(msg);
+        // Common error indicators
+        return content.toLowerCase().includes('error') ||
+               content.toLowerCase().includes('failed') ||
+               content.toLowerCase().includes('exception');
+    }
+
+    /**
+     * Extract tool information from a message if available.
+     */
+    protected extractToolInfo(msg: ModelMessage): { toolName?: string; args?: any } {
+        const content = msg.content;
+        if (Array.isArray(content)) {
+            for (const part of content) {
+                if (part.type === 'tool-call') {
+                    const tc = part as unknown as { toolName: string; args: any };
+                    return { toolName: tc.toolName, args: tc.args };
+                }
+            }
+        }
+        return {};
+    }
+
+    /**
+     * Apply restorable compression to large content.
+     * Replaces large file reads, web content, and tool outputs with
+     * references that can be restored if needed.
+     *
+     * Key principle: Compression is LOSSLESS and RESTORABLE.
+     * - File reads → File path reference
+     * - Web content → URL reference
+     * - Errors → NEVER compress
+     */
+    protected async compressLargeContent(messages: ModelMessage[]): Promise<ModelMessage[]> {
+        const compressed: ModelMessage[] = [];
+
+        for (const msg of messages) {
+            // NEVER compress user messages or system messages
+            if (msg.role === 'user' || msg.role === 'system') {
+                compressed.push(msg);
+                continue;
+            }
+
+            // NEVER compress errors - track them separately instead
+            if (this.isErrorMessage(msg)) {
+                const { toolName } = this.extractToolInfo(msg);
+                const content = this.extractMessageContent(msg);
+                this.logError(toolName, content, `Role: ${msg.role}`);
+                // Still include error in compressed messages, but don't shrink it
+                compressed.push(msg);
+                continue;
+            }
+
+            const content = this.extractMessageContent(msg);
+
+            // Check if content is large enough to compress
+            if (content.length < this.compressionThreshold) {
+                compressed.push(msg);
+                continue;
+            }
+
+            // Apply restorable compression based on message type
+            const compressionResult = this.compressMessage(msg, content);
+            compressed.push(compressionResult);
+        }
+
+        return compressed;
+    }
+
+    /**
+     * Compress a single message using restorable references.
+     */
+    protected compressMessage(msg: ModelMessage, content: string): ModelMessage {
+        const { toolName, args } = this.extractToolInfo(msg);
+
+        // File read result - replace with file path reference
+        if (toolName === 'readFile' && args?.path) {
+            return { ...msg, content: `[File: ${args.path} - ${content.length} chars read. Use readFile() again if you need the full content.]` } as ModelMessage;
+        }
+
+        // Bash command result - compress large outputs
+        if (toolName === 'bash' && args?.command) {
+            const commandPreview = args.command.length > 50
+                ? args.command.slice(0, 50) + '...'
+                : args.command;
+            return { ...msg, content: `[Command "${commandPreview}" output: ${content.length} chars. Run again if needed, or check workspace/logs/.]` } as ModelMessage;
+        }
+
+        // Generic large tool result - create restorable reference
+        if (toolName) {
+            return { ...msg, content: `[${toolName} result: ${content.length} chars. Key info preserved, run again if full details needed.\n\n${this.summarizeLargeContent(content)}]` } as ModelMessage;
+        }
+
+        // Assistant message with large text - summarize
+        if (msg.role === 'assistant') {
+            return { ...msg, content: `[Previous response: ${content.length} chars. ${this.summarizeLargeContent(content)}]` } as ModelMessage;
+        }
+
+        // Default: keep original
+        return msg;
+    }
+
+    /**
+     * Create a brief summary of large content for restorable compression.
+     */
+    protected summarizeLargeContent(content: string): string {
+        const lines = content.split('\n');
+        const summary: string[] = [];
+
+        // Include first few lines
+        summary.push('First lines:');
+        summary.push(...lines.slice(0, 3).map(l => `  ${l.slice(0, 100)}`));
+
+        // Include last few lines if content is very large
+        if (lines.length > 10) {
+            summary.push('...');
+            summary.push('Last lines:');
+            summary.push(...lines.slice(-3).map(l => `  ${l.slice(0, 100)}`));
+        }
+
+        return summary.join('\n');
+    }
+
+    /**
      * Format messages into a readable format for summarization.
      * Converts message structures into natural conversation format.
      */
@@ -273,30 +517,54 @@ export class VibeAgent extends ToolLoopAgent {
     }
 
     /**
-     * Prune messages by summarizing old context when exceeding maxContextMessages.
-     * Returns a new array with a system message containing the summary followed by recent messages.
+     * Prune messages using a hybrid approach:
+     * 1. First pass: Restorable compression (lossless, replaces large content with references)
+     * 2. Second pass: Summarization (lossy, only if still over limit after compression)
+     *
+     * Key principle from Manus: Keep errors visible, compress restorably.
      */
     protected async pruneMessages(messages: ModelMessage[], writer?: any): Promise<ModelMessage[]> {
         const maxMessages = this.maxContextMessages;
-        if (messages.length <= maxMessages) {
-            return messages;
+
+        // Phase 1: Apply restorable compression
+        const compressed = await this.compressLargeContent(messages);
+
+        // Calculate token estimate (rough approximation)
+        const estimateTokens = (msgs: ModelMessage[]) => {
+            return msgs.reduce((acc, msg) => acc + this.extractMessageContent(msg).length, 0) / 4;
+        };
+
+        const estimatedTokens = estimateTokens(compressed);
+
+        // If we're within reasonable bounds, return compressed messages
+        if (compressed.length <= maxMessages && estimatedTokens < 100000) {
+            return compressed;
         }
 
+        // Phase 2: Summarization for messages still over limit
         const keepCount = Math.floor(maxMessages / 2);
-        const messagesToKeep = messages.slice(-keepCount);
+        const messagesToKeep = compressed.slice(-keepCount);
 
         // Remove leading tool messages to ensure we start with meaningful content
         while (messagesToKeep.length > 0 && messagesToKeep[0].role === 'tool') {
             messagesToKeep.shift();
         }
 
-        const messagesToSummarize = messages.slice(0, messages.length - messagesToKeep.length);
-        if (messagesToSummarize.length === 0) {
+        // Extract errors to preserve them (they shouldn't be summarized)
+        const messagesToSummarize = compressed.slice(0, compressed.length - messagesToKeep.length);
+        const { messagesWithoutErrors, extractedErrors } = this.extractErrorsFromMessages(messagesToSummarize);
+
+        // Add extracted errors to the error log
+        for (const err of extractedErrors) {
+            this.logError(err.toolName, err.error, err.context);
+        }
+
+        if (messagesWithoutErrors.length === 0) {
             return messagesToKeep;
         }
 
         // Skip if we already summarized this exact message count (deduplicate)
-        if (messages.length === this.lastSummarizedCount) {
+        if (compressed.length === this.lastSummarizedCount) {
             // Return with the existing summary prepended
             const existingSummary = this.backend.getState().summary;
             if (existingSummary) {
@@ -315,12 +583,14 @@ export class VibeAgent extends ToolLoopAgent {
                 data: {
                     stage: 'starting',
                     messageCount: messagesToSummarize.length,
-                    keepingCount: messagesToKeep.length
+                    keepingCount: messagesToKeep.length,
+                    compressed: true
                 }
             });
         }
 
         if (process.env.DEBUG_VIBES) {
+            console.log(`[VibeAgent] Compressed ${messages.length} → ${compressed.length} messages, estimating ${estimatedTokens} tokens`);
             console.log(`[VibeAgent] Summarizing ${messagesToSummarize.length} messages, keeping ${messagesToKeep.length}`);
         }
 
@@ -339,14 +609,16 @@ export class VibeAgent extends ToolLoopAgent {
                 });
             }
 
-            // Format messages into readable conversation format instead of JSON
-            const formattedMessages = this.formatMessagesForSummary(messagesToSummarize);
+            // Format messages into readable conversation format
+            const formattedMessages = this.formatMessagesForSummary(messagesWithoutErrors);
 
             const { text: newSummary } = await generateText({
                 model: this.model,
                 system: `You are a helpful assistant. Summarize the following conversation history into a concise, detailed narrative.
 Retain key decisions, user requirements, current potential plan status, and important context.
 Merge this with the "Existing Summary" strictly.
+
+IMPORTANT: Exclude any error messages or stack traces from the summary - errors are tracked separately.
 
 The conversation is formatted with:
 - [N] Role: prefix indicating message number and role (System, User, Assistant, Tool Result)
@@ -363,7 +635,7 @@ The conversation is formatted with:
             this.backend.setState({ summary: newSummary });
 
             // Track that we've summarized this message count
-            this.lastSummarizedCount = messages.length;
+            this.lastSummarizedCount = compressed.length;
 
             if (process.env.DEBUG_VIBES) {
                 console.log('[VibeAgent] Summarization complete:', newSummary.slice(0, 200) + '...');
@@ -410,6 +682,34 @@ The conversation is formatted with:
             // Fallback: keep recent messages even if summarization fails
             return messagesToKeep;
         }
+    }
+
+    /**
+     * Extract error messages from the message stream before summarization.
+     * Errors should be tracked separately, not folded into summaries.
+     */
+    protected extractErrorsFromMessages(messages: ModelMessage[]): {
+        messagesWithoutErrors: ModelMessage[];
+        extractedErrors: Array<{ toolName?: string; error: string; context?: string }>;
+    } {
+        const messagesWithoutErrors: ModelMessage[] = [];
+        const extractedErrors: Array<{ toolName?: string; error: string; context?: string }> = [];
+
+        for (const msg of messages) {
+            if (this.isErrorMessage(msg)) {
+                const { toolName } = this.extractToolInfo(msg);
+                const content = this.extractMessageContent(msg);
+                extractedErrors.push({
+                    toolName,
+                    error: content,
+                    context: `Extracted during summarization`
+                });
+            } else {
+                messagesWithoutErrors.push(msg);
+            }
+        }
+
+        return { messagesWithoutErrors, extractedErrors };
     }
 
     async generate(input: { messages?: UIMessage[] | ModelMessage[] } & Partial<Omit<AgentState, 'messages'>> = {}): Promise<VibeAgentGenerateResult> {

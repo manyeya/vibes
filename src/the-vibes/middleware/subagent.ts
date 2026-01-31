@@ -124,6 +124,29 @@ interface CompletionData {
 }
 
 /**
+ * Result from a single parallel delegation
+ */
+export interface ParallelDelegationResult {
+    /** The task description */
+    task: string;
+    /** The sub-agent name */
+    agentName: string;
+    /** Whether this task completed successfully */
+    success: boolean;
+    /** The result data if successful */
+    result?: {
+        status: string;
+        summary: string;
+        savedTo: string;
+        cached: boolean;
+        filesCreated?: string[];
+        completionConfirmed: boolean;
+    };
+    /** Error message if failed */
+    error?: string;
+}
+
+/**
  * Middleware that allows an agent to delegate tasks to specialized sub-agents.
  * Uses the VibeAgent core for full middleware support in sub-agents.
  */
@@ -155,6 +178,7 @@ export default class SubAgentMiddleware implements Middleware {
     }
 
     get tools() {
+        // First, define the task tool (kept for backward compatibility)
         const taskTool = tool({
             description: `Delegate tasks to specialized sub-agents with isolated context windows.
 
@@ -394,7 +418,230 @@ ${filesList.length > 0 ? filesList.map(f => `- \`${f}\``).join('\n') : 'No files
             }),
         });
 
-        return { task: taskTool };
+        // Create the delegate tool (rename for clarity, task is an alias)
+        const delegateTool = taskTool;
+
+        // Create the parallel_delegate tool
+        const parallelDelegateTool = tool({
+            description: `Delegate multiple tasks to sub-agents in PARALLEL.
+All tasks execute concurrently, and results are aggregated.
+
+Use this when:
+- You have multiple independent tasks that can run simultaneously
+- Tasks don't depend on each other's results
+- You want to speed up total execution time
+
+Available sub-agents: ${Array.from(this.subAgents.keys()).map(name => {
+                const agent = this.subAgents.get(name)!;
+                return `${name}: ${agent.description}`;
+            }).join('\n')
+                }
+
+Example: parallel_delegate({ tasks: [
+  { agent_name: "researcher", task: "Find documentation on X" },
+  { agent_name: "coder", task: "Review src/auth.ts" }
+])`,
+            inputSchema: z.object({
+                tasks: z.array(z.object({
+                    agent_name: z.string().describe('Name of the sub-agent to use'),
+                    task: z.string().describe('The task to delegate'),
+                })).min(1).max(10).describe('Array of tasks to execute in parallel (max 10)'),
+                continueOnError: z.boolean().default(false).describe('Continue executing if one task fails'),
+            }),
+            execute: async ({ tasks, continueOnError }) => {
+                this.writer?.write({
+                    type: 'data-status',
+                    data: { message: `Delegating ${tasks.length} tasks to run in parallel...` },
+                });
+
+                // Helper function to execute a single delegation
+                const executeOne = async (agentName: string, taskDesc: string): Promise<ParallelDelegationResult> => {
+                    const subAgentDesc = this.subAgents.get(agentName);
+                    if (!subAgentDesc) {
+                        return {
+                            task: taskDesc,
+                            agentName,
+                            success: false,
+                            error: `Sub-agent not found: ${agentName}`,
+                        };
+                    }
+
+                    // Check cache first
+                    const cachedEntry = this.registry.get(agentName, taskDesc, this.cacheTTL);
+                    if (cachedEntry) {
+                        return {
+                            task: taskDesc,
+                            agentName,
+                            success: true,
+                            result: {
+                                status: 'cached',
+                                summary: `[CACHED] ${cachedEntry.summary}`,
+                                savedTo: cachedEntry.resultPath,
+                                cached: true,
+                                completionConfirmed: true,
+                            },
+                        };
+                    }
+
+                    try {
+                        // Create completion tracker
+                        const completionRef = { data: null as CompletionData | null };
+
+                        const completionTool = tool({
+                            description: 'Call this tool to formally report task completion.',
+                            execute: async ({ summary, files }) => {
+                                completionRef.data = {
+                                    summary: summary || 'Task completed',
+                                    files: files || []
+                                };
+                                return {
+                                    status: 'completed',
+                                    message: 'Task completion recorded.',
+                                };
+                            },
+                            inputSchema: z.object({
+                                summary: z.string().describe('Brief description of what you accomplished'),
+                                files: z.array(z.string()).optional().describe('Files created or modified'),
+                            }),
+                        });
+
+                        // Create system prompt
+                        const enhancedSystemPrompt = `${subAgentDesc.systemPrompt}
+
+## Task Completion Protocol
+
+You have been assigned a specific task to complete. When you finish your work, you MUST call the \`task_completion\` tool to report your results.
+
+### Required Completion Steps:
+1. Complete all assigned work
+2. Call the \`task_completion\` tool with a summary of what you did
+3. List any files you created or modified in the files parameter
+
+### After Calling task_completion:
+- Your task is COMPLETE
+- Do NOT make additional tool calls`;
+
+                        // Create agent
+                        const allowedToolsWithCompletion = subAgentDesc.allowedTools
+                            ? [...subAgentDesc.allowedTools, 'task_completion']
+                            : undefined;
+
+                        const agent = new VibeAgent({
+                            model: subAgentDesc.model || this.baseModel,
+                            instructions: enhancedSystemPrompt,
+                            maxSteps: 30,
+                            middleware: subAgentDesc.middleware || this.getGlobalMiddleware(),
+                            tools: (() => {
+                                const customTools = typeof subAgentDesc.tools === 'object' && !Array.isArray(subAgentDesc.tools)
+                                    ? { ...subAgentDesc.tools as Record<string, any> }
+                                    : {};
+                                customTools.task_completion = completionTool;
+                                return customTools;
+                            })(),
+                            allowedTools: allowedToolsWithCompletion,
+                            blockedTools: subAgentDesc.blockedTools,
+                        });
+
+                        // Execute
+                        const result = await agent.generate({
+                            messages: [{ role: 'user', content: `${taskDesc}
+
+When you complete this task, you MUST call the task_completion tool to report your results.` }]
+                        });
+
+                        // Parse completion
+                        let agentSummary = '';
+                        let filesList: string[] = [];
+                        let completionConfirmed = false;
+
+                        if (completionRef.data) {
+                            agentSummary = completionRef.data.summary;
+                            filesList = completionRef.data.files;
+                            completionConfirmed = true;
+                        } else {
+                            const summaryMatch = result.text?.match(/```SUMMARY\n([\s\S]+?)```/);
+                            if (summaryMatch) {
+                                agentSummary = summaryMatch[1].trim();
+                                const filesSection = agentSummary.match(/Files:\n([\s\S]+?)(?=\n\n|$)/);
+                                if (filesSection) {
+                                    filesList = filesSection[1]
+                                        .split('\n')
+                                        .map(line => line.replace(/^[-*]\s*/, '').trim())
+                                        .filter(line => line && line !== 'none');
+                                }
+                            } else {
+                                agentSummary = result.text || 'Task completed';
+                            }
+                        }
+
+                        // Write result file
+                        const resultDir = `${this.workspaceDir}/subagent_results`;
+                        const filename = `${agentName}_${Date.now()}.md`;
+                        const relativePath = `subagent_results/${filename}`;
+                        const fullPath = path.resolve(process.cwd(), this.workspaceDir, relativePath);
+
+                        await Bun.spawn(["mkdir", "-p", path.resolve(process.cwd(), resultDir)]).exited;
+                        await Bun.write(fullPath, `# ${agentName} Task Result\n\n## Task\n${taskDesc}\n\n## What Was Done\n${agentSummary}\n\n## Files\n${filesList.length > 0 ? filesList.map(f => `- \`${f}\``).join('\n') : 'No files'}`);
+
+                        // Register in cache
+                        this.registry.set(agentName, taskDesc, relativePath, agentSummary, true);
+
+                        return {
+                            task: taskDesc,
+                            agentName,
+                            success: true,
+                            result: {
+                                status: 'completed',
+                                summary: agentSummary,
+                                savedTo: relativePath,
+                                cached: false,
+                                filesCreated: filesList.length > 0 ? filesList : undefined,
+                                completionConfirmed,
+                            },
+                        };
+                    } catch (error) {
+                        const errorMessage = error instanceof Error ? error.message : String(error);
+                        return {
+                            task: taskDesc,
+                            agentName,
+                            success: false,
+                            error: errorMessage,
+                        };
+                    }
+                };
+
+                // Execute all tasks in parallel
+                const results = await Promise.all(
+                    tasks.map(t => executeOne(t.agent_name, t.task))
+                );
+
+                const completedCount = results.filter(r => r.success).length;
+                const failedCount = results.length - completedCount;
+
+                // Aggregate summaries
+                const summary = `Parallel delegation complete: ${completedCount}/${results.length} tasks succeeded.`;
+
+                this.writer?.write({
+                    type: 'data-status',
+                    data: { message: summary },
+                });
+
+                return {
+                    success: failedCount === 0 || continueOnError,
+                    total: results.length,
+                    completed: completedCount,
+                    failed: failedCount,
+                    results,
+                    summary,
+                };
+            },
+        });
+
+        return {
+            task: taskTool,           // Original tool name for backward compatibility
+            delegate: delegateTool,   // Alias for clarity
+            parallel_delegate: parallelDelegateTool,
+        };
     }
 
     modifySystemPrompt(prompt: string): string {
@@ -406,10 +653,65 @@ ${filesList.length > 0 ? filesList.map(f => `- \`${f}\``).join('\n') : 'No files
 
 ## Sub-Agent Delegation
 
-You can delegate tasks to specialized sub-agents using the task() tool.
+You can delegate tasks to specialized sub-agents using:
+- \`task()\` or \`delegate()\` - Single task delegation
+- \`parallel_delegate()\` - Multiple tasks running concurrently
 
 Available sub-agents:
 ${agentList}
+
+### Single Task Delegation (task / delegate)
+
+For individual tasks, use:
+\`\`\`typescript
+task({ agent_name: "researcher", task: "Find documentation on X" })
+\`\`\`
+
+### Parallel Delegation (parallel_delegate)
+
+For multiple independent tasks, use \`parallel_delegate()\` to run them concurrently:
+
+\`\`\`typescript
+parallel_delegate({
+  tasks: [
+    { agent_name: "researcher", task: "Find documentation on X" },
+    { agent_name: "coder", task: "Review src/auth.ts" },
+    { agent_name: "tester", task: "Check test coverage" }
+  ],
+  continueOnError: false  // Set true to continue if one task fails
+})
+\`\`\`
+
+**Benefits:**
+- All tasks execute simultaneously (faster total time)
+- Results are aggregated and returned together
+- Each task gets its own result file
+- Failed tasks don't prevent others from completing (with continueOnError)
+
+**When to use parallel_delegate:**
+- Multiple independent research tasks
+- Reviewing different files simultaneously
+- Gathering information from multiple sources
+- Any work that doesn't have dependencies between tasks
+
+**Response structure:**
+\`\`\`json
+{
+  "success": true,
+  "total": 3,
+  "completed": 3,
+  "failed": 0,
+  "results": [
+    {
+      "task": "...",
+      "agentName": "researcher",
+      "success": true,
+      "result": { "status": "completed", "summary": "...", "savedTo": "..." }
+    },
+    ...
+  ]
+}
+\`\`\`
 
 ### How Sub-Agent Delegation Works
 

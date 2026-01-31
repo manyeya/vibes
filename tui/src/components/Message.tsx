@@ -2,11 +2,12 @@ import React, { useCallback, useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { marked } from 'marked';
 import { TitledBox, titleStyles } from "@mishieck/ink-titled-box";
-import TodoList from './TodoList';
 
 interface MessageProps {
   role: string;
   parts: any[];
+  onTasksUpdate?: (tasks: any[]) => void;
+  onStatusUpdate?: (status: { reasoningMode?: string; isProcessing?: boolean; tokenCount?: number }) => void;
 }
 
 interface Todo {
@@ -14,7 +15,14 @@ interface Todo {
   status: 'in_progress' | 'pending' | 'completed';
 }
 
-const Message: React.FC<MessageProps> = React.memo(({ role, parts }) => {
+interface Task {
+  id: string;
+  title: string;
+  status: 'pending' | 'in_progress' | 'blocked' | 'completed' | 'failed';
+  priority?: 'low' | 'medium' | 'high' | 'critical';
+}
+
+const Message: React.FC<MessageProps> = React.memo(({ role, parts, onTasksUpdate, onStatusUpdate }) => {
 
   const renderMarkdown = useCallback((content: string) => {
     const tokens = marked.lexer(content);
@@ -59,38 +67,24 @@ const Message: React.FC<MessageProps> = React.memo(({ role, parts }) => {
               </Text>
             </Box>
           );
-
-        case 'quote':
-          return (
-            <Box key={index} flexDirection="column" marginY={1}>
-              <Text color="blue" underline>
-                {token.text}
-              </Text>
-            </Box>
-          );
         case 'heading':
           return (
             <Box key={index} flexDirection="column" marginY={1}>
-              <Text dimColor>
+              <Text bold dimColor color={token.depth === 1 ? 'cyan' : 'white'}>
                 {token.text}
               </Text>
             </Box>
           );
-
         case 'bold':
           return (
             <Box key={index} flexDirection="column" marginY={1}>
-              <Text bold>
-                {token.text}
-              </Text>
+              <Text bold>{token.text}</Text>
             </Box>
           );
         case 'italic':
           return (
             <Box key={index} flexDirection="column" marginY={1}>
-              <Text italic>
-                {token.text}
-              </Text>
+              <Text italic>{token.text}</Text>
             </Box>
           );
         case 'paragraph':
@@ -108,7 +102,6 @@ const Message: React.FC<MessageProps> = React.memo(({ role, parts }) => {
           );
         case 'space':
           return null;
-
         default:
           return (
             <Box key={index}>
@@ -119,15 +112,84 @@ const Message: React.FC<MessageProps> = React.memo(({ role, parts }) => {
     });
   }, []);
 
-  const renderToolOutput = useCallback((part: any) => {
-    if (part.toolName === 'write_todos' && part.output?.update?.todos) {
-      const todos: Todo[] = part.output.update.todos.map((todo: any) => ({
-        content: todo.content,
-        status: todo.status || 'pending'
-      }));
-      return <TodoList todos={todos} />;
-    }
+  const renderDataMessage = useCallback((data: any) => {
+    switch (data.type) {
+      case 'data-status':
+        return (
+          <Box key="status" flexDirection="row" marginY={1}>
+            <Text color="cyan" dimColor>
+              ●
+            </Text>
+            <Text color="gray" dimColor>
+              {' '}{data.data?.message || data.message || 'Status update'}
+            </Text>
+          </Box>
+        );
 
+      case 'data-task_update':
+        const task = data.data;
+        return (
+          <Box key="task" flexDirection="row" marginY={1}>
+            <Text color={
+              task.status === 'completed' ? 'green' :
+              task.status === 'failed' ? 'red' :
+              task.status === 'in_progress' ? 'yellow' : 'gray'
+            }>
+              {task.status === 'completed' ? '✓' :
+               task.status === 'in_progress' ? '●' : '○'}
+            </Text>
+            <Text color="white">
+              {' '}{task.title}
+            </Text>
+          </Box>
+        );
+
+      case 'data-tool_progress':
+        return (
+          <Box key="progress" flexDirection="row" marginY={1}>
+            <Text color="blue" dimColor>
+              ⚙
+            </Text>
+            <Text color="gray" dimColor>
+              {' '}{data.data?.toolName || data.toolName || 'Working'}...
+            </Text>
+          </Box>
+        );
+
+      case 'data-summarization':
+        return (
+          <Box key="summary" flexDirection="row" marginY={1}>
+            <Text color="magenta" dimColor>
+              📝
+            </Text>
+            <Text color="gray" dimColor>
+              {' '}Context compressed (saved {data.data?.saved || data.saved} tokens)
+            </Text>
+          </Box>
+        );
+
+      case 'data-error':
+        return (
+          <Box key="error" flexDirection="row" marginY={1}>
+            <Text color="red">
+              ✗
+            </Text>
+            <Text color="red">
+              {' '}{data.data?.error || data.error || 'Error occurred'}
+            </Text>
+          </Box>
+        );
+
+      case 'data-reasoning_mode':
+        onStatusUpdate?.({ reasoningMode: data.data?.mode || data.mode });
+        return null;
+
+      default:
+        return null;
+    }
+  }, [onStatusUpdate]);
+
+  const renderToolOutput = useCallback((part: any) => {
     const toolName = part.toolName || part.type;
     const content = part.output?.update?.messages?.[0]?.kwargs?.content ||
       part.output?.content ||
@@ -139,7 +201,7 @@ const Message: React.FC<MessageProps> = React.memo(({ role, parts }) => {
           <Text bold color="cyan">┌─ Tool: {toolName}</Text>
         </Box>
         <Box marginLeft={2}>
-          <Text dimColor>{content}</Text>
+          <Text dimColor color="yellow">{content}</Text>
         </Box>
         <Box>
           <Text bold color="cyan">└─</Text>
@@ -166,13 +228,17 @@ const Message: React.FC<MessageProps> = React.memo(({ role, parts }) => {
         );
       }
 
+      if (part.type === 'data') {
+        return renderDataMessage(part);
+      }
+
       return (
         <Box key={index} flexDirection="column" marginY={1}>
           <Text dimColor>Unknown part type: {part.type}</Text>
         </Box>
       );
     });
-  }, [parts, renderMarkdown, renderToolOutput]);
+  }, [parts, renderMarkdown, renderToolOutput, renderDataMessage]);
 
   return (
     <TitledBox

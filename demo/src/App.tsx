@@ -17,6 +17,14 @@ import {
   ChevronDown,
   MessageSquare,
   History,
+  Activity,
+  Database,
+  Lightbulb,
+  Network,
+  Settings2,
+  Zap,
+  FileText,
+  AlertCircle,
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -36,6 +44,260 @@ interface Session {
   taskCount: number;
   fileCount: number;
 }
+
+interface Task {
+  id: string;
+  title: string;
+  status: 'pending' | 'in_progress' | 'blocked' | 'completed' | 'failed';
+  priority?: 'low' | 'medium' | 'high' | 'critical';
+}
+
+interface AgentStatus {
+  reasoningMode: 'react' | 'tot' | 'plan-execute';
+  isProcessing: boolean;
+  tokenCount: number;
+  tasks: Task[];
+  lessonsLearned: number;
+  factsStored: number;
+  patternsCount: number;
+}
+
+// ============ AGENT STATUS PANEL ============
+interface AgentStatusPanelProps {
+  status: AgentStatus;
+  isOpen: boolean;
+  onToggle: () => void;
+}
+
+const AgentStatusPanel = ({ status, isOpen, onToggle }: AgentStatusPanelProps) => {
+  const getModeIcon = (mode: string) => {
+    switch (mode) {
+      case 'tot': return '🌳';
+      case 'plan-execute': return '📋';
+      case 'react': return '🔄';
+      default: return '🔄';
+    }
+  };
+
+  const getModeLabel = (mode: string) => {
+    switch (mode) {
+      case 'tot': return 'Tree-of-Thoughts';
+      case 'plan-execute': return 'Plan-Execute';
+      case 'react': return 'ReAct';
+      default: return 'ReAct';
+    }
+  };
+
+  const getModeColor = (mode: string) => {
+    switch (mode) {
+      case 'tot': return 'text-violet-400';
+      case 'plan-execute': return 'text-amber-400';
+      case 'react': return 'text-cyan-400';
+      default: return 'text-cyan-400';
+    }
+  };
+
+  const getStatusIcon = (taskStatus: string) => {
+    switch (taskStatus) {
+      case 'in_progress': return '●';
+      case 'completed': return '✓';
+      case 'blocked': return '⊘';
+      case 'failed': return '✗';
+      case 'pending':
+      default: return '○';
+    }
+  };
+
+  const getStatusColor = (taskStatus: string) => {
+    switch (taskStatus) {
+      case 'in_progress': return 'text-yellow-400';
+      case 'completed': return 'text-emerald-400';
+      case 'blocked': return 'text-red-400';
+      case 'failed': return 'text-red-400';
+      case 'pending':
+      default: return 'text-zinc-500';
+    }
+  };
+
+  const getPriorityColor = (priority?: string) => {
+    switch (priority) {
+      case 'critical': return 'bg-red-500';
+      case 'high': return 'bg-orange-500';
+      case 'medium': return 'bg-yellow-500';
+      case 'low': return 'bg-emerald-500';
+      default: return 'bg-zinc-500';
+    }
+  };
+
+  const activeTasks = status.tasks.filter(t => t.status !== 'completed' && t.status !== 'failed');
+  const completedTasks = status.tasks.filter(t => t.status === 'completed');
+
+  return (
+    <div className="w-80 border-l border-zinc-800 bg-zinc-900/50 flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+        <div className="flex items-center gap-2">
+          <Activity className="w-4 h-4 text-cyan-400" />
+          <span className="text-sm font-medium text-zinc-200">Agent Status</span>
+        </div>
+        <button
+          onClick={onToggle}
+          className="p-1 rounded hover:bg-zinc-800 transition-colors"
+        >
+          <Settings2 className={cn("w-4 h-4 text-zinc-500 transition-transform", isOpen && "rotate-90")} />
+        </button>
+      </div>
+
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="flex-1 overflow-y-auto"
+          >
+            <div className="p-4 space-y-4">
+              {/* Reasoning Mode */}
+              <div className="p-3 rounded-lg bg-gradient-to-r from-cyan-500/10 to-violet-500/10 border border-cyan-500/20">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs text-zinc-500">Reasoning Mode</span>
+                  {status.isProcessing && (
+                    <span className="flex items-center gap-1 text-xs text-cyan-400">
+                      <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse" />
+                      Processing
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">{getModeIcon(status.reasoningMode)}</span>
+                  <span className={cn("text-sm font-medium", getModeColor(status.reasoningMode))}>
+                    {getModeLabel(status.reasoningMode)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Memory Systems */}
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Database className="w-3.5 h-3.5 text-violet-400" />
+                  <span className="text-xs font-medium text-zinc-400">Memory Systems</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="p-2 rounded-lg bg-zinc-800/50 text-center">
+                    <Lightbulb className="w-3.5 h-3.5 text-amber-400 mx-auto mb-1" />
+                    <div className="text-lg font-semibold text-white">{status.lessonsLearned}</div>
+                    <div className="text-[9px] text-zinc-500">Lessons</div>
+                  </div>
+                  <div className="p-2 rounded-lg bg-zinc-800/50 text-center">
+                    <FileText className="w-3.5 h-3.5 text-blue-400 mx-auto mb-1" />
+                    <div className="text-lg font-semibold text-white">{status.factsStored}</div>
+                    <div className="text-[9px] text-zinc-500">Facts</div>
+                  </div>
+                  <div className="p-2 rounded-lg bg-zinc-800/50 text-center">
+                    <Network className="w-3.5 h-3.5 text-emerald-400 mx-auto mb-1" />
+                    <div className="text-lg font-semibold text-white">{status.patternsCount}</div>
+                    <div className="text-[9px] text-zinc-500">Patterns</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Active Tasks */}
+              {activeTasks.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Zap className="w-3.5 h-3.5 text-yellow-400" />
+                    <span className="text-xs font-medium text-zinc-400">
+                      Active Tasks ({activeTasks.length})
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {activeTasks.slice(0, 5).map((task) => (
+                      <div key={task.id} className="flex items-center gap-2 p-2 rounded-lg bg-zinc-800/30">
+                        <span className={getStatusColor(task.status)}>
+                          {getStatusIcon(task.status)}
+                        </span>
+                        <span className={cn("text-xs truncate flex-1",
+                          task.status === 'pending' ? 'text-zinc-500' : 'text-zinc-300'
+                        )}>
+                          {task.title.length > 28 ? task.title.slice(0, 28) + '...' : task.title}
+                        </span>
+                        {task.priority && (
+                          <span className={cn("w-1.5 h-1.5 rounded-full", getPriorityColor(task.priority))} />
+                        )}
+                      </div>
+                    ))}
+                    {activeTasks.length > 5 && (
+                      <div className="text-[10px] text-zinc-600 text-center">
+                        +{activeTasks.length - 5} more
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Completed Tasks */}
+              {completedTasks.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    <span className="text-xs font-medium text-zinc-400">
+                      Completed ({completedTasks.length})
+                    </span>
+                  </div>
+                  <div className="space-y-1">
+                    {completedTasks.slice(-3).map((task) => (
+                      <div key={task.id} className="flex items-center gap-2 p-2 rounded-lg bg-zinc-800/20">
+                        <span className="text-emerald-400 text-xs">✓</span>
+                        <span className="text-xs text-zinc-500 truncate">
+                          {task.title.length > 30 ? task.title.slice(0, 30) + '...' : task.title}
+                        </span>
+                      </div>
+                    ))}
+                    {completedTasks.length > 3 && (
+                      <div className="text-[10px] text-zinc-600 text-center">
+                        +{completedTasks.length - 3} more
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Capabilities */}
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Brain className="w-3.5 h-3.5 text-cyan-400" />
+                  <span className="text-xs font-medium text-zinc-400">Capabilities</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {['Planning', 'Tree-of-Thoughts', 'Semantic Memory', 'Reflexion', 'Procedural', 'Swarm'].map((cap) => (
+                    <span
+                      key={cap}
+                      className="px-2 py-0.5 text-[10px] rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20"
+                    >
+                      {cap}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Token Usage */}
+              {status.tokenCount > 0 && (
+                <div className="pt-2 border-t border-zinc-800">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-zinc-500">Total Tokens</span>
+                    <span className="text-zinc-300 font-mono">
+                      {status.tokenCount.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
 
 // ============ APPROVAL CARD ============
 interface ApprovalCardProps {
@@ -245,9 +507,10 @@ interface ChatMessageProps {
   message: any;
   onApprove: (id: string) => void;
   onDeny: (id: string) => void;
+  onAgentStatusUpdate?: (update: Partial<AgentStatus>) => void;
 }
 
-const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
+const ChatMessage = ({ message, onApprove, onDeny, onAgentStatusUpdate }: ChatMessageProps) => {
   const isUser = message.role === 'user';
   const parts = (message as any).parts || [];
   const isEmptyAssistant = !isUser && parts.length === 0;
@@ -255,6 +518,31 @@ const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
 
   const seenToolApprovals = new Set<string>();
   const seenToolResults = new Set<string>();
+
+  // Process agent data parts for status updates
+  useEffect(() => {
+    if (!isUser && onAgentStatusUpdate) {
+      parts.forEach((part: any) => {
+        if (part.type === 'data') {
+          const data = part;
+          if (data.type === 'data-reasoning_mode') {
+            onAgentStatusUpdate({ reasoningMode: data.data?.mode || data.mode || 'react' });
+          } else if (data.type === 'data-status') {
+            const msg = data.data?.message || data.message || '';
+            if (msg.includes('Lesson saved')) {
+              onAgentStatusUpdate({ lessonsLearned: 1 });
+            }
+            if (msg.includes('Fact remembered')) {
+              onAgentStatusUpdate({ factsStored: 1 });
+            }
+            if (msg.includes('Pattern saved')) {
+              onAgentStatusUpdate({ patternsCount: 1 });
+            }
+          }
+        }
+      });
+    }
+  }, [parts, isUser, onAgentStatusUpdate]);
 
   return (
     <div className={cn("flex gap-3 mb-6", isUser && "flex-row-reverse")}>
@@ -302,12 +590,85 @@ const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
             );
           }
 
-          // Status pill
-          if (part.type === 'data-status') {
+          // Data type: Status
+          if (part.type === 'data' && part.data?.type === 'data-status') {
+            const data = part.data;
             return (
               <div key={`status-${partIndex}`} className="inline-flex items-center gap-2 px-3 py-1.5 bg-zinc-800/50 rounded-lg text-xs text-zinc-400">
                 <Clock className="w-3 h-3" />
-                {part.data?.message || 'Working...'}
+                {data.data?.message || data.message || 'Working...'}
+              </div>
+            );
+          }
+
+          // Data type: Task Update
+          if (part.type === 'data' && part.data?.type === 'data-task_update') {
+            const task = part.data.data;
+            const getStatusColor = (status: string) => {
+              switch (status) {
+                case 'completed': return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+                case 'failed': return 'bg-red-500/10 text-red-400 border-red-500/20';
+                case 'in_progress': return 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20';
+                default: return 'bg-zinc-800/50 text-zinc-400 border-zinc-700';
+              }
+            };
+            const getStatusIcon = (status: string) => {
+              switch (status) {
+                case 'completed': return <CheckCircle2 className="w-3.5 h-3.5" />;
+                case 'failed': return <X className="w-3.5 h-3.5" />;
+                case 'in_progress': return <Loader2 className="w-3.5 h-3.5 animate-spin" />;
+                default: return <Clock className="w-3.5 h-3.5" />;
+              }
+            };
+            return (
+              <div key={`task-${partIndex}`} className={cn(
+                "flex items-center gap-2 px-3 py-2 rounded-lg border text-xs",
+                getStatusColor(task.status)
+              )}>
+                {getStatusIcon(task.status)}
+                <span className="font-medium">{task.title}</span>
+                {task.priority && (
+                  <span className="ml-auto text-[9px] uppercase px-1.5 py-0.5 rounded bg-zinc-700/50">
+                    {task.priority}
+                  </span>
+                )}
+              </div>
+            );
+          }
+
+          // Data type: Tool Progress
+          if (part.type === 'data' && part.data?.type === 'data-tool_progress') {
+            const data = part.data;
+            return (
+              <div key={`progress-${partIndex}`} className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-lg text-xs text-blue-400">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                {data.data?.toolName || data.toolName || 'Working'}...
+              </div>
+            );
+          }
+
+          // Data type: Summarization
+          if (part.type === 'data' && part.data?.type === 'data-summarization') {
+            const data = part.data;
+            return (
+              <div key={`summary-${partIndex}`} className="inline-flex items-center gap-2 px-3 py-1.5 bg-purple-500/10 border border-purple-500/20 rounded-lg text-xs text-purple-400">
+                <Database className="w-3 h-3" />
+                Context compressed (saved {data.data?.saved || data.saved || 0} tokens)
+              </div>
+            );
+          }
+
+          // Data type: Error
+          if (part.type === 'data' && part.data?.type === 'data-error') {
+            const data = part.data;
+            return (
+              <div key={`error-${partIndex}`} className="flex items-start gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <span className="text-sm text-red-400">
+                    {data.data?.error || data.error || 'An error occurred'}
+                  </span>
+                </div>
               </div>
             );
           }
@@ -368,9 +729,11 @@ const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
 interface ChatAreaProps {
   sessionId: string;
   onSessionUpdate: () => void;
+  onAgentStatusUpdate: (update: Partial<AgentStatus>) => void;
+  agentStatus: AgentStatus;
 }
 
-const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
+const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusUpdate, agentStatus }: ChatAreaProps) => {
   const [input, setInput] = useState('');
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
 
@@ -382,6 +745,8 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
     }),
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
   });
+
+  console.log(messages)
 
   // Load session history
   useEffect(() => {
@@ -413,12 +778,56 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
     }
   }, [messages, status, isLoadingHistory, onSessionUpdate]);
 
+  // Track agent state from messages
+  useEffect(() => {
+    let tokenCount = 0;
+    const tasks: Task[] = [];
+    let reasoningMode: AgentStatus['reasoningMode'] = 'react';
+    let lessonsLearned = 0;
+    let factsStored = 0;
+    let patternsCount = 0;
+
+    messages.forEach((msg: any) => {
+      if (msg.role === 'assistant') {
+        msg.parts?.forEach((part: any) => {
+          if (part.type === 'data') {
+            const data = part;
+            if (data.type === 'data-reasoning_mode') {
+              reasoningMode = data.data?.mode || data.mode || 'react';
+            } else if (data.type === 'data-task_update') {
+              const task = data.data;
+              const exists = tasks.find(t => t.id === task.id);
+              if (exists) {
+                Object.assign(exists, task);
+              } else {
+                tasks.push(task as Task);
+              }
+            } else if (data.type === 'data-status') {
+              const msg = data.data?.message || data.message || '';
+              if (msg.includes('Lesson saved')) lessonsLearned++;
+              if (msg.includes('Fact remembered')) factsStored++;
+              if (msg.includes('Pattern saved')) patternsCount++;
+            }
+          }
+        });
+      }
+
+      // Count tokens
+      const usage = (msg as any).usage;
+      if (usage) {
+        tokenCount += usage.promptTokens + usage.completionTokens;
+      }
+    });
+
+    onAgentStatusUpdate({
+      reasoningMode,
+      tokenCount,
+      tasks,
+      isProcessing: status === 'streaming',
+    });
+  }, [messages, status, onAgentStatusUpdate]);
+
   const isLoading = status === 'streaming' || status === 'submitted' || isLoadingHistory;
-  const totalTokens = messages.reduce((acc, m) => {
-    const usage = (m as any).usage;
-    if (usage) acc += usage.promptTokens + usage.completionTokens;
-    return acc;
-  }, 0);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -444,7 +853,14 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
                 <Bot className="w-6 h-6 text-cyan-400" />
               </div>
               <h2 className="text-lg font-medium text-white mb-1">Vibes</h2>
-              <p className="text-sm text-zinc-500">Your AI coding assistant</p>
+              <p className="text-sm text-zinc-500">Your Deep Agent assistant</p>
+              <div className="mt-4 flex flex-wrap justify-center gap-2">
+                {['Planning', 'Tree-of-Thoughts', 'Memory', 'Reflexion', 'Swarm'].map((cap) => (
+                  <span key={cap} className="px-2 py-1 text-[10px] rounded-full bg-zinc-800 text-zinc-500">
+                    {cap}
+                  </span>
+                ))}
+              </div>
             </div>
           ) : (
             <AnimatePresence mode="popLayout">
@@ -454,6 +870,7 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
                   message={message}
                   onApprove={(id) => addToolApprovalResponse({ id, approved: true, reason: 'Approved' })}
                   onDeny={(id) => addToolApprovalResponse({ id, approved: false, reason: 'user denied' })}
+                  onAgentStatusUpdate={onAgentStatusUpdate}
                 />
               ))}
             </AnimatePresence>
@@ -523,9 +940,9 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
               {isLoading ? <Square className="w-4 h-4" /> : <Send className="w-4 h-4" />}
             </button>
           </div>
-          {totalTokens > 0 && (
+          {agentStatus.tokenCount > 0 && (
             <div className="text-[10px] text-zinc-600 text-center mt-2">
-              {totalTokens.toLocaleString()} tokens used
+              {agentStatus.tokenCount.toLocaleString()} tokens used
             </div>
           )}
         </form>
@@ -542,6 +959,16 @@ export default function App() {
   });
   const [isSessionSidebarOpen, setIsSessionSidebarOpen] = useState(false);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
+  const [isAgentPanelOpen, setIsAgentPanelOpen] = useState(true);
+  const [agentStatus, setAgentStatus] = useState<AgentStatus>({
+    reasoningMode: 'react',
+    isProcessing: false,
+    tokenCount: 0,
+    tasks: [],
+    lessonsLearned: 0,
+    factsStored: 0,
+    patternsCount: 0,
+  });
 
   const fetchSessions = useCallback(async () => {
     setIsLoadingSessions(true);
@@ -588,6 +1015,30 @@ export default function App() {
     }
   }, [currentSessionId, fetchSessions]);
 
+  const handleAgentStatusUpdate = useCallback((update: Partial<AgentStatus>) => {
+    setAgentStatus(prev => {
+      const updated = { ...prev, ...update };
+
+      // Handle incremental updates for counters
+      if (update.lessonsLearned && typeof update.lessonsLearned === 'number') {
+        updated.lessonsLearned = prev.lessonsLearned + update.lessonsLearned;
+      }
+      if (update.factsStored && typeof update.factsStored === 'number') {
+        updated.factsStored = prev.factsStored + update.factsStored;
+      }
+      if (update.patternsCount && typeof update.patternsCount === 'number') {
+        updated.patternsCount = prev.patternsCount + update.patternsCount;
+      }
+
+      // Merge tasks if provided
+      if (update.tasks) {
+        updated.tasks = update.tasks;
+      }
+
+      return updated;
+    });
+  }, []);
+
   useEffect(() => {
     localStorage.setItem('vibes_session_id', currentSessionId);
   }, [currentSessionId]);
@@ -595,6 +1046,19 @@ export default function App() {
   useEffect(() => {
     fetchSessions();
   }, [fetchSessions]);
+
+  // Reset agent status when session changes
+  useEffect(() => {
+    setAgentStatus({
+      reasoningMode: 'react',
+      isProcessing: false,
+      tokenCount: 0,
+      tasks: [],
+      lessonsLearned: 0,
+      factsStored: 0,
+      patternsCount: 0,
+    });
+  }, [currentSessionId]);
 
   const currentSession = sessions.find(s => s.id === currentSessionId);
 
@@ -643,7 +1107,22 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            {/* Reasoning Mode Indicator */}
+            <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-zinc-800/50">
+              <span className="text-xs">
+                {agentStatus.reasoningMode === 'tot' ? '🌳' :
+                 agentStatus.reasoningMode === 'plan-execute' ? '📋' : '🔄'}
+              </span>
+              <span className="text-[10px] text-zinc-500 capitalize">
+                {agentStatus.reasoningMode === 'tot' ? 'Tree-of-Thoughts' :
+                 agentStatus.reasoningMode === 'plan-execute' ? 'Plan-Execute' : 'ReAct'}
+              </span>
+              {agentStatus.isProcessing && (
+                <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse" />
+              )}
+            </div>
+
             {sessions.length > 1 && (
               <span className="text-[10px] text-zinc-600 hidden sm:inline">
                 {sessions.length} sessions
@@ -657,8 +1136,17 @@ export default function App() {
           key={currentSessionId}
           sessionId={currentSessionId}
           onSessionUpdate={fetchSessions}
+          onAgentStatusUpdate={handleAgentStatusUpdate}
+          agentStatus={agentStatus}
         />
       </div>
+
+      {/* Agent Status Panel */}
+      <AgentStatusPanel
+        status={agentStatus}
+        isOpen={isAgentPanelOpen}
+        onToggle={() => setIsAgentPanelOpen(!isAgentPanelOpen)}
+      />
     </div>
   );
 }

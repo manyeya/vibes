@@ -8,10 +8,11 @@ interface VirtualizedMessageListProps {
   messages: UIMessage<unknown, UIDataTypes, UITools>[];
   isLoading: boolean;
   maxHeight?: number;
+  onStatusUpdate?: (status: { reasoningMode?: string; isProcessing?: boolean; tokenCount?: number }) => void;
 }
 
 export const VirtualizedMessageList: React.FC<VirtualizedMessageListProps> = React.memo(
-  ({ messages, isLoading, maxHeight = 20 }) => {
+  ({ messages, isLoading, maxHeight = 20, onStatusUpdate }) => {
     const visibleMessages = useMemo(() => {
       return messages.slice(-maxHeight);
     }, [messages, maxHeight]);
@@ -23,7 +24,12 @@ export const VirtualizedMessageList: React.FC<VirtualizedMessageListProps> = Rea
     return (
       <Box flexDirection="column" flexGrow={1}>
         {visibleMessages.map((msg, index) => (
-          <Message key={stableKeys[index]} role={msg.role} parts={msg.parts} />
+          <Message
+            key={stableKeys[index]}
+            role={msg.role}
+            parts={msg.parts}
+            onStatusUpdate={onStatusUpdate}
+          />
         ))}
         {isLoading && (
           <Box paddingY={1} paddingX={1}>
@@ -38,3 +44,5 @@ export const VirtualizedMessageList: React.FC<VirtualizedMessageListProps> = Rea
 );
 
 VirtualizedMessageList.displayName = 'VirtualizedMessageList';
+
+export default VirtualizedMessageList;

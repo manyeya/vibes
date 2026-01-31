@@ -15,11 +15,11 @@ import { AgentUIMessage, Middleware, TaskItem } from '../core/types';
  */
 export default class TasksMiddleware implements Middleware {
     name = 'TasksMiddleware';
-    private writer?: UIMessageStreamWriter<AgentUIMessage>;
+    protected writer?: UIMessageStreamWriter<AgentUIMessage>;
 
     constructor(
-        private backend: StateBackend,
-        private model?: LanguageModel,
+        protected backend: StateBackend,
+        protected model?: LanguageModel,
     ) {}
 
     onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
@@ -306,7 +306,7 @@ Output ONLY valid JSON, no markdown:
         };
     }
 
-    modifySystemPrompt(prompt: string): string {
+    modifySystemPrompt(prompt: string): string | Promise<string> {
         return `${prompt}
 
 ## Task Workflow
@@ -324,7 +324,7 @@ DO NOT create generic tasks like "analyze requirements" or "implement logic".
 `;
     }
 
-    async onStreamFinish() {
+    async onStreamFinish(): Promise<void> {
         // Tasks are managed explicitly by the agent
     }
 }
