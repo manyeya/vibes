@@ -5,7 +5,13 @@ import {
     type LanguageModel,
 } from 'ai';
 import { z } from 'zod';
-import { AgentUIMessage, Middleware, ErrorEntry } from '../core/types';
+import {
+    AgentUIMessage,
+    Middleware,
+    ErrorEntry,
+    createDataStreamWriter,
+    type DataStreamWriter,
+} from '../core/types';
 
 /**
  * A learned lesson extracted from errors or successful experiences.
@@ -81,7 +87,7 @@ export interface ReflexionConfig {
 export class ReflexionMiddleware implements Middleware {
     name = 'ReflexionMiddleware';
 
-    private writer?: UIMessageStreamWriter<AgentUIMessage>;
+    private writer?: DataStreamWriter;
     private model?: LanguageModel;
     private backend?: any; // StateBackend for persistence
 
@@ -106,7 +112,7 @@ export class ReflexionMiddleware implements Middleware {
     }
 
     onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
-        this.writer = writer;
+        this.writer = createDataStreamWriter(writer);
     }
 
     /**
@@ -620,10 +626,7 @@ Automatically extracts lessons from the session experience.`,
      * Notify UI of status changes
      */
     private notifyStatus(message: string) {
-        this.writer?.write({
-            type: 'data-status',
-            data: { message },
-        });
+        this.writer?.writeStatus(message);
     }
 
     /**

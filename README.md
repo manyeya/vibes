@@ -158,6 +158,11 @@ See `skills/example-skill/SKILL.md` for a complete example following the Anthrop
 
 The agent discovers skills automatically through their `description` field. Use `activate_skill(name)` to activate a skill when needed (e.g., "activate frontend" or "use frontend skill").
 
+
+
+
+
+
 ## Keyboard Shortcuts (TUI)
 
 - `Ctrl+D` - Submit message

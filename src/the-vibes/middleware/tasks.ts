@@ -7,7 +7,13 @@ import {
 import { z } from 'zod';
 
 import StateBackend from '../backend/statebackend';
-import { AgentUIMessage, Middleware, TaskItem } from '../core/types';
+import {
+    AgentUIMessage,
+    Middleware,
+    TaskItem,
+    createDataStreamWriter,
+    type DataStreamWriter,
+} from '../core/types';
 
 /**
  * Middleware that provides task management with dependencies.
@@ -15,7 +21,7 @@ import { AgentUIMessage, Middleware, TaskItem } from '../core/types';
  */
 export default class TasksMiddleware implements Middleware {
     name = 'TasksMiddleware';
-    protected writer?: UIMessageStreamWriter<AgentUIMessage>;
+    protected writer?: DataStreamWriter;
 
     constructor(
         protected backend: StateBackend,
@@ -23,7 +29,7 @@ export default class TasksMiddleware implements Middleware {
     ) {}
 
     onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
-        this.writer = writer;
+        this.writer = createDataStreamWriter(writer);
     }
 
     get tools() {
@@ -92,10 +98,7 @@ export default class TasksMiddleware implements Middleware {
                         createdTasks.push(newTask);
                         await this.backend.addTask(newTask);
 
-                        this.writer?.write({
-                            type: 'data-task_update',
-                            data: { id: newTask.id, status: newTask.status, title: newTask.title },
-                        });
+                        this.writer?.writeTaskUpdate(newTask.id, newTask.status, newTask.title);
                     }
 
                     return {
@@ -214,10 +217,7 @@ Output ONLY valid JSON, no markdown:
                         createdTasks.push(newTask);
                         await this.backend.addTask(newTask);
 
-                        this.writer?.write({
-                            type: 'data-task_update',
-                            data: { id: newTask.id, status: newTask.status, title: newTask.title },
-                        });
+                        this.writer?.writeTaskUpdate(newTask.id, newTask.status, newTask.title);
                     }
 
                     return {
@@ -255,10 +255,11 @@ Output ONLY valid JSON, no markdown:
 
                     await this.backend.updateTask(input.id, updates);
 
-                    this.writer?.write({
-                        type: 'data-task_update',
-                        data: { id: input.id, status: updates.status || current.status, title: current.title },
-                    });
+                    this.writer?.writeTaskUpdate(
+                        input.id,
+                        updates.status || current.status,
+                        current.title
+                    );
 
                     return { success: true, message: `Task ${input.id} updated` };
                 },

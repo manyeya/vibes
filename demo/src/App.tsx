@@ -507,10 +507,9 @@ interface ChatMessageProps {
   message: any;
   onApprove: (id: string) => void;
   onDeny: (id: string) => void;
-  onAgentStatusUpdate?: (update: Partial<AgentStatus>) => void;
 }
 
-const ChatMessage = ({ message, onApprove, onDeny, onAgentStatusUpdate }: ChatMessageProps) => {
+const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
   const isUser = message.role === 'user';
   const parts = (message as any).parts || [];
   const isEmptyAssistant = !isUser && parts.length === 0;
@@ -518,31 +517,6 @@ const ChatMessage = ({ message, onApprove, onDeny, onAgentStatusUpdate }: ChatMe
 
   const seenToolApprovals = new Set<string>();
   const seenToolResults = new Set<string>();
-
-  // Process agent data parts for status updates
-  useEffect(() => {
-    if (!isUser && onAgentStatusUpdate) {
-      parts.forEach((part: any) => {
-        if (part.type === 'data') {
-          const data = part;
-          if (data.type === 'data-reasoning_mode') {
-            onAgentStatusUpdate({ reasoningMode: data.data?.mode || data.mode || 'react' });
-          } else if (data.type === 'data-status') {
-            const msg = data.data?.message || data.message || '';
-            if (msg.includes('Lesson saved')) {
-              onAgentStatusUpdate({ lessonsLearned: 1 });
-            }
-            if (msg.includes('Fact remembered')) {
-              onAgentStatusUpdate({ factsStored: 1 });
-            }
-            if (msg.includes('Pattern saved')) {
-              onAgentStatusUpdate({ patternsCount: 1 });
-            }
-          }
-        }
-      });
-    }
-  }, [parts, isUser, onAgentStatusUpdate]);
 
   return (
     <div className={cn("flex gap-3 mb-6", isUser && "flex-row-reverse")}>
@@ -729,11 +703,11 @@ const ChatMessage = ({ message, onApprove, onDeny, onAgentStatusUpdate }: ChatMe
 interface ChatAreaProps {
   sessionId: string;
   onSessionUpdate: () => void;
-  onAgentStatusUpdate: (update: Partial<AgentStatus>) => void;
+  onAgentStatusChange: (status: AgentStatus) => void;
   agentStatus: AgentStatus;
 }
 
-const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusUpdate, agentStatus }: ChatAreaProps) => {
+const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus }: ChatAreaProps) => {
   const [input, setInput] = useState('');
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
 
@@ -744,9 +718,60 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusUpdate, agentStatus
       body: { session_id: sessionId },
     }),
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
-  });
 
-  console.log(messages)
+    // ============ PROPER PATTERN: Use onData for streaming updates ============
+    onData: (dataPart) => {
+      console.log('Streaming data:', dataPart);
+
+      switch (dataPart.type) {
+        case 'data-reasoning_mode':
+          // Agent switched reasoning mode
+          onAgentStatusChange({ ...agentStatus, reasoningMode: dataPart.data.mode });
+          break;
+
+        case 'data-task_update':
+          // Task status changed - use reconciliation by id
+          onAgentStatusChange({
+            ...agentStatus,
+            tasks: agentStatus.tasks.some(t => t.id === dataPart.data.id)
+              ? agentStatus.tasks.map(t => t.id === dataPart.data.id ? { ...t, ...dataPart.data } : t)
+              : [...agentStatus.tasks, dataPart.data],
+          });
+          break;
+
+        case 'data-status':
+          // Check for memory system updates
+          const msg = dataPart.data.message;
+          if (msg.includes('Lesson saved')) {
+            onAgentStatusChange({ ...agentStatus, lessonsLearned: agentStatus.lessonsLearned + 1 });
+          }
+          if (msg.includes('Fact remembered')) {
+            onAgentStatusChange({ ...agentStatus, factsStored: agentStatus.factsStored + 1 });
+          }
+          if (msg.includes('Pattern saved')) {
+            onAgentStatusChange({ ...agentStatus, patternsCount: agentStatus.patternsCount + 1 });
+          }
+          break;
+
+        case 'data-notification':
+          // Transient notifications - could show toast here
+          console.log('Notification:', dataPart.data.level, dataPart.data.message);
+          break;
+
+        case 'data-summarization':
+          console.log('Summarization:', dataPart.data.stage);
+          break;
+
+        case 'data-tool_progress':
+          console.log('Tool progress:', dataPart.data.toolName, dataPart.data.stage);
+          break;
+
+        case 'data-error':
+          console.error('Agent error:', dataPart.data.error);
+          break;
+      }
+    },
+  });
 
   // Load session history
   useEffect(() => {
@@ -778,54 +803,25 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusUpdate, agentStatus
     }
   }, [messages, status, isLoadingHistory, onSessionUpdate]);
 
-  // Track agent state from messages
+  // Update processing state
   useEffect(() => {
-    let tokenCount = 0;
-    const tasks: Task[] = [];
-    let reasoningMode: AgentStatus['reasoningMode'] = 'react';
-    let lessonsLearned = 0;
-    let factsStored = 0;
-    let patternsCount = 0;
+    if (agentStatus.isProcessing !== (status === 'streaming')) {
+      onAgentStatusChange({ ...agentStatus, isProcessing: status === 'streaming' });
+    }
+  }, [status, agentStatus.isProcessing, onAgentStatusChange]);
 
-    messages.forEach((msg: any) => {
-      if (msg.role === 'assistant') {
-        msg.parts?.forEach((part: any) => {
-          if (part.type === 'data') {
-            const data = part;
-            if (data.type === 'data-reasoning_mode') {
-              reasoningMode = data.data?.mode || data.mode || 'react';
-            } else if (data.type === 'data-task_update') {
-              const task = data.data;
-              const exists = tasks.find(t => t.id === task.id);
-              if (exists) {
-                Object.assign(exists, task);
-              } else {
-                tasks.push(task as Task);
-              }
-            } else if (data.type === 'data-status') {
-              const msg = data.data?.message || data.message || '';
-              if (msg.includes('Lesson saved')) lessonsLearned++;
-              if (msg.includes('Fact remembered')) factsStored++;
-              if (msg.includes('Pattern saved')) patternsCount++;
-            }
-          }
-        });
-      }
-
-      // Count tokens
+  // Calculate token count from messages (only done once when messages change)
+  useEffect(() => {
+    const tokenCount = messages.reduce((acc: number, msg: any) => {
       const usage = (msg as any).usage;
-      if (usage) {
-        tokenCount += usage.promptTokens + usage.completionTokens;
-      }
-    });
+      if (usage) acc += usage.promptTokens + usage.completionTokens;
+      return acc;
+    }, 0);
 
-    onAgentStatusUpdate({
-      reasoningMode,
-      tokenCount,
-      tasks,
-      isProcessing: status === 'streaming',
-    });
-  }, [messages, status, onAgentStatusUpdate]);
+    if (tokenCount !== agentStatus.tokenCount) {
+      onAgentStatusChange({ ...agentStatus, tokenCount });
+    }
+  }, [messages, agentStatus.tokenCount, onAgentStatusChange]);
 
   const isLoading = status === 'streaming' || status === 'submitted' || isLoadingHistory;
 
@@ -870,7 +866,6 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusUpdate, agentStatus
                   message={message}
                   onApprove={(id) => addToolApprovalResponse({ id, approved: true, reason: 'Approved' })}
                   onDeny={(id) => addToolApprovalResponse({ id, approved: false, reason: 'user denied' })}
-                  onAgentStatusUpdate={onAgentStatusUpdate}
                 />
               ))}
             </AnimatePresence>
@@ -1015,30 +1010,6 @@ export default function App() {
     }
   }, [currentSessionId, fetchSessions]);
 
-  const handleAgentStatusUpdate = useCallback((update: Partial<AgentStatus>) => {
-    setAgentStatus(prev => {
-      const updated = { ...prev, ...update };
-
-      // Handle incremental updates for counters
-      if (update.lessonsLearned && typeof update.lessonsLearned === 'number') {
-        updated.lessonsLearned = prev.lessonsLearned + update.lessonsLearned;
-      }
-      if (update.factsStored && typeof update.factsStored === 'number') {
-        updated.factsStored = prev.factsStored + update.factsStored;
-      }
-      if (update.patternsCount && typeof update.patternsCount === 'number') {
-        updated.patternsCount = prev.patternsCount + update.patternsCount;
-      }
-
-      // Merge tasks if provided
-      if (update.tasks) {
-        updated.tasks = update.tasks;
-      }
-
-      return updated;
-    });
-  }, []);
-
   useEffect(() => {
     localStorage.setItem('vibes_session_id', currentSessionId);
   }, [currentSessionId]);
@@ -1136,7 +1107,7 @@ export default function App() {
           key={currentSessionId}
           sessionId={currentSessionId}
           onSessionUpdate={fetchSessions}
-          onAgentStatusUpdate={handleAgentStatusUpdate}
+          onAgentStatusChange={setAgentStatus}
           agentStatus={agentStatus}
         />
       </div>

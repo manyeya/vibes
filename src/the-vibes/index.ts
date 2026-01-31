@@ -38,6 +38,10 @@ import {
     SubAgent,
     TaskItem,
     TaskTemplate,
+    VibesDataParts,
+    VibesUIMessage,
+    createDataStreamWriter,
+    DataStreamWriter,
 } from './core/types';
 import { VibeAgent } from './core/agent';
 
@@ -237,6 +241,10 @@ export {
     type AgentUIMessage,
     type TaskItem,
     type TaskTemplate,
+    type VibesDataParts,
+    type VibesUIMessage,
+    createDataStreamWriter,
+    DataStreamWriter,
     PlanningMiddleware,
     ReasoningMiddleware,
     ReflexionMiddleware,
@@ -250,7 +258,7 @@ export {
     type ReflexionConfig,
     type Fact,
     type FactMatch,
-    type SemanticMemoryConfig,  
+    type SemanticMemoryConfig,
     type Pattern,
     type PatternApplication,
     type ProceduralMemoryConfig,

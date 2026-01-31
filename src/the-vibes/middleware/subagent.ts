@@ -1,5 +1,11 @@
 import { type LanguageModel, type UIMessageStreamWriter, tool } from "ai";
-import { AgentUIMessage, Middleware, SubAgent } from "../core/types";
+import {
+    AgentUIMessage,
+    Middleware,
+    SubAgent,
+    createDataStreamWriter,
+    type DataStreamWriter,
+} from "../core/types";
 import { VibeAgent } from "../core/agent";
 import z from "zod";
 import * as path from "path";
@@ -152,7 +158,7 @@ export interface ParallelDelegationResult {
  */
 export default class SubAgentMiddleware implements Middleware {
     name = 'SubAgentMiddleware';
-    private writer?: UIMessageStreamWriter<AgentUIMessage>;
+    private writer?: DataStreamWriter;
     private registry: DelegationRegistry;
 
     constructor(
@@ -174,7 +180,7 @@ export default class SubAgentMiddleware implements Middleware {
     }
 
     onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
-        this.writer = writer;
+        this.writer = createDataStreamWriter(writer);
     }
 
     get tools() {
@@ -207,10 +213,9 @@ IMPORTANT: If a task was already delegated, you will receive a cached result.`,
                 // Check if this task was already delegated
                 const cachedEntry = this.registry.get(agent_name, task, this.cacheTTL);
                 if (cachedEntry) {
-                    this.writer?.write({
-                        type: 'data-status',
-                        data: { message: `[CACHED] Task was already completed by ${agent_name}. Returning cached result from ${new Date(cachedEntry.timestamp).toISOString()}.` },
-                    });
+                    this.writer?.writeStatus(
+                        `[CACHED] Task was already completed by ${agent_name}. Returning cached result from ${new Date(cachedEntry.timestamp).toISOString()}.`
+                    );
 
                     return {
                         status: "cached",
@@ -221,10 +226,9 @@ IMPORTANT: If a task was already delegated, you will receive a cached result.`,
                     };
                 }
 
-                this.writer?.write({
-                    type: 'data-status',
-                    data: { message: `Delegating task to ${agent_name} via Vibes core...` },
-                });
+                this.writer?.writeStatus(
+                    `Delegating task to ${agent_name} via Vibes core...`
+                );
 
                 try {
                     // Create a dedicated completion tracking tool for this subagent invocation
@@ -383,10 +387,9 @@ ${filesList.length > 0 ? filesList.map(f => `- \`${f}\``).join('\n') : 'No files
                 // Register this task in the delegation registry
                 this.registry.set(agent_name, task, relativePath, agentSummary, true);
 
-                this.writer?.write({
-                    type: 'data-status',
-                    data: { message: `Task completed by ${agent_name} ${completionConfirmed ? '(confirmed)' : '(inferred)'}` },
-                });
+                this.writer?.writeStatus(
+                    `Task completed by ${agent_name} ${completionConfirmed ? '(confirmed)' : '(inferred)'}`
+                );
 
                 return {
                     status: "completed",
@@ -400,10 +403,9 @@ ${filesList.length > 0 ? filesList.map(f => `- \`${f}\``).join('\n') : 'No files
                     const errorMessage = error instanceof Error ? error.message : String(error);
                     console.error(`[SubAgentMiddleware] Error executing ${agent_name}:`, errorMessage);
 
-                    this.writer?.write({
-                        type: 'data-status',
-                        data: { message: `Error in ${agent_name}: ${errorMessage}` },
-                    });
+                    this.writer?.writeStatus(
+                        `Error in ${agent_name}: ${errorMessage}`
+                    );
 
                     return {
                         status: "error",
@@ -449,10 +451,9 @@ Example: parallel_delegate({ tasks: [
                 continueOnError: z.boolean().default(false).describe('Continue executing if one task fails'),
             }),
             execute: async ({ tasks, continueOnError }) => {
-                this.writer?.write({
-                    type: 'data-status',
-                    data: { message: `Delegating ${tasks.length} tasks to run in parallel...` },
-                });
+                this.writer?.writeStatus(
+                    `Delegating ${tasks.length} tasks to run in parallel...`
+                );
 
                 // Helper function to execute a single delegation
                 const executeOne = async (agentName: string, taskDesc: string): Promise<ParallelDelegationResult> => {
@@ -621,10 +622,7 @@ When you complete this task, you MUST call the task_completion tool to report yo
                 // Aggregate summaries
                 const summary = `Parallel delegation complete: ${completedCount}/${results.length} tasks succeeded.`;
 
-                this.writer?.write({
-                    type: 'data-status',
-                    data: { message: summary },
-                });
+                this.writer?.writeStatus(summary);
 
                 return {
                     success: failedCount === 0 || continueOnError,

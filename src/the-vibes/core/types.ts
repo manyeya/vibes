@@ -1,12 +1,8 @@
 import {
     type LanguageModel,
     type ModelMessage,
-    type UIMessage,
     type Tool,
     type UIMessageStreamWriter,
-    type LanguageModelUsage,
-    Agent,
-    ToolLoopAgent,
     type StreamTextResult,
     type GenerateTextResult,
     type ToolSet,
@@ -186,47 +182,29 @@ export interface AgentState {
 }
 
 /**
- * Defines the structure for custom data streamed to the UI.
+ * @deprecated Use VibesDataParts from './streaming.ts' instead
+ * This is kept for backwards compatibility
  */
-export type AgentDataParts = {
-    /** System or informational notifications */
-    notification: {
-        message: string;
-        level: 'info' | 'warning' | 'error';
-    };
-    /** Current operation status updates */
-    status: {
-        message: string;
-        step?: number;
-    };
-    /** Updates to specific todo items for UI synchronization */
-    todo_update: {
-        id: string;
-        status: string;
-        title?: string;
-    };
-    /** Updates to specific task items for UI synchronization */
-    task_update: {
-        id: string;
-        status: string;
-        title?: string;
-    };
-    /** Task dependency graph visualization */
-    task_graph: {
-        nodes: Array<{ id: string; title: string; status: string }>;
-        edges: Array<{ from: string; to: string; type: 'blocks' | 'blockedBy' | 'related' }>;
-    };
-    /** Context summarization progress updates */
-    summarization: {
-        stage: 'starting' | 'in_progress' | 'complete' | 'failed';
-        messageCount: number;
-        keepingCount: number;
-        error?: string;
-    };
-};
+export type AgentDataParts = import('./streaming.js').VibesDataParts;
 
-/** Type-safe UI message with agent-specific data parts */
-export type AgentUIMessage = UIMessage<never, AgentDataParts>;
+/**
+ * @deprecated Use VibesUIMessage from './streaming.ts' instead
+ * This is kept for backwards compatibility
+ */
+export type AgentUIMessage = import('./streaming.js').VibesUIMessage;
+
+/**
+ * Re-export commonly used streaming types and utilities
+ */
+export type {
+    VibesDataParts,
+    VibesUIMessage,
+} from './streaming.js';
+
+export {
+    createDataStreamWriter,
+    DataStreamWriter,
+} from './streaming.js';
 
 /**
  * Configuration for initializing a VibeAgent instance.

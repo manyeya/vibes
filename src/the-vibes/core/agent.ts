@@ -3,6 +3,7 @@ import {
     convertToModelMessages,
     type LanguageModel,
     type ModelMessage,
+    type ToolSet,
     type UIMessage,
     type UIMessageStreamWriter,
     stepCountIs,
@@ -16,11 +17,42 @@ import {
     VibeAgentStreamResult,
     Middleware,
     ErrorEntry,
+    createDataStreamWriter,
 } from './types';
 import StateBackend from '../backend/statebackend';
 
 // Re-export ErrorEntry for convenience
 export type { ErrorEntry };
+
+// ============ TYPE DEFINITIONS ============
+
+/**
+ * Tool approval policy - either boolean or predicate function
+ */
+type ToolApprovalPolicy = boolean | ((args: unknown) => boolean | Promise<boolean>);
+
+/**
+ * Tool approval configuration
+ */
+type ToolsRequiringApprovalConfig = string[] | Record<string, ToolApprovalPolicy>;
+
+/**
+ * Tool call arguments with known properties
+ */
+interface ToolCallArgs {
+    path?: string;
+    command?: string;
+    [key: string]: unknown;
+}
+
+/**
+ * Message with potential parts property (UIMessage)
+ */
+interface PartedMessage {
+    role: string;
+    content?: unknown;
+    parts?: Array<{ type: string; data?: unknown }>;
+}
 
 /**
  * VibeAgent is the core engine for autonomous multi-step reasoning.
@@ -43,13 +75,13 @@ export class VibeAgent extends ToolLoopAgent {
     protected temperature?: number;
     protected maxRetries: number;
     protected maxContextMessages: number;
-    protected customTools: Record<string, any>;
-    protected toolsRequiringApproval: string[] | Record<string, boolean | ((args: any) => boolean | Promise<boolean>)> = [];
+    protected customTools: Record<string, unknown>;
+    protected toolsRequiringApproval: ToolsRequiringApprovalConfig = [];
     protected allowedTools?: string[];
     protected blockedTools?: string[];
     protected onStepFinishCallback?: (step: { stepNumber: number; stepType: string; text?: string }) => void;
     /** Writer for sending data updates to UI during stream */
-    protected writer?: any;
+    protected writer?: UIMessageStreamWriter<AgentUIMessage>;
     /** Track last message count to prevent duplicate summarization notifications */
     protected lastSummarizedCount: number = 0;
     /** Error log tracked separately from context (never summarized) */
@@ -145,10 +177,10 @@ export class VibeAgent extends ToolLoopAgent {
         }
     }
 
-    protected toolCache: Record<string, any> | null = null;
+    protected toolCache: Record<string, unknown> | null = null;
     protected middlewareVersion: number = 0;
 
-    protected async getAllTools(allowedTools?: string[]): Promise<Record<string, any>> {
+    protected async getAllTools(allowedTools?: string[]): Promise<Record<string, unknown>> {
         // Cache bust: always rebuild if allowedTools filter is specified
         if (this.toolCache && !allowedTools) {
             return this.toolCache;
@@ -160,7 +192,7 @@ export class VibeAgent extends ToolLoopAgent {
             this.toolCache = null;
         }
 
-        const allTools: Record<string, any> = {};
+        const allTools: Record<string, unknown> = {};
 
         // Wait for all middleware to be ready
         for (const mw of this.middleware) {
@@ -180,17 +212,18 @@ export class VibeAgent extends ToolLoopAgent {
         Object.assign(allTools, this.customTools);
 
         const approvalConfig = this.toolsRequiringApproval;
-        const resolvedTools: Record<string, any> = {};
+        const resolvedTools: Record<string, unknown> = {};
 
         for (const [toolName, toolDef] of Object.entries(allTools)) {
-            const originalExecute = toolDef.execute;
+            const toolDefRecord = toolDef as Record<string, unknown>;
+            const originalExecute = toolDefRecord.execute as ((args: unknown, options: unknown) => Promise<unknown>) | undefined;
 
             // Determine if this tool needs approval
             let needsApproval = false;
             if (Array.isArray(approvalConfig)) {
                 needsApproval = approvalConfig.includes(toolName);
             } else if (approvalConfig && typeof approvalConfig === 'object') {
-                const policy = (approvalConfig as Record<string, any>)[toolName];
+                const policy = (approvalConfig as Record<string, ToolApprovalPolicy>)[toolName];
                 if (policy !== undefined) {
                     needsApproval = typeof policy === 'boolean' ? policy : true; // Keep it simple for now
                 }
@@ -198,9 +231,9 @@ export class VibeAgent extends ToolLoopAgent {
 
             // Create a stable wrapped tool with retry logic
             resolvedTools[toolName] = {
-                ...toolDef,
-                needsApproval: needsApproval || toolDef.needsApproval,
-                execute: originalExecute ? async (args: any, context: any) => {
+                ...(toolDef as Record<string, unknown>),
+                needsApproval: needsApproval || (toolDefRecord.needsApproval as boolean | undefined),
+                execute: originalExecute ? async (args: unknown, options: unknown) => {
                     // Trigger lifecycle hooks
                     for (const mw of this.middleware) {
                         mw.onInputAvailable?.(args);
@@ -210,7 +243,7 @@ export class VibeAgent extends ToolLoopAgent {
                     let lastError: Error | undefined;
                     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
                         try {
-                            return await originalExecute(args, context);
+                            return await originalExecute(args, options);
                         } catch (error) {
                             lastError = error instanceof Error ? error : new Error(String(error));
                             if (attempt < this.maxRetries) {
@@ -234,7 +267,7 @@ export class VibeAgent extends ToolLoopAgent {
 
         // Apply allowedTools filter if specified
         if (allowedTools) {
-            const filtered: Record<string, any> = {};
+            const filtered: Record<string, unknown> = {};
             for (const name of allowedTools) {
                 if (resolvedTools[name]) {
                     filtered[name] = resolvedTools[name];
@@ -332,7 +365,7 @@ export class VibeAgent extends ToolLoopAgent {
                 .map(part => {
                     if (part.type === 'text') return part.text;
                     if (part.type === 'tool-call') {
-                        const tc = part as { toolName?: string; args?: any };
+                        const tc = part as { toolName?: string; args?: unknown };
                         const argsStr = tc.args ? JSON.stringify(tc.args).slice(0, 200) : 'no args';
                         return `[Tool Call: ${tc.toolName || 'unknown'} with args: ${argsStr}]`;
                     }
@@ -358,12 +391,12 @@ export class VibeAgent extends ToolLoopAgent {
     /**
      * Extract tool information from a message if available.
      */
-    protected extractToolInfo(msg: ModelMessage): { toolName?: string; args?: any } {
+    protected extractToolInfo(msg: ModelMessage): { toolName?: string; args?: ToolCallArgs } {
         const content = msg.content;
         if (Array.isArray(content)) {
             for (const part of content) {
                 if (part.type === 'tool-call') {
-                    const tc = part as unknown as { toolName: string; args: any };
+                    const tc = part as unknown as { toolName: string; args: ToolCallArgs };
                     return { toolName: tc.toolName, args: tc.args };
                 }
             }
@@ -478,7 +511,7 @@ export class VibeAgent extends ToolLoopAgent {
     protected formatMessagesForSummary(messages: ModelMessage[]): string {
         const MAX_CONTENT_LENGTH = 2000;
 
-        const formatContent = (content: any): string => {
+        const formatContent = (content: unknown): string => {
             if (typeof content === 'string') {
                 return content.length > MAX_CONTENT_LENGTH
                     ? content.slice(0, MAX_CONTENT_LENGTH) + '...[truncated]'
@@ -523,7 +556,7 @@ export class VibeAgent extends ToolLoopAgent {
      *
      * Key principle from Manus: Keep errors visible, compress restorably.
      */
-    protected async pruneMessages(messages: ModelMessage[], writer?: any): Promise<ModelMessage[]> {
+    protected async pruneMessages(messages: ModelMessage[], writer?: UIMessageStreamWriter<AgentUIMessage>): Promise<ModelMessage[]> {
         const maxMessages = this.maxContextMessages;
 
         // Phase 1: Apply restorable compression
@@ -577,17 +610,12 @@ export class VibeAgent extends ToolLoopAgent {
         }
 
         // Send starting status if writer is available
-        if (writer) {
-            writer.write({
-                type: 'data-summarization',
-                data: {
-                    stage: 'starting',
-                    messageCount: messagesToSummarize.length,
-                    keepingCount: messagesToKeep.length,
-                    compressed: true
-                }
-            });
-        }
+        const streamWriter = createDataStreamWriter(writer);
+        streamWriter.writeSummarization(
+            'starting',
+            messagesToSummarize.length,
+            messagesToKeep.length
+        );
 
         if (process.env.DEBUG_VIBES) {
             console.log(`[VibeAgent] Compressed ${messages.length} → ${compressed.length} messages, estimating ${estimatedTokens} tokens`);
@@ -598,16 +626,11 @@ export class VibeAgent extends ToolLoopAgent {
             const currentSummary = this.backend.getState().summary || 'No previous summary.';
 
             // Send in_progress status
-            if (writer) {
-                writer.write({
-                    type: 'data-summarization',
-                    data: {
-                        stage: 'in_progress',
-                        messageCount: messagesToSummarize.length,
-                        keepingCount: messagesToKeep.length
-                    }
-                });
-            }
+            streamWriter.writeSummarization(
+                'in_progress',
+                messagesToSummarize.length,
+                messagesToKeep.length
+            );
 
             // Format messages into readable conversation format
             const formattedMessages = this.formatMessagesForSummary(messagesWithoutErrors);
@@ -642,16 +665,11 @@ The conversation is formatted with:
             }
 
             // Send complete status
-            if (writer) {
-                writer.write({
-                    type: 'data-summarization',
-                    data: {
-                        stage: 'complete',
-                        messageCount: messagesToSummarize.length,
-                        keepingCount: messagesToKeep.length
-                    }
-                });
-            }
+            streamWriter.writeSummarization(
+                'complete',
+                messagesToSummarize.length,
+                messagesToKeep.length
+            );
 
             return [
                 { role: 'system', content: `## Previous Context Summary\n${newSummary}` },
@@ -667,17 +685,13 @@ The conversation is formatted with:
             }
 
             // Send failed status
-            if (writer) {
-                writer.write({
-                    type: 'data-summarization',
-                    data: {
-                        stage: 'failed',
-                        messageCount: messagesToSummarize.length,
-                        keepingCount: messagesToKeep.length,
-                        error: errorMessage
-                    }
-                });
-            }
+            streamWriter.writeSummarization(
+                'failed',
+                messagesToSummarize.length,
+                messagesToKeep.length,
+                undefined,
+                errorMessage
+            );
 
             // Fallback: keep recent messages even if summarization fails
             return messagesToKeep;
@@ -732,7 +746,7 @@ The conversation is formatted with:
         });
 
         const toolErrors = result.steps?.flatMap(step =>
-            step.content?.filter((part: any) => part.type === 'tool-error') ?? []
+            (step.content?.filter((part) => part.type === 'tool-error') ?? []) as Array<{ type: 'tool-error' }>
         ) ?? [];
 
         // result.response.messages are ONLY the new ones
@@ -811,12 +825,12 @@ The conversation is formatted with:
         if (messages.length === 0) return [];
 
         let modelMessages: ModelMessage[] = [];
-        const firstMsg = messages[0] as any;
+        const firstMsg = messages[0] as PartedMessage;
 
         if (firstMsg.parts !== undefined) {
             const tools = await this.getAllTools();
             modelMessages = await convertToModelMessages(messages as UIMessage[], {
-                tools,
+                tools: tools as ToolSet,
             });
         } else {
             modelMessages = messages as ModelMessage[];

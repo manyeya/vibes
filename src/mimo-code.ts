@@ -1,5 +1,5 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { createDeepAgent } from './the-vibes';
+import { createDeepAgent, } from './the-vibes';
 import { mimoCodePrompt } from './prompts/mimo-code';
 import { wrapLanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
