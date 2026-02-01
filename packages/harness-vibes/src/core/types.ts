@@ -30,6 +30,10 @@ export interface TodoItem {
     priority: 'low' | 'medium' | 'high';
     /** ISO timestamp when the task was created */
     createdAt: string;
+    /** ISO timestamp when the task was last updated */
+    updatedAt?: string;
+    /** ISO timestamp when the task was completed (if applicable) */
+    completedAt?: string;
 }
 
 /**
@@ -181,25 +185,25 @@ export interface Middleware {
         messages: ModelMessage[];
         experimental_context?: unknown;
     }) => (
-        | void
-        | Promise<void>
-        | {
-              model?: LanguageModel;
-              toolChoice?: any;
-              activeTools?: string[];
-              system?: string | any;
-              messages?: ModelMessage[];
-              experimental_context?: unknown;
-          }
-        | Promise<{
-              model?: LanguageModel;
-              toolChoice?: any;
-              activeTools?: string[];
-              system?: string | any;
-              messages?: ModelMessage[];
-              experimental_context?: unknown;
-          }>
-    );
+            | void
+            | Promise<void>
+            | {
+                model?: LanguageModel;
+                toolChoice?: any;
+                activeTools?: string[];
+                system?: string | any;
+                messages?: ModelMessage[];
+                experimental_context?: unknown;
+            }
+            | Promise<{
+                model?: LanguageModel;
+                toolChoice?: any;
+                activeTools?: string[];
+                system?: string | any;
+                messages?: ModelMessage[];
+                experimental_context?: unknown;
+            }>
+        );
 
     /** Function to modify or extend the system prompt (can be async) */
     modifySystemPrompt?: (prompt: string) => string | Promise<string>;
@@ -233,16 +237,12 @@ export interface Middleware {
  * Represents the persistent state of an agent session.
  */
 export interface AgentState {
-    /** Array of conversation messages in AI SDK format */
+    /** Combined message history */
     messages: ModelMessage[];
-    /** Structured todo list for tracking agent progress */
-    todos: TodoItem[];
-    /** Advanced task list with dependencies and blocking */
-    tasks: TaskItem[];
-    /** Arbitrary metadata storage for middleware use */
-    metadata: Record<string, any>;
-    /** Summarized context of past conversation to maintain continuity */
+    /** Context summary for long-running sessions */
     summary?: string;
+    /** Arbitrary session metadata */
+    metadata: Record<string, any>;
 }
 
 /**

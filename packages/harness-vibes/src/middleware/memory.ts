@@ -1,9 +1,6 @@
 import { tool } from "ai";
 import { Middleware } from "../core/types";
-import StateBackend from "../backend/statebackend";
 import z from "zod";
-import { $ } from "bun";
-
 
 /**
  * Middleware that provides persistent memory capabilities:
@@ -13,22 +10,25 @@ import { $ } from "bun";
 export default class MemoryMiddleware implements Middleware {
     name = 'MemoryMiddleware';
 
-    // Paths are relative to the wrapper's working directory (usually user workspace)
-    private scratchpadPath = 'workspace/scratchpad.md';
-    private reflexionPath = 'workspace/reflections.md';
+    private scratchpadPath: string;
+    private reflexionPath: string;
 
     // Cache for sync prompt injection
     private scratchpadContent = '';
     private reflexionContent = '';
 
-    constructor(private backend: StateBackend) { }
+    constructor(config: { scratchpadPath?: string, reflexionPath?: string } = {}) {
+        this.scratchpadPath = config.scratchpadPath || 'workspace/scratchpad.md';
+        this.reflexionPath = config.reflexionPath || 'workspace/reflections.md';
+    }
 
     async waitReady() {
         // Ensure workspace directory exists using Bun Shell
         try {
-            await $`mkdir -p workspace`;
+            const { $ } = await import('bun');
+            await $`mkdir -p workspace`.quiet();
         } catch (e) {
-            // Ignore (already exists or permission error handled by runtime)
+            // Ignore
         }
     }
 
@@ -63,10 +63,7 @@ Overwrite the entire file with the new content.`,
                     content: z.string().describe('The new content of the scratchpad. Be detailed.'),
                 }),
                 execute: async ({ content }) => {
-                    // Bun.write overwrites by default
                     await Bun.write(this.scratchpadPath, content);
-
-                    // Update cache immediately so it's fresh for next turn
                     this.scratchpadContent = content;
                     return { success: true, message: 'Scratchpad updated.' };
                 },
@@ -80,14 +77,9 @@ This will be appended to your long-term memory.`,
                 }),
                 execute: async ({ lesson }) => {
                     const entry = `\n- [${new Date().toISOString()}] ${lesson}`;
-
-                    // Efficient append using current content + new entry
-                    // (Bun doesn't have a direct 'append' flag for write yet, other than streams)
                     const file = Bun.file(this.reflexionPath);
                     const current = await file.exists() ? await file.text() : '';
                     await Bun.write(this.reflexionPath, current + entry);
-
-                    // Update cache
                     this.reflexionContent = current + entry;
                     return { success: true, message: 'Reflection saved.' };
                 },
@@ -96,7 +88,6 @@ This will be appended to your long-term memory.`,
     }
 
     modifySystemPrompt(prompt: string): string {
-        // Use preloaded content
         let memorySection = '\n\n# Memory Systems\n';
         memorySection += `\n## Current Scratchpad (Your cognitive state)\n${this.scratchpadContent}\n`;
         memorySection += `\n## Lessons Learned (Reflexions)\n${this.reflexionContent}\n`;

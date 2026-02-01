@@ -172,6 +172,19 @@ export class DataStreamWriter {
         } as const);
     }
 
+    writeReasoning(
+        problem: string,
+        count: number,
+        context?: string
+    ): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-reasoning',
+            data: { problem, count, context },
+        } as const);
+    }
+
+
     /** Write todo update */
     writeTodoUpdate(
         id: string,

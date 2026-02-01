@@ -4,7 +4,6 @@ import {
     type LanguageModel,
 } from 'ai';
 import { z } from 'zod';
-import StateBackend from '../backend/statebackend';
 import TasksMiddleware from './tasks';
 import { VibesUIMessage, TaskItem, Middleware, type ModelMessage } from '../core/types';
 
@@ -41,10 +40,6 @@ export interface PlanEntry {
  * - Plan persistence: Save/load plans from filesystem
  * - Hierarchical decomposition: Parent-child task relationships
  * - Smart recitation: Format plan for readability and focus
- *
- * Key insight from Manus: "By constantly rewriting the todo list, Manus is reciting
- * its objectives into the end of the context. This pushes the global plan into the
- * model's recent attention span, avoiding 'lost-in-the-middle' issues."
  */
 export class PlanningMiddleware implements Middleware {
     name = 'PlanningMiddleware';
@@ -55,17 +50,18 @@ export class PlanningMiddleware implements Middleware {
 
     // Compose TasksMiddleware instead of extending to avoid type conflicts
     private tasksMiddleware: TasksMiddleware;
-    private backend: StateBackend;
 
     constructor(
-        backend: StateBackend,
         model?: LanguageModel,
         config: PlanningConfig = {}
     ) {
-        this.backend = backend;
-        this.tasksMiddleware = new TasksMiddleware(backend, model);
+        this.tasksMiddleware = new TasksMiddleware(model, { tasksPath: config.planPath });
         this.planPath = config.planPath || 'workspace/plan.md';
         this.maxRecitationTasks = config.maxRecitationTasks || 10;
+    }
+
+    async waitReady(): Promise<void> {
+        await this.tasksMiddleware.waitReady();
     }
 
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
@@ -76,11 +72,9 @@ export class PlanningMiddleware implements Middleware {
 
     /**
      * Modify system prompt to inject task recitation.
-     * This is the key "attention manipulation" technique from Manus.
      */
     modifySystemPrompt(prompt: string): string | Promise<string> {
         const basePrompt = this.tasksMiddleware.modifySystemPrompt(prompt);
-        // Add planning instructions
         const planningInstructions = `
 
 ## Planning & Task Management
@@ -101,27 +95,23 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
 
     /**
      * Hook before each step to refresh task cache for recitation.
-     * This replaces the deprecated beforeModel hook.
      */
     async prepareStep(_options: {
         steps: any[];
         stepNumber: number;
-        model: import('ai').LanguageModel;
-        messages: import('../core/types').ModelMessage[];
+        model: LanguageModel;
+        messages: ModelMessage[];
         experimental_context?: unknown;
     }): Promise<void> {
-        // Refresh task cache before each step
         await this.refreshRecitationCache();
     }
 
     /**
      * Refresh the cached task list for recitation.
-     * Call this after task updates.
      */
     private async refreshRecitationCache(): Promise<void> {
-        const allTasks = await this.backend.getTasks();
-        // Filter out completed and failed tasks - only show active tasks in recitation
-        const pendingTasks = allTasks.filter(t => t.status !== 'completed' && t.status !== 'failed');
+        const allTasks = await this.tasksMiddleware.getTasks();
+        const pendingTasks = allTasks.filter((t: TaskItem) => t.status !== 'completed' && t.status !== 'failed');
 
         const statusOrder: Record<string, number> = {
             'in_progress': 0,
@@ -130,7 +120,7 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
             'failed': 3,
             'completed': 4
         };
-        pendingTasks.sort((a, b) => {
+        pendingTasks.sort((a: TaskItem, b: TaskItem) => {
             const aOrder = statusOrder[a.status] ?? 3;
             const bOrder = statusOrder[b.status] ?? 3;
             return aOrder - bOrder;
@@ -141,7 +131,6 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
 
     /**
      * Format tasks for recitation in system prompt.
-     * Uses markdown for readability and visual hierarchy.
      */
     private formatPlanForRecitation(tasks: TaskItem[]): string {
         let output = `## Current Plan (${tasks.length} active tasks)\n\n`;
@@ -179,9 +168,6 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
         return output;
     }
 
-    /**
-     * Format a single task entry for recitation.
-     */
     private formatTaskEntry(task: TaskItem): string {
         const priorityIcon = {
             'critical': '🔴',
@@ -202,7 +188,6 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
         let entry = `${prefix} **${task.title}** ${priorityIcon}\n`;
 
         if (task.description) {
-            // Truncate long descriptions for recitation
             const desc = task.description.length > 100
                 ? task.description.slice(0, 100) + '...'
                 : task.description;
@@ -213,16 +198,9 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
             entry += `  ⏳ Blocked by: ${task.blockedBy.join(', ')}\n`;
         }
 
-        if (task.fileReferences && task.fileReferences.length > 0) {
-            entry += `  📁 ${task.fileReferences.slice(0, 3).join(', ')}${task.fileReferences.length > 3 ? '...' : ''}\n`;
-        }
-
         return entry + '\n';
     }
 
-    /**
-     * Enhanced tools with planning-specific features
-     */
     get tools(): any {
         const baseTools = this.tasksMiddleware.tools;
 
@@ -235,9 +213,8 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                 }),
                 execute: async ({ path }) => {
                     const savePath = path || this.planPath;
-                    const tasks = await this.backend.getTasks();
+                    const tasks = await this.tasksMiddleware.getTasks();
 
-                    // Format as markdown plan document
                     let content = `# Task Plan\n\n`;
                     content += `Generated: ${new Date().toISOString()}\n`;
                     content += `Total tasks: ${tasks.length}\n\n`;
@@ -269,14 +246,10 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                             if (task.blockedBy.length > 0) {
                                 content += `- **Blocked by**: ${task.blockedBy.join(', ')}\n`;
                             }
-                            if (task.fileReferences.length > 0) {
-                                content += `- **Files**: ${task.fileReferences.join(', ')}\n`;
-                            }
                             content += '\n';
                         }
                     }
 
-                    // Write to file
                     const fs = await import('fs/promises');
                     const pathModule = await import('path');
                     const fullPath = pathModule.resolve(process.cwd(), savePath);
@@ -289,32 +262,24 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                         data: { message: `Plan saved to ${savePath}` },
                     });
 
-                    return {
-                        success: true,
-                        path: savePath,
-                        taskCount: tasks.length,
-                    };
+                    return { success: true, path: savePath, taskCount: tasks.length };
                 },
             }),
 
             load_plan: tool({
-                description: `Load a task plan from a file. Parses and creates tasks from the saved plan.`,
+                description: `Load a task plan from a file.`,
                 inputSchema: z.object({
                     path: z.string().optional().describe('File path to load plan from (default: workspace/plan.md)'),
                     clearExisting: z.boolean().default(false).describe('Clear existing tasks before loading'),
                 }),
                 execute: async ({ path, clearExisting }) => {
                     const loadPath = path || this.planPath;
-
                     const fs = await import('fs/promises');
                     const pathModule = await import('path');
                     const fullPath = pathModule.resolve(process.cwd(), loadPath);
 
                     try {
                         const content = await fs.readFile(fullPath, 'utf-8');
-
-                        // For now, return the content for the agent to process
-                        // In a full implementation, we'd parse the markdown and extract tasks
                         this.writer?.write({
                             type: 'data-status',
                             data: { message: `Plan loaded from ${loadPath}` },
@@ -323,7 +288,7 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                         return {
                             success: true,
                             content: content,
-                            message: 'Plan content loaded. Use generate_tasks or create_tasks to recreate the task structure.',
+                            message: 'Plan content loaded.',
                         };
                     } catch (error) {
                         return {
@@ -335,7 +300,7 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
             }),
 
             recite_plan: tool({
-                description: `Manually trigger plan recitation. Refreshes the task cache and returns the current plan formatted for display.`,
+                description: `Manually trigger plan recitation.`,
                 inputSchema: z.object({}),
                 execute: async () => {
                     await this.refreshRecitationCache();
@@ -345,29 +310,24 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                         success: true,
                         recitation: this.formatPlanForRecitation(tasks),
                         activeCount: tasks.length,
-                        message: `Recited ${tasks.length} active tasks.`,
                     };
                 },
             }),
 
             create_subtask: tool({
-                description: `Create a subtask under an existing parent task. The subtask will be blocked by the parent task.`,
+                description: `Create a subtask under an existing parent task.`,
                 inputSchema: z.object({
                     parentTaskId: z.string().describe('ID of the parent task'),
                     title: z.string().describe('Title of the subtask'),
                     description: z.string().describe('Description of what the subtask involves'),
                     priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
-                    fileReferences: z.array(z.string()).optional(),
                 }),
-                execute: async ({ parentTaskId, title, description, priority, fileReferences }) => {
-                    const tasks = await this.backend.getTasks();
+                execute: async ({ parentTaskId, title, description, priority }) => {
+                    const tasks = await this.tasksMiddleware.getTasks();
                     const parent = tasks.find(t => t.id === parentTaskId);
 
                     if (!parent) {
-                        return {
-                            success: false,
-                            error: `Parent task not found: ${parentTaskId}`,
-                        };
+                        return { success: false, error: `Parent task not found: ${parentTaskId}` };
                     }
 
                     const now = new Date().toISOString();
@@ -377,30 +337,22 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                         id: subtaskId,
                         title,
                         description,
-                        status: 'blocked', // Subtasks start blocked by parent
+                        status: 'blocked',
                         priority: priority || 'medium',
                         createdAt: now,
                         updatedAt: now,
                         blocks: [],
                         blockedBy: [parentTaskId],
-                        fileReferences: fileReferences || [],
+                        fileReferences: [],
                         taskReferences: [],
                         urlReferences: [],
                         metadata: { parentTaskId },
                         tags: [],
                     };
 
-                    // Add subtask to blocks list of parent
-                    const updatedParent = {
-                        ...parent,
-                        blocks: [...parent.blocks, subtaskId],
-                        updatedAt: now,
-                    };
+                    await this.tasksMiddleware.addTask(subtask);
+                    await this.tasksMiddleware.updateTask(parentTaskId, { blocks: [...parent.blocks, subtaskId] });
 
-                    await this.backend.addTask(subtask);
-                    await this.backend.updateTask(parentTaskId, { blocks: updatedParent.blocks });
-
-                    // Refresh recitation cache
                     await this.refreshRecitationCache();
 
                     this.writer?.write({
@@ -408,29 +360,15 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                         data: { id: subtaskId, status: 'blocked', title },
                     });
 
-                    return {
-                        success: true,
-                        subtaskId,
-                        message: `Created subtask "${title}" under ${parentTaskId}`,
-                    };
+                    return { success: true, subtaskId, message: `Created subtask "${title}" under ${parentTaskId}` };
                 },
             }),
         });
     }
 
-    /**
-     * Hook into task updates to refresh recitation cache
-     */
     async onStreamFinish(): Promise<void> {
         await this.tasksMiddleware.onStreamFinish();
         await this.refreshRecitationCache();
-    }
-
-    /**
-     * Optional waitReady for initialization
-     */
-    async waitReady(): Promise<void> {
-        // No async initialization needed
     }
 }
 

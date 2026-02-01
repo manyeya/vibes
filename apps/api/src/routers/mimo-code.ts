@@ -71,13 +71,12 @@ app.get('/sessions/:id', async (c) => {
 
         // Get files for this session
         const tempBackend = new SqliteBackend('workspace/vibes.db', sessionId);
-        const files = await tempBackend.getFiles();
+   
 
         return c.json({
             success: true,
             session: {
-                ...session,
-                files,
+                ...session
             },
         });
     } catch (error) {
@@ -186,11 +185,11 @@ app.get('/sessions/:id/files', async (c) => {
     try {
         const sessionId = c.req.param('id');
         const tempBackend = new SqliteBackend('workspace/vibes.db', sessionId);
-        const files = await tempBackend.getFiles();
+       
 
         return c.json({
             success: true,
-            files,
+            files: tempBackend.getState().messages,
         });
     } catch (error) {
         logger.error({
@@ -305,15 +304,10 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
         const lastMessage = messages[messages.length - 1];
         const originalMessages = lastMessage?.role === 'assistant' ? messages : undefined;
 
-        // return createDeepAgentStreamResponse({
-        //     agent,
-        //     uiMessages: body.messages,
-        //     originalMessages,
-        // });
-
-        return createAgentUIStreamResponse({
-            agent: agent,
-            uiMessages: messages,
+        return createDeepAgentStreamResponse({
+            agent,
+            uiMessages: body.messages,
+            originalMessages,
         });
 
 

@@ -50,11 +50,16 @@ export default class FilesystemMiddleware implements Middleware {
     name = 'FilesystemMiddleware';
     private writer?: UIMessageStreamWriter<AgentUIMessage>;
     private baseDir: string;
-    private backend?: StateBackend;
+    private trackedFilesPath: string;
+    private trackedFiles: Set<string> = new Set();
 
-    constructor(baseDir: string = 'workspace', backend?: StateBackend) {
-        this.baseDir = path.resolve(process.cwd(), baseDir);
-        this.backend = backend;
+    constructor(config: { baseDir?: string, trackedFilesPath?: string } = {}) {
+        this.baseDir = path.resolve(process.cwd(), config.baseDir || 'workspace');
+        this.trackedFilesPath = config.trackedFilesPath || path.join(this.baseDir, 'tracked_files.json');
+    }
+
+    async waitReady(): Promise<void> {
+        await this.loadTrackedFiles();
     }
 
     onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
@@ -69,13 +74,36 @@ export default class FilesystemMiddleware implements Middleware {
      * Track a file in the current session
      */
     private async trackFile(filePath: string): Promise<void> {
-        if (this.backend && 'addFile' in this.backend) {
-            try {
-                await (this.backend as any).addFile(filePath, getFileType(filePath));
-            } catch (error) {
-                // Silently fail if file tracking doesn't work
-                console.error('[FilesystemMiddleware] Failed to track file:', error);
-            }
+        if (!this.trackedFiles.has(filePath)) {
+            this.trackedFiles.add(filePath);
+            await this.persistTrackedFiles();
+        }
+    }
+
+    private async persistTrackedFiles(): Promise<void> {
+        try {
+            const fs = await import('fs/promises');
+            const pathModule = await import('path');
+            const fullPath = pathModule.resolve(process.cwd(), this.trackedFilesPath);
+
+            await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
+            await fs.writeFile(fullPath, JSON.stringify(Array.from(this.trackedFiles), null, 2));
+        } catch (e) {
+            console.error('[FilesystemMiddleware] Failed to persist tracked files:', e);
+        }
+    }
+
+    private async loadTrackedFiles(): Promise<void> {
+        try {
+            const fs = await import('fs/promises');
+            const pathModule = await import('path');
+            const fullPath = pathModule.resolve(process.cwd(), this.trackedFilesPath);
+
+            const content = await fs.readFile(fullPath, 'utf-8');
+            const files = JSON.parse(content) as string[];
+            this.trackedFiles = new Set(files);
+        } catch (e) {
+            this.trackedFiles = new Set();
         }
     }
 

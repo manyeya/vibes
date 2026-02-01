@@ -4,7 +4,6 @@ import {
 } from 'ai';
 import { z } from 'zod';
 
-import StateBackend from '../backend/statebackend';
 import { AgentUIMessage, Middleware, TodoItem } from '../core/types';
 
 /**
@@ -14,8 +13,12 @@ import { AgentUIMessage, Middleware, TodoItem } from '../core/types';
 export default class TodoListMiddleware implements Middleware {
     name = 'TodoListMiddleware';
     private writer?: UIMessageStreamWriter<AgentUIMessage>;
+    private todos: TodoItem[] = [];
+    private todosPath: string;
 
-    constructor(private backend: StateBackend) { }
+    constructor(config: { todosPath?: string } = {}) {
+        this.todosPath = config.todosPath || 'workspace/todos.json';
+    }
 
     onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
         this.writer = writer;
@@ -59,7 +62,7 @@ Workflow:
                                 priority: todo.priority || 'medium',
                                 createdAt: new Date().toISOString(),
                             };
-                            await this.backend.addTodo(newTodo);
+                            this.todos.push(newTodo);
 
                             // Stream update with full info including title
                             this.writer?.write({
@@ -67,33 +70,40 @@ Workflow:
                                 data: { id: newTodo.id, status: newTodo.status, title: newTodo.title },
                             });
                         }
+                        await this.persistTodos();
                         return { success: true, message: `Created ${todos.length} todos` };
                     }
 
                     if (action === 'update' && todos) {
                         for (const todo of todos) {
                             if (todo.id) {
-                                // Get existing todo to get title
-                                const existingTodo = (await this.backend.getTodos()).find(t => t.id === todo.id);
-                                await this.backend.updateTodo(todo.id, todo as Partial<TodoItem>);
+                                const index = this.todos.findIndex(t => t.id === todo.id);
+                                if (index !== -1) {
+                                    const existingTodo = this.todos[index];
+                                    this.todos[index] = {
+                                        ...existingTodo,
+                                        ...todo as Partial<TodoItem>,
+                                        updatedAt: new Date().toISOString()
+                                    };
 
-                                // Stream update with title
-                                this.writer?.write({
-                                    type: 'data-todo_update',
-                                    data: {
-                                        id: todo.id,
-                                        status: todo.status || 'updated',
-                                        title: existingTodo?.title || todo.title,
-                                    },
-                                });
+                                    // Stream update with title
+                                    this.writer?.write({
+                                        type: 'data-todo_update',
+                                        data: {
+                                            id: todo.id,
+                                            status: todo.status || 'updated',
+                                            title: existingTodo.title,
+                                        },
+                                    });
+                                }
                             }
                         }
+                        await this.persistTodos();
                         return { success: true, message: `Updated ${todos.length} todos` };
                     }
 
                     if (action === 'read') {
-                        const allTodos = await this.backend.getTodos();
-                        return { todos: allTodos };
+                        return { todos: this.todos };
                     }
 
                     throw new Error('Invalid action');
@@ -104,7 +114,7 @@ Workflow:
                 description: 'Read the current todo list state',
                 inputSchema: z.object({}),
                 execute: async () => {
-                    return { todos: await this.backend.getTodos() };
+                    return { todos: this.todos };
                 },
             }),
         };
@@ -157,6 +167,36 @@ write_todos({ action: 'update', todos: [{ id: 'todo_xxx', status: 'completed' }]
 \`\`\`
 
 This ensures visible, incremental progress to the user.`;
+    }
+
+    private async persistTodos(): Promise<void> {
+        try {
+            const fs = await import('fs/promises');
+            const pathModule = await import('path');
+            const fullPath = pathModule.resolve(process.cwd(), this.todosPath);
+
+            await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
+            await fs.writeFile(fullPath, JSON.stringify(this.todos, null, 2));
+        } catch (e) {
+            console.error('Failed to persist todos:', e);
+        }
+    }
+
+    private async loadTodos(): Promise<void> {
+        try {
+            const fs = await import('fs/promises');
+            const pathModule = await import('path');
+            const fullPath = pathModule.resolve(process.cwd(), this.todosPath);
+
+            const content = await fs.readFile(fullPath, 'utf-8');
+            this.todos = JSON.parse(content);
+        } catch (e) {
+            this.todos = [];
+        }
+    }
+
+    async waitReady(): Promise<void> {
+        await this.loadTodos();
     }
 
     async onStreamFinish() {

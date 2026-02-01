@@ -231,7 +231,7 @@ Use this when starting a task to see if there's a known pattern that applies.`,
                     category: z.enum(['code', 'workflow', 'debugging', 'testing', 'documentation']).optional().describe('Filter by category'),
                     limit: z.number().default(5).describe('Maximum patterns to return'),
                 }),
-                execute: async ({ context, category, limit }) => {
+                execute: async ({ context, category, limit, }) => {
                     let relevant = this.findRelevantPatterns(context, limit);
 
                     if (category) {

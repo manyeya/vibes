@@ -5,7 +5,7 @@ import {
     type LanguageModel,
 } from 'ai';
 import { z } from 'zod';
-import { VibesUIMessage, Middleware } from '../core/types';
+import { VibesUIMessage, Middleware, DataStreamWriter } from '../core/types';
 
 /**
  * Reasoning modes supported by the middleware
@@ -103,7 +103,7 @@ export interface ReasoningConfig {
 export class ReasoningMiddleware implements Middleware {
     name = 'ReasoningMiddleware';
 
-    private writer?: UIMessageStreamWriter<VibesUIMessage>;
+    private writer?: DataStreamWriter;
     private model?: LanguageModel;
     private config: Required<ReasoningConfig>;
 
@@ -129,9 +129,7 @@ export class ReasoningMiddleware implements Middleware {
         this.state.mode = this.config.initialMode;
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = writer;
-    }
+ 
 
     /**
      * Get current reasoning mode
@@ -184,7 +182,7 @@ Use 'plan-execute' for well-defined, multi-step processes.`,
                 },
             }),
 
-            explore_thoughts: tool({
+            explore_thoughts:tool({
                 description: `Generate multiple reasoning branches to explore different approaches.
 Use this when:
 - Facing a complex problem with multiple possible solutions
@@ -205,8 +203,9 @@ Creates N thought branches, each with a proposed approach and expected outcome.`
                         };
                     }
 
-                    const actualCount = Math.min(count, this.config.maxBranches);
 
+                    const actualCount = Math.min(count, this.config.maxBranches);
+  
                     try {
                         const { text } = await generateText({
                             model: this.model,
@@ -250,6 +249,7 @@ ${context ? `\nContext:\n${context}` : ''}`,
                                 throw new Error('No JSON found in response');
                             }
                             data = JSON.parse(jsonMatch[1]);
+             
                         } catch (e) {
                             return {
                                 success: false,
@@ -270,6 +270,7 @@ ${context ? `\nContext:\n${context}` : ''}`,
                                 status: 'proposed',
                             });
                         }
+
 
                         this.state.branches = branches;
                         this.state.cycleCount++;

@@ -136,7 +136,7 @@ You have access to task management, modular skills, memory systems, the REAL pro
                 // - Task recitation (always-in-view current plan)
                 // - Plan save/load from filesystem
                 // - Hierarchical task support
-                new PlanningMiddleware(this.backend, this.model, {
+                new PlanningMiddleware(this.model, {
                     planPath: `${workspaceDir}/plan.md`,
                     maxRecitationTasks: 10,
                 }),
@@ -154,7 +154,7 @@ You have access to task management, modular skills, memory systems, the REAL pro
                 // - Automatic error analysis and lesson extraction
                 // - Structured lesson storage with metadata
                 // - Contextual lesson retrieval and suggestion
-                new ReflexionMiddleware(this.model, this.backend, {
+                new ReflexionMiddleware(this.model, {
                     maxLessons: 100,
                     lessonsPath: `${workspaceDir}/lessons.json`,
                     autoAnalyzeErrors: true,
@@ -197,9 +197,9 @@ You have access to task management, modular skills, memory systems, the REAL pro
                     }
                 ),
                 new SkillsMiddleware(),
-                new FilesystemMiddleware(workspaceDir, this.backend),
+                new FilesystemMiddleware({ baseDir: workspaceDir }),
                 new BashMiddleware(workspaceDir),
-                new MemoryMiddleware(this.backend)
+                new MemoryMiddleware()
             ])
         }
 

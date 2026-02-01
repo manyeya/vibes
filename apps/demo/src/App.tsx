@@ -1,20 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses } from 'ai';
-import { Streamdown } from 'streamdown';
 import {
-  CheckCircle2,
-  Clock,
   Loader2,
   Send,
   User,
   Bot,
   Shield,
   Square,
-  Brain,
   Plus,
-  X,
-  ChevronDown,
   MessageSquare,
   History,
   Activity,
@@ -24,16 +18,18 @@ import {
   Settings2,
   Zap,
   FileText,
-  AlertCircle,
+  RefreshCw,
+  TreePine,
+  ClipboardList,
+  CheckCircle2,
+  ChevronDown,
+  X,
+  Brain,
 } from 'lucide-react';
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
 import { motion, AnimatePresence } from 'framer-motion';
-import { type MimoCodeUIMessage } from '../../api/src/mimo-code';
-
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
+import { cn } from './lib/utils';
+import { DataPartRenderer, isDataPart, reasoningConfig, ReasoningModePart } from './components/data-parts';
+import { TextPart, ReasoningPart, ToolResultPart } from './components/message-parts';
 
 // ============ TYPES ============
 interface Session {
@@ -73,10 +69,10 @@ interface AgentStatusPanelProps {
 const AgentStatusPanel = ({ status, isOpen, onToggle }: AgentStatusPanelProps) => {
   const getModeIcon = (mode: string) => {
     switch (mode) {
-      case 'tot': return '🌳';
-      case 'plan-execute': return '📋';
-      case 'react': return '🔄';
-      default: return '🔄';
+      case 'tot': return <TreePine className="w-4 h-4 text-violet-400" />;
+      case 'plan-execute': return <ClipboardList className="w-4 h-4 text-amber-400" />;
+      case 'react': return <RefreshCw className="w-4 h-4 text-cyan-400" />;
+      default: return <RefreshCw className="w-4 h-4 text-cyan-400" />;
     }
   };
 
@@ -530,124 +526,22 @@ const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
 
       <div className={cn("flex-1 space-y-2 min-w-0", isUser && "flex flex-col items-end")}>
         {parts.map((part: any, partIndex: number) => {
-          
           // Text content
           if (part.type === 'text') {
-            console.log(part.text)
-            return (
-              <div
-                key={`text-${partIndex}`}
-                className={cn(
-                  "rounded-xl px-4 py-2.5 text-sm streamdown",
-                  isUser
-                    ? "bg-cyan-500 text-white"
-                    : "bg-zinc-800/50 border border-zinc-800 text-zinc-200"
-                )}
-              >
-                <Streamdown>{part.text}</Streamdown>
-              </div>
-            );
+            return <TextPart key={`text-${partIndex}`} text={part.text} isUser={isUser} />;
           }
 
           // Thinking/reasoning
           if (part.type === 'reasoning' || part.type === 'thinking') {
-            return (
-              <details key={`reasoning-${partIndex}`} className="group">
-                <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-zinc-800/50 rounded-lg transition-colors select-none text-xs">
-                  <Brain className="w-3.5 h-3.5 text-violet-400" />
-                  <span className="text-zinc-400">Thinking</span>
-                  <ChevronDown className="w-3.5 h-3.5 text-zinc-500 ml-auto group-open:rotate-180 transition-transform" />
-                </summary>
-                <div className="mt-2 px-3 py-2 bg-violet-500/5 border border-violet-500/10 rounded-lg">
-                  <pre className="text-xs text-zinc-500 whitespace-pre-wrap font-mono">
-                    {part.text || ''}
-                  </pre>
-                </div>
-              </details>
-            );
+            return <ReasoningPart key={`reasoning-${partIndex}`} text={part.text} />;
           }
 
-          // Data type: Status
-          if (part.type === 'data' && part.data?.type === 'data-status') {
-            const data = part.data;
-            return (
-              <div key={`status-${partIndex}`} className="inline-flex items-center gap-2 px-3 py-1.5 bg-zinc-800/50 rounded-lg text-xs text-zinc-400">
-                <Clock className="w-3 h-3" />
-                {data.data?.message || data.message || 'Working...'}
-              </div>
-            );
+          // Data parts - handle both wrapped and direct formats
+          if (isDataPart(part)) {
+            return <DataPartRenderer key={`data-${partIndex}`} part={part} />;
           }
-
-          // Data type: Task Update
-          if (part.type === 'data' && part.data?.type === 'data-task_update') {
-            const task = part.data.data;
-            const getStatusColor = (status: string) => {
-              switch (status) {
-                case 'completed': return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
-                case 'failed': return 'bg-red-500/10 text-red-400 border-red-500/20';
-                case 'in_progress': return 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20';
-                default: return 'bg-zinc-800/50 text-zinc-400 border-zinc-700';
-              }
-            };
-            const getStatusIcon = (status: string) => {
-              switch (status) {
-                case 'completed': return <CheckCircle2 className="w-3.5 h-3.5" />;
-                case 'failed': return <X className="w-3.5 h-3.5" />;
-                case 'in_progress': return <Loader2 className="w-3.5 h-3.5 animate-spin" />;
-                default: return <Clock className="w-3.5 h-3.5" />;
-              }
-            };
-            return (
-              <div key={`task-${partIndex}`} className={cn(
-                "flex items-center gap-2 px-3 py-2 rounded-lg border text-xs",
-                getStatusColor(task.status)
-              )}>
-                {getStatusIcon(task.status)}
-                <span className="font-medium">{task.title}</span>
-                {task.priority && (
-                  <span className="ml-auto text-[9px] uppercase px-1.5 py-0.5 rounded bg-zinc-700/50">
-                    {task.priority}
-                  </span>
-                )}
-              </div>
-            );
-          }
-
-          // Data type: Tool Progress
-          if (part.type === 'data' && part.data?.type === 'data-tool_progress') {
-            const data = part.data;
-            return (
-              <div key={`progress-${partIndex}`} className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-lg text-xs text-blue-400">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                {data.data?.toolName || data.toolName || 'Working'}...
-              </div>
-            );
-          }
-
-          // Data type: Summarization
-          if (part.type === 'data' && part.data?.type === 'data-summarization') {
-            const data = part.data;
-            return (
-              <div key={`summary-${partIndex}`} className="inline-flex items-center gap-2 px-3 py-1.5 bg-purple-500/10 border border-purple-500/20 rounded-lg text-xs text-purple-400">
-                <Database className="w-3 h-3" />
-                Context compressed (saved {data.data?.saved || data.saved || 0} tokens)
-              </div>
-            );
-          }
-
-          // Data type: Error
-          if (part.type === 'data' && part.data?.type === 'data-error') {
-            const data = part.data;
-            return (
-              <div key={`error-${partIndex}`} className="flex items-start gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                <div className="flex-1">
-                  <span className="text-sm text-red-400">
-                    {data.data?.error || data.error || 'An error occurred'}
-                  </span>
-                </div>
-              </div>
-            );
+          if (part.type === 'data' && isDataPart(part.data)) {
+            return <DataPartRenderer key={`data-${partIndex}`} part={part.data} />;
           }
 
           // Tool approvals
@@ -671,21 +565,12 @@ const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
           const isComplete = ['output-available', 'output-error', 'output-denied'].includes(part.state);
           if (isToolPart && isComplete && part.toolCallId && !seenToolResults.has(part.toolCallId)) {
             seenToolResults.add(part.toolCallId);
-            const isError = part.state === 'output-error' || part.state === 'output-denied';
-
             return (
-              <div
+              <ToolResultPart
                 key={`result-${part.toolCallId}`}
-                className={cn(
-                  "flex items-center gap-2 px-3 py-2 rounded-lg border text-xs",
-                  isError
-                    ? "bg-red-500/10 border-red-500/20 text-red-400"
-                    : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
-                )}
-              >
-                {isError ? <X className="w-3 h-3" /> : <CheckCircle2 className="w-3 h-3" />}
-                <span className="font-mono">{part.toolName || part.name}</span>
-              </div>
+                toolName={part.toolName || part.name}
+                isError={part.state === 'output-error' || part.state === 'output-denied'}
+              />
             );
           }
 
@@ -713,6 +598,7 @@ interface ChatAreaProps {
 const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus }: ChatAreaProps) => {
   const [input, setInput] = useState('');
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [dataParts, setDataParts] = useState<Array<{ id: string; type: string; data: unknown }>>([]);
 
   const { messages, sendMessage, status, addToolApprovalResponse, error, stop, setMessages } = useChat({
     transport: new DefaultChatTransport({
@@ -722,29 +608,26 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
     }),
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
 
-    // ============ PROPER PATTERN: Use onData for streaming updates ============
     onData: (dataPart: any) => {
-      console.log('Streaming data:', dataPart);
-
-      switch (dataPart.type) {
+      const id = `${dataPart.type}-${Date.now()}`;
+      const { type, data } = dataPart;
+      console.log("dataPart no fucking data:",dataPart);
+      switch (type) {
+        
+        // Reasoning mode updates - update agent status
         case 'data-reasoning_mode':
-          // Agent switched reasoning mode
-          onAgentStatusChange({ ...agentStatus, reasoningMode: dataPart.data.mode });
-          break;      
-
-        case 'data-task_update':
-          // Task status changed - use reconciliation by id
-          onAgentStatusChange({
-            ...agentStatus,
-            tasks: agentStatus.tasks.some(t => t.id === dataPart.data.id)
-              ? agentStatus.tasks.map(t => t.id === dataPart.data.id ? { ...t, ...dataPart.data } : t)
-              : [...agentStatus.tasks, dataPart.data],
-          });
+          onAgentStatusChange({ ...agentStatus, reasoningMode: data.mode });
+          setDataParts(prev => [...prev, { id, type, data }]);
           break;
 
+        // Reasoning/thought process
+        case 'data-reasoning':
+          setDataParts(prev => [...prev, { id, type, data }]);
+          break;
+
+        // Status updates - also track memory counts
         case 'data-status':
-          // Check for memory system updates
-          const msg = dataPart.data.message;
+          const msg = data.message;
           if (msg.includes('Lesson saved')) {
             onAgentStatusChange({ ...agentStatus, lessonsLearned: agentStatus.lessonsLearned + 1 });
           }
@@ -754,25 +637,76 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
           if (msg.includes('Pattern saved')) {
             onAgentStatusChange({ ...agentStatus, patternsCount: agentStatus.patternsCount + 1 });
           }
-          break;
-        
-
-        case 'data-notification':
-          // Transient notifications - could show toast here
-          console.log('Notification:', dataPart.data.level, dataPart.data.message);
+          setDataParts(prev => [...prev, { id, type, data }]);
           break;
 
+        // Task updates - sync with agent status
+        case 'data-task_update':
+          onAgentStatusChange({
+            ...agentStatus,
+            tasks: agentStatus.tasks.some(t => t.id === data.id)
+              ? agentStatus.tasks.map(t => t.id === data.id ? { ...t, ...data } : t)
+              : [...agentStatus.tasks, { id: data.id, title: data.title || data.id, ...data }],
+          });
+          setDataParts(prev => [...prev, { id, type, data }]);
+          break;
+
+        // Task graph visualization
+        case 'data-task_graph':
+          setDataParts(prev => [...prev, { id, type, data }]);
+          break;
+
+        // Todo updates
+        case 'data-todo_update':
+          setDataParts(prev => [...prev, { id, type, data }]);
+          break;
+
+        // Context summarization
         case 'data-summarization':
-          console.log('Summarization:', dataPart.data.stage);
+          setDataParts(prev => [...prev, { id, type, data }]);
           break;
 
+        // Tool execution progress
         case 'data-tool_progress':
-          console.log('Tool progress:', dataPart.data.toolName, dataPart.data.stage);
+          setDataParts(prev => [...prev, { id, type, data }]);
           break;
 
+        // Error notifications
         case 'data-error':
-          console.error('Agent error:', dataPart.data.error);
+          setDataParts(prev => [...prev, { id, type, data }]);
           break;
+
+        // Memory system updates
+        case 'data-memory_update':
+          if (data.type === 'lesson' && data.action === 'saved') {
+            onAgentStatusChange({ ...agentStatus, lessonsLearned: agentStatus.lessonsLearned + 1 });
+          }
+          if (data.type === 'fact' && data.action === 'saved') {
+            onAgentStatusChange({ ...agentStatus, factsStored: agentStatus.factsStored + 1 });
+          }
+          if (data.type === 'pattern' && data.action === 'saved') {
+            onAgentStatusChange({ ...agentStatus, patternsCount: agentStatus.patternsCount + 1 });
+          }
+          setDataParts(prev => [...prev, { id, type, data }]);
+          break;
+
+        // Swarm coordination signals
+        case 'data-swarm_signal':
+          setDataParts(prev => [...prev, { id, type, data }]);
+          break;
+
+        // Sub-agent delegation updates
+        case 'data-delegation':
+          setDataParts(prev => [...prev, { id, type, data }]);
+          break;
+
+        // General notifications
+        case 'data-notification':
+          setDataParts(prev => [...prev, { id, type, data }]);
+          break;
+
+        default:
+          console.log('Unhandled data part:', type, data);
       }
     },
   });
@@ -832,6 +766,7 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (input.trim()) {
+      setDataParts([]); // Clear previous data parts
       sendMessage({ text: input });
       setInput('');
     }
@@ -890,6 +825,30 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
                     transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.15 }}
                   />
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Streaming data parts */}
+          {dataParts.length > 0 && (
+            <div className="flex items-start gap-3 py-2">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border border-cyan-500/20 flex items-center justify-center shrink-0">
+                <Bot className="w-4 h-4 text-cyan-400" />
+              </div>
+              <div className="flex-1 space-y-2">
+                <AnimatePresence mode="popLayout">
+                  {dataParts.map((part) => (
+                    <motion.div
+                      key={part.id}
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <DataPartRenderer part={part} />
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
               </div>
             </div>
           )}
@@ -1085,13 +1044,9 @@ export default function App() {
           <div className="flex items-center gap-3">
             {/* Reasoning Mode Indicator */}
             <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-zinc-800/50">
-              <span className="text-xs">
-                {agentStatus.reasoningMode === 'tot' ? '🌳' :
-                 agentStatus.reasoningMode === 'plan-execute' ? '📋' : '🔄'}
-              </span>
+              {reasoningConfig[agentStatus.reasoningMode]?.icon}
               <span className="text-[10px] text-zinc-500 capitalize">
-                {agentStatus.reasoningMode === 'tot' ? 'Tree-of-Thoughts' :
-                 agentStatus.reasoningMode === 'plan-execute' ? 'Plan-Execute' : 'ReAct'}
+                {reasoningConfig[agentStatus.reasoningMode]?.label || 'ReAct'}
               </span>
               {agentStatus.isProcessing && (
                 <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse" />

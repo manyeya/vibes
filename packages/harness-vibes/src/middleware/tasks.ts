@@ -6,7 +6,6 @@ import {
 } from 'ai';
 import { z } from 'zod';
 
-import StateBackend from '../backend/statebackend';
 import {
     AgentUIMessage,
     Middleware,
@@ -22,11 +21,15 @@ import {
 export default class TasksMiddleware implements Middleware {
     name = 'TasksMiddleware';
     protected writer?: DataStreamWriter;
+    private tasks: TaskItem[] = [];
+    private tasksPath: string;
 
     constructor(
-        protected backend: StateBackend,
         protected model?: LanguageModel,
-    ) {}
+        config: { tasksPath?: string } = {}
+    ) {
+        this.tasksPath = config.tasksPath || 'workspace/tasks.json';
+    }
 
     onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
         this.writer = createDataStreamWriter(writer);
@@ -96,10 +99,11 @@ export default class TasksMiddleware implements Middleware {
                         }
 
                         createdTasks.push(newTask);
-                        await this.backend.addTask(newTask);
+                        await this.addTask(newTask);
 
                         this.writer?.writeTaskUpdate(newTask.id, newTask.status, newTask.title);
                     }
+                    await this.persistTasks();
 
                     return {
                         success: true,
@@ -168,8 +172,8 @@ Output ONLY valid JSON, no markdown:
                     try {
                         // Extract JSON from response (handle markdown wrapping)
                         const jsonMatch = text.match(/```json\s*(\{[\s\S]*\})\s*```/) ||
-                                        text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
-                                        text.match(/(\{[\s\S]*\})/);
+                            text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
+                            text.match(/(\{[\s\S]*\})/);
                         if (!jsonMatch) {
                             throw new Error('No JSON found in response');
                         }
@@ -215,10 +219,11 @@ Output ONLY valid JSON, no markdown:
                         }
 
                         createdTasks.push(newTask);
-                        await this.backend.addTask(newTask);
+                        await this.addTask(newTask);
 
                         this.writer?.writeTaskUpdate(newTask.id, newTask.status, newTask.title);
                     }
+                    await this.persistTasks();
 
                     return {
                         success: true,
@@ -239,7 +244,7 @@ Output ONLY valid JSON, no markdown:
                     addFileReferences: z.array(z.string()).optional(),
                 }),
                 execute: async (input) => {
-                    const current = await this.backend.getTask(input.id);
+                    const current = this.tasks.find(t => t.id === input.id);
                     if (!current) {
                         return { success: false, error: 'Task not found' };
                     }
@@ -253,11 +258,12 @@ Output ONLY valid JSON, no markdown:
                         updates.fileReferences = [...new Set([...current.fileReferences, ...input.addFileReferences])];
                     }
 
-                    await this.backend.updateTask(input.id, updates);
+                    await this.updateTask(input.id, updates);
+                    await this.persistTasks();
 
                     this.writer?.writeTaskUpdate(
                         input.id,
-                        updates.status || current.status,
+                        input.status || current.status,
                         current.title
                     );
 
@@ -269,7 +275,7 @@ Output ONLY valid JSON, no markdown:
                 description: `Get the next task to work on. Returns pending tasks that aren't blocked.`,
                 inputSchema: z.object({}),
                 execute: async () => {
-                    const availableTasks = await this.backend.getAvailableTasks();
+                    const availableTasks = await this.getAvailableTasks();
                     return {
                         success: true,
                         tasks: availableTasks,
@@ -282,11 +288,10 @@ Output ONLY valid JSON, no markdown:
                 description: `List all tasks with their current status.`,
                 inputSchema: z.object({}),
                 execute: async () => {
-                    const tasks = await this.backend.getTasks();
                     return {
                         success: true,
-                        tasks,
-                        count: tasks.length,
+                        tasks: this.tasks,
+                        count: this.tasks.length,
                     };
                 },
             }),
@@ -300,11 +305,97 @@ Output ONLY valid JSON, no markdown:
                     if (!confirm) {
                         return { success: false, error: 'Must set confirm=true' };
                     }
-                    await this.backend.clearTasks();
+                    this.tasks = [];
+                    await this.persistTasks();
                     return { success: true, message: 'All tasks cleared' };
                 },
             }),
         };
+    }
+
+    // Task management internal methods
+
+    async addTask(task: TaskItem): Promise<void> {
+        this.tasks.push(task);
+    }
+
+    async updateTask(id: string, updates: Partial<TaskItem>): Promise<void> {
+        const index = this.tasks.findIndex(t => t.id === id);
+        if (index === -1) return;
+
+        const current = this.tasks[index];
+        const updated = {
+            ...current,
+            ...updates,
+            updatedAt: new Date().toISOString()
+        };
+
+        if (updates.status === 'completed' && current.status !== 'completed') {
+            updated.completedAt = new Date().toISOString();
+        }
+
+        this.tasks[index] = updated;
+
+        // Auto-unblock
+        if (updated.status === 'completed' && current.status !== 'completed') {
+            await this.unblockDependentTasks(id);
+        }
+    }
+
+    async unblockDependentTasks(completedTaskId: string): Promise<void> {
+        const completedIds = new Set(this.tasks.filter(t => t.status === 'completed').map(t => t.id));
+
+        for (const task of this.tasks) {
+            if (task.blockedBy.includes(completedTaskId) && task.status === 'blocked') {
+                const allDepsComplete = task.blockedBy.every(depId => completedIds.has(depId));
+                if (allDepsComplete) {
+                    task.status = 'pending';
+                    task.updatedAt = new Date().toISOString();
+                }
+            }
+        }
+    }
+
+    async getAvailableTasks(): Promise<TaskItem[]> {
+        const completedIds = new Set(this.tasks.filter(t => t.status === 'completed').map(t => t.id));
+        return this.tasks.filter(task => {
+            if (task.status === 'completed' || task.status === 'failed') return false;
+            return task.blockedBy.every(depId => completedIds.has(depId));
+        });
+    }
+
+    async getTasks(): Promise<TaskItem[]> {
+        return [...this.tasks];
+    }
+
+    private async persistTasks(): Promise<void> {
+        try {
+            const fs = await import('fs/promises');
+            const pathModule = await import('path');
+            const fullPath = pathModule.resolve(process.cwd(), this.tasksPath);
+
+            await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
+            await fs.writeFile(fullPath, JSON.stringify(this.tasks, null, 2));
+        } catch (e) {
+            console.error('Failed to persist tasks:', e);
+        }
+    }
+
+    private async loadTasks(): Promise<void> {
+        try {
+            const fs = await import('fs/promises');
+            const pathModule = await import('path');
+            const fullPath = pathModule.resolve(process.cwd(), this.tasksPath);
+
+            const content = await fs.readFile(fullPath, 'utf-8');
+            this.tasks = JSON.parse(content);
+        } catch (e) {
+            this.tasks = [];
+        }
+    }
+
+    async waitReady(): Promise<void> {
+        await this.loadTasks();
     }
 
     modifySystemPrompt(prompt: string): string | Promise<string> {

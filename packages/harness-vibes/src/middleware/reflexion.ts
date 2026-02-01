@@ -89,7 +89,6 @@ export class ReflexionMiddleware implements Middleware {
 
     private writer?: DataStreamWriter;
     private model?: LanguageModel;
-    private backend?: any; // StateBackend for persistence
 
     private config: Required<ReflexionConfig>;
     private lessons: Lesson[] = [];
@@ -97,11 +96,9 @@ export class ReflexionMiddleware implements Middleware {
 
     constructor(
         model?: LanguageModel,
-        backend?: any,
         config: ReflexionConfig = {}
     ) {
         this.model = model;
-        this.backend = backend;
         this.config = {
             maxLessons: config.maxLessons || 100,
             lessonsPath: config.lessonsPath || 'workspace/lessons.json',
@@ -266,8 +263,8 @@ Output ONLY valid JSON:
                         let data: any;
                         try {
                             const jsonMatch = text.match(/```json\s*(\{[\s\S]*\})\s*```/) ||
-                                            text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
-                                            text.match(/(\{[\s\S]*\})/);
+                                text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
+                                text.match(/(\{[\s\S]*\})/);
                             if (!jsonMatch) {
                                 throw new Error('No JSON found in response');
                             }
