@@ -272,4 +272,5 @@ export {
     type VibeAgentConfig,
     type SubAgent,
     VibeAgent, // Old implementation (to be deprecated)
+    VibeAgent as VibesAgent, // Alias for backwards compatibility with tests
 };

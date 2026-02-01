@@ -1,14 +1,17 @@
 import {
     generateText,
+    streamText,
     convertToModelMessages,
+    stepCountIs,
     type LanguageModel,
     type ModelMessage,
     type ToolSet,
     type UIMessage,
     type UIMessageStreamWriter,
-    stepCountIs,
-    ToolLoopAgent,
-    Agent
+    type Agent,
+    type AgentCallParameters,
+    type AgentStreamParameters,
+    type StepResult,
 } from 'ai';
 import {
     AgentState,
@@ -56,16 +59,42 @@ interface PartedMessage {
 }
 
 /**
+ * Internal prepared call result - what prepareCall returns before generateText/streamText
+ */
+interface PreparedCall {
+    model: LanguageModel;
+    instructions: string;
+    messages: ModelMessage[];
+    tools: Record<string, unknown>;
+    temperature?: number;
+    maxSteps?: number;
+}
+
+/**
  * VibeAgent is the core engine for autonomous multi-step reasoning.
- * It extends the AI SDK v6 ToolLoopAgent to provide native agent support
- * while maintaining middleware hooks and context compression.
+ * It implements the AI SDK v6 Agent interface directly to provide
+ * native agent support while maintaining middleware hooks and context compression.
  *
  * Deep Agent Features:
  * - Restorable compression: Large content replaced with file/path references
  * - Error preservation: Errors tracked separately, never summarized
  * - KV-cache awareness: Stable prompt prefix for cache optimization
+ *
+ * Implements Agent interface directly (no longer extends ToolLoopAgent)
+ * for cleaner control flow and proper type safety.
  */
-export class VibeAgent extends ToolLoopAgent {
+export class VibeAgent implements Agent<never, ToolSet, never> {
+    readonly version = 'agent-v1' as const;
+    // Agent interface requires id, we use undefined since we don't support named agents
+    readonly id = undefined;
+
+    // Agent interface required: tools getter
+    get tools(): ToolSet {
+        // Note: This returns cached tools. The Agent interface expects sync tools,
+        // so we preload tools in constructor and cache them.
+        return this.toolCache as ToolSet;
+    }
+
     protected backend: StateBackend;
     protected middleware: Middleware[] = [];
     protected model: LanguageModel;
@@ -80,6 +109,8 @@ export class VibeAgent extends ToolLoopAgent {
     protected toolsRequiringApproval: ToolsRequiringApprovalConfig = [];
     protected allowedTools?: string[];
     protected blockedTools?: string[];
+    /** Optional onStepFinish callback from config */
+    protected configOnStepFinish?: (stepResult: StepResult<ToolSet>) => void | Promise<void>;
     /** Writer for sending data updates to UI during stream */
     protected writer?: UIMessageStreamWriter<VibesUIMessage>;
     /** Track last message count to prevent duplicate summarization notifications */
@@ -92,75 +123,6 @@ export class VibeAgent extends ToolLoopAgent {
     protected maxRecentErrors: number = 5;
 
     constructor(config: VibeAgentConfig, backend?: StateBackend) {
-        // Check if any middleware has prepareStep before calling super()
-        const hasPrepareStep = config.middleware?.some(mw => mw.prepareStep);
-
-        super({
-            model: config.model,
-            instructions: config.instructions,
-            stopWhen: stepCountIs(config.maxSteps || 20),
-            experimental_telemetry: config.enableTelemetry ? {
-                isEnabled: true,
-                functionId: 'vibe-agent'
-            } : undefined,
-            // Use AI SDK's onStepFinish directly - no need to delegate to middleware
-            ...(config.onStepFinish ? {
-                onStepFinish: config.onStepFinish as (stepResult: any) => void | Promise<void>,
-            } : {}),
-
-            prepareCall: async (settings) => {
-                const state = this.backend.getState();
-                const processedMessages = await this.pruneMessages(settings.messages || [], this.writer);
-
-                let prompt = this.baseInstructions;
-                for (const mw of this.middleware) {
-                    if (mw.modifySystemPrompt) {
-                        const result = mw.modifySystemPrompt(prompt);
-                        prompt = result instanceof Promise ? await result : result;
-                    }
-                }
-                if (this.customSystemPrompt) {
-                    prompt += `\n\n## Custom Instructions\n${this.customSystemPrompt} `;
-                }
-                if (state.summary) {
-                    prompt += `\n\n## Previous Context Summary\n${state.summary}`;
-                }
-
-                // Add recent errors to prompt (Manus: keep errors visible for self-correction)
-                const recentErrors = this.getRecentErrors();
-                if (recentErrors.length > 0) {
-                    prompt += `\n\n${this.formatRecentErrors(recentErrors)}`;
-                }
-
-                const tools = await this.getAllTools(this.allowedTools);
-
-                return {
-                    ...settings,
-                    messages: processedMessages,
-                    instructions: prompt,
-                    tools,
-                    temperature: this.temperature,
-                };
-            },
-
-            // Use middleware prepareStep hooks to modify settings per step
-            ...(hasPrepareStep ? {
-                prepareStep: async (options: any): Promise<any> => {
-                    let result: any = {};
-
-                    // Chain middleware prepareStep hooks
-                    for (const mw of this.middleware) {
-                        if (mw.prepareStep) {
-                            const mwResult = await mw.prepareStep(options);
-                            result = { ...result, ...mwResult };
-                        }
-                    }
-
-                    return result;
-                },
-            } : {}),
-        });
-
         this.backend = backend || new StateBackend();
         this.model = config.model;
         this.baseInstructions = config.instructions;
@@ -174,6 +136,7 @@ export class VibeAgent extends ToolLoopAgent {
         this.toolsRequiringApproval = config.toolsRequiringApproval || [];
         this.allowedTools = config.allowedTools;
         this.blockedTools = config.blockedTools;
+        this.configOnStepFinish = config.onStepFinish;
 
         if (config.middleware) {
             this.addMiddleware(config.middleware);
@@ -188,19 +151,260 @@ export class VibeAgent extends ToolLoopAgent {
         }
     }
 
-    protected toolCache: Record<string, unknown> | null = null;
+    // ============ AGENT INTERFACE IMPLEMENTATION ============
+
+    /**
+     * Generate output from the agent (non-streaming).
+     * Implements the Agent interface generate method.
+     */
+    async generate(
+        options?: AgentCallParameters<never, ToolSet> & { messages?: UIMessage[] | ModelMessage[] }
+    ): Promise<VibeAgentGenerateResult> {
+        // Extract VibeAgent-specific options
+        const { messages, state: stateOptions, ...agentOptions } = options as any;
+
+        // Convert and merge state
+        const modelMessages = messages
+            ? await this.convertMessages(messages)
+            : this.backend.getState().messages;
+
+        const stateToMerge = { ...stateOptions, messages: modelMessages };
+        this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
+        const currentState = this.backend.getState();
+
+        // Prepare the call (was done by ToolLoopAgent's prepareCall)
+        const prepared = await this.prepareCall({
+            messages: currentState.messages,
+        });
+
+        // Merge onStepFinish callbacks (config + method)
+        const onStepFinish = this.mergeOnStepFinishCallbacks(
+            (agentOptions as any).onStepFinish
+        );
+
+        // Call generateText directly (was super.generate())
+        const result = await generateText({
+            model: prepared.model,
+            messages: prepared.messages,
+            system: prepared.instructions,
+            tools: prepared.tools as ToolSet,
+            temperature: prepared.temperature,
+            stopWhen: stepCountIs(prepared.maxSteps || 20),
+            abortSignal: (agentOptions as any).abortSignal,
+            timeout: (agentOptions as any).timeout,
+            onStepFinish,
+            // Handle prepareStep middleware hooks if any exist
+            ...(this.hasPrepareStepMiddleware() ? {
+                experimental_prepareStep: async (stepOptions: any) => {
+                    return this.runPrepareStepHooks(stepOptions);
+                },
+            } : {}),
+        });
+
+        const toolErrors = result.steps?.flatMap(step =>
+            (step.content?.filter((part) => part.type === 'tool-error') ?? []) as Array<{ type: 'tool-error' }>
+        ) ?? [];
+
+        // result.response.messages are ONLY the new ones
+        const updatedMessages = [...currentState.messages, ...result.response.messages];
+        this.backend.setState({ messages: updatedMessages });
+
+        for (const mw of this.middleware) {
+            if (mw.afterModel) {
+                await mw.afterModel(this.backend.getState(), result);
+            }
+        }
+
+        return {
+            ...result,
+            state: this.backend.getState(),
+            toolErrors: toolErrors.length > 0 ? toolErrors : undefined,
+        } as VibeAgentGenerateResult;
+    }
+
+    /**
+     * Stream output from the agent.
+     * Implements the Agent interface stream method.
+     */
+    async stream(
+        options?: AgentStreamParameters<never, ToolSet> & {
+            messages?: UIMessage[] | ModelMessage[];
+            state?: Partial<Omit<AgentState, 'messages'>>;
+            writer?: UIMessageStreamWriter<VibesUIMessage>;
+        }
+    ): Promise<VibeAgentStreamResult> {
+        // Extract VibeAgent-specific options
+        const { messages, state: stateOptions, writer, ...agentOptions } = options as any;
+
+        // Store writer for use in prepareCall/pruneMessages
+        this.writer = writer;
+
+        // Convert and merge state
+        const modelMessages = messages
+            ? await this.convertMessages(messages)
+            : this.backend.getState().messages;
+
+        const stateToMerge = { ...stateOptions, messages: modelMessages };
+        this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
+        const currentState = this.backend.getState();
+
+        if (writer) {
+            for (const mw of this.middleware) {
+                if (mw.onStreamReady) {
+                    mw.onStreamReady(writer);
+                }
+            }
+        }
+
+        // Prepare the call
+        const prepared = await this.prepareCall({
+            messages: currentState.messages,
+        });
+
+        // Merge onStepFinish callbacks
+        const onStepFinish = this.mergeOnStepFinishCallbacks(
+            (agentOptions as any).onStepFinish
+        );
+
+        // Call streamText directly (was super.stream())
+        const result =  streamText({
+            model: prepared.model,
+            messages: prepared.messages,
+            system: prepared.instructions,
+            tools: prepared.tools as ToolSet,
+            temperature: prepared.temperature,
+            stopWhen: stepCountIs(prepared.maxSteps || 20),
+            abortSignal: (agentOptions as any).abortSignal,
+            timeout: (agentOptions as any).timeout,
+            experimental_transform: (agentOptions as any).experimental_transform,
+            onStepFinish,
+            // Handle prepareStep middleware hooks if any exist
+            ...(this.hasPrepareStepMiddleware() ? {
+                experimental_prepareStep: async (stepOptions: any) => {
+                    return this.runPrepareStepHooks(stepOptions);
+                },
+            } : {}),
+        });
+
+        // Handle stream completion with proper error handling
+        Promise.resolve(result.response).then(async (finishResult) => {
+            const prevMessages = this.backend.getState().messages || [];
+            this.backend.setState({ messages: [...prevMessages, ...finishResult.messages] });
+
+            for (const mw of this.middleware) {
+                if (mw.onStreamFinish) {
+                    await mw.onStreamFinish(finishResult);
+                }
+            }
+        }).catch((error: Error) => {
+            console.error('[VibeAgent] Stream completion error:', error);
+        });
+
+        return result;
+    }
+
+    // ============ PREPARE CALL LOGIC ============
+
+    /**
+     * Prepare the call settings before invoking generateText/streamText.
+     * This was previously handled by ToolLoopAgent's prepareCall hook.
+     */
+    protected async prepareCall(baseSettings: { messages?: ModelMessage[] }): Promise<PreparedCall> {
+        const state = this.backend.getState();
+        const processedMessages = await this.pruneMessages(baseSettings.messages || [], this.writer);
+
+        let prompt = this.baseInstructions;
+        for (const mw of this.middleware) {
+            if (mw.modifySystemPrompt) {
+                const result = mw.modifySystemPrompt(prompt);
+                prompt = result instanceof Promise ? await result : result;
+            }
+        }
+        if (this.customSystemPrompt) {
+            prompt += `\n\n## Custom Instructions\n${this.customSystemPrompt} `;
+        }
+        if (state.summary) {
+            prompt += `\n\n## Previous Context Summary\n${state.summary}`;
+        }
+
+        // Add recent errors to prompt (Manus: keep errors visible for self-correction)
+        const recentErrors = this.getRecentErrors();
+        if (recentErrors.length > 0) {
+            prompt += `\n\n${this.formatRecentErrors(recentErrors)}`;
+        }
+
+        const tools = await this.getAllTools(this.allowedTools);
+
+        return {
+            model: this.model,
+            instructions: prompt,
+            messages: processedMessages,
+            tools,
+            temperature: this.temperature,
+            maxSteps: this.maxSteps,
+        };
+    }
+
+    /**
+     * Check if any middleware has prepareStep hooks
+     */
+    protected hasPrepareStepMiddleware(): boolean {
+        return this.middleware.some(mw => mw.prepareStep);
+    }
+
+    /**
+     * Run all middleware prepareStep hooks and merge their results
+     */
+    protected async runPrepareStepHooks(stepOptions: any): Promise<any> {
+        let result: any = {};
+
+        // Chain middleware prepareStep hooks
+        for (const mw of this.middleware) {
+            if (mw.prepareStep) {
+                const mwResult = await mw.prepareStep(stepOptions);
+                result = { ...result, ...mwResult };
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Merge onStepFinish callbacks from config and method call
+     */
+    protected mergeOnStepFinishCallbacks(
+        methodCallback: ((stepResult: StepResult<ToolSet>) => void | Promise<void>) | undefined,
+    ): ((stepResult: StepResult<ToolSet>) => void | Promise<void>) | undefined {
+        const constructorCallback = this.configOnStepFinish as
+            | ((stepResult: StepResult<ToolSet>) => void | Promise<void>)
+            | undefined;
+
+        if (methodCallback && constructorCallback) {
+            return async (stepResult: StepResult<ToolSet>) => {
+                await constructorCallback(stepResult);
+                await methodCallback(stepResult);
+            };
+        }
+
+        return methodCallback ?? constructorCallback;
+    }
+
+    // ============ TOOL MANAGEMENT ============
+
+    // Tool cache - initialize with empty object so tools getter always has a value
+    protected toolCache: Record<string, unknown> = {};
     protected middlewareVersion: number = 0;
 
     protected async getAllTools(allowedTools?: string[]): Promise<Record<string, unknown>> {
         // Cache bust: always rebuild if allowedTools filter is specified
-        if (this.toolCache && !allowedTools) {
+        if (!allowedTools && Object.keys(this.toolCache).length > 0) {
             return this.toolCache;
         }
 
         // Invalidate cache if middleware was added/removed
         const currentMiddlewareVersion = this.middleware.length;
-        if (this.toolCache && this.middlewareVersion !== currentMiddlewareVersion) {
-            this.toolCache = null;
+        if (this.middlewareVersion !== currentMiddlewareVersion && Object.keys(this.toolCache).length > 0) {
+            this.toolCache = {};
         }
 
         const allTools: Record<string, unknown> = {};
@@ -292,6 +496,8 @@ export class VibeAgent extends ToolLoopAgent {
         return resolvedTools;
     }
 
+    // ============ ERROR TRACKING ============
+
     /**
      * Add an error to the error log. Errors are tracked separately
      * from the message stream and never included in summaries.
@@ -363,6 +569,8 @@ export class VibeAgent extends ToolLoopAgent {
         output += `---\n`;
         return output;
     }
+
+    // ============ MESSAGE PROCESSING ============
 
     /**
      * Extract message content as string for analysis.
@@ -737,93 +945,9 @@ The conversation is formatted with:
         return { messagesWithoutErrors, extractedErrors };
     }
 
-    async generate(input: { messages?: UIMessage[] | ModelMessage[] } & Partial<Omit<AgentState, 'messages'>> = {}): Promise<VibeAgentGenerateResult> {
-        const modelMessages = input.messages
-            ? await this.convertMessages(input.messages)
-            : this.backend.getState().messages;
-
-        const stateToMerge = { ...input, messages: modelMessages };
-        this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
-        const currentState = this.backend.getState();
-
-        // Note: beforeModel was removed - use prepareStep in middleware instead (called by AI SDK)
-
-        const result = await super.generate({
-            messages: currentState.messages,
-        });
-
-        const toolErrors = result.steps?.flatMap(step =>
-            (step.content?.filter((part) => part.type === 'tool-error') ?? []) as Array<{ type: 'tool-error' }>
-        ) ?? [];
-
-        // result.response.messages are ONLY the new ones
-        const updatedMessages = [...currentState.messages, ...result.response.messages];
-        this.backend.setState({ messages: updatedMessages });
-
-        for (const mw of this.middleware) {
-            if (mw.afterModel) {
-                await mw.afterModel(this.backend.getState(), result);
-            }
-        }
-
-        return {
-            ...result,
-            state: this.backend.getState(),
-            toolErrors: toolErrors.length > 0 ? toolErrors : undefined,
-        };
-    }
-
-    async stream(options: {
-        messages?: UIMessage[] | ModelMessage[],
-        state?: Partial<Omit<AgentState, 'messages'>>,
-        writer?: UIMessageStreamWriter<VibesUIMessage>,
-        abortSignal?: AbortSignal,
-    } = {}): Promise<VibeAgentStreamResult> {
-        const { messages, state = {}, writer, abortSignal } = options;
-
-        // Store writer for use in prepareCall/pruneMessages
-        this.writer = writer;
-
-        const modelMessages = messages
-            ? await this.convertMessages(messages)
-            : this.backend.getState().messages;
-
-        const stateToMerge = { ...state, messages: modelMessages };
-        this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
-        let currentState = this.backend.getState();
-
-        if (writer) {
-            for (const mw of this.middleware) {
-                if (mw.onStreamReady) {
-                    mw.onStreamReady(writer);
-                }
-            }
-        }
-
-        // Note: beforeModel was removed - use prepareStep in middleware instead (called by AI SDK)
-
-        const result = await super.stream({
-            messages: currentState.messages,
-            abortSignal,
-        });
-
-        // Handle stream completion with proper error handling
-        Promise.resolve(result.response).then(async (finishResult) => {
-            const prevMessages = this.backend.getState().messages || [];
-            this.backend.setState({ messages: [...prevMessages, ...finishResult.messages] });
-
-            for (const mw of this.middleware) {
-                if (mw.onStreamFinish) {
-                    await mw.onStreamFinish(finishResult);
-                }
-            }
-        }).catch((error: Error) => {
-            console.error('[VibeAgent] Stream completion error:', error);
-        });
-
-        return result;
-    }
-
+    /**
+     * Convert UIMessage[] to ModelMessage[] using AI SDK's converter
+     */
     protected async convertMessages(messages: UIMessage[] | ModelMessage[]): Promise<ModelMessage[]> {
         if (messages.length === 0) return [];
 
@@ -844,6 +968,8 @@ The conversation is formatted with:
         }
         return modelMessages;
     }
+
+    // ============ STATE MANAGEMENT ============
 
     getState(): AgentState {
         return this.backend.getState();

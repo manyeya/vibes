@@ -6,6 +6,7 @@ import {
     type StreamTextResult,
     type GenerateTextResult,
     type ToolSet,
+    type StepResult,
 } from 'ai';
 
 // Re-export ModelMessage for middleware use
@@ -291,8 +292,8 @@ export interface VibeAgentConfig {
     temperature?: number;
     /** Maximum retries for API failures (default: 2) */
     maxRetries?: number;
-    /** Callback for step progress updates (passed to ToolLoopAgent) */
-    onStepFinish?: (step: { stepNumber: number; stepType: string; text?: string; content?: any }) => void | Promise<void>;
+    /** Callback for step progress updates (matches AI SDK's StepResult) */
+    onStepFinish?: (stepResult: StepResult<ToolSet>) => void | Promise<void>;
     /** Custom middleware to extend agent behavior */
     middleware?: Middleware[];
     /** Enable telemetry for observability (default: false) */
@@ -311,7 +312,7 @@ export interface VibeAgentConfig {
  * Result returned by VibeAgent.generate()
  * Extends GenerateTextResult with additional agent-specific fields
  */
-export interface VibeAgentGenerateResult<TOOLS extends ToolSet = {}>
+export interface VibeAgentGenerateResult<TOOLS extends ToolSet = ToolSet>
     extends GenerateTextResult<TOOLS, never> {
     /** The current agent state after generation */
     state: AgentState;
@@ -321,6 +322,6 @@ export interface VibeAgentGenerateResult<TOOLS extends ToolSet = {}>
 
 /**
  * Result returned by VibeAgent.stream() - same as StreamTextResult from AI SDK
- * Using any for tool types due to dynamic tool registration
+ * Using ToolSet for tool types due to dynamic tool registration
  */
-export type VibeAgentStreamResult = StreamTextResult<any, never>;
+export type VibeAgentStreamResult = StreamTextResult<ToolSet, never>;
