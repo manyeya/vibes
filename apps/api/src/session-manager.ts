@@ -9,12 +9,9 @@ import { dotenvLoad } from 'dotenv-mono';
 // Load env vars from root .env (automatically walks up directories)
 dotenvLoad();
 
-const openrouter = createOpenRouter({
-    apiKey: process.env.OPENROUTER_API_KEY,
-});
 
 const model = wrapLanguageModel({
-    model: zhipu('glm-4.7-flash', { apiKey: process.env.ZHIPU_API_KEY, }) as any,
+    model: zhipu('glm-4.7-flash') as any,
     middleware: devToolsMiddleware(),
 });
 

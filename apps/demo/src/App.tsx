@@ -530,8 +530,10 @@ const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
 
       <div className={cn("flex-1 space-y-2 min-w-0", isUser && "flex flex-col items-end")}>
         {parts.map((part: any, partIndex: number) => {
+          
           // Text content
           if (part.type === 'text') {
+            console.log(part.text)
             return (
               <div
                 key={`text-${partIndex}`}
@@ -753,6 +755,7 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
             onAgentStatusChange({ ...agentStatus, patternsCount: agentStatus.patternsCount + 1 });
           }
           break;
+        
 
         case 'data-notification':
           // Transient notifications - could show toast here

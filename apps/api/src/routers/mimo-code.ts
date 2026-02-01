@@ -288,6 +288,7 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
             uiMessages: body.messages,
             originalMessages,
         });
+        
     } catch (error) {
         logger.error({
             error: error instanceof Error ? error.message : String(error),

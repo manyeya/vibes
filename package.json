@@ -11,6 +11,7 @@
     "dev:api": "bun run --filter @vibes/api dev",
     "dev:tui": "bun run --filter @vibes/tui dev",
     "dev:demo": "bun run --filter @vibes/demo dev",
+    "dev:tools": "npx @ai-sdk/devtools",
     "build": "bun run build:packages && bun run build:apps",
     "build:packages": "bun run --filter './packages/*' build",
     "build:apps": "bun run --filter './apps/*' build",
