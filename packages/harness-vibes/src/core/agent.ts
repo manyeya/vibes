@@ -228,7 +228,7 @@ export class VibeAgent implements Agent<never, ToolSet, never> {
      */
     async stream(
         options?: AgentStreamParameters<never, ToolSet> & {
-            messages?: UIMessage[] | ModelMessage[];
+            messages?: ModelMessage[];
             state?: Partial<Omit<AgentState, 'messages'>>;
             writer?: UIMessageStreamWriter<VibesUIMessage>;
         }

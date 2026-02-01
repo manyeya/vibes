@@ -9,15 +9,15 @@
  */
 
 import type { VibeAgent } from './agent';
-import type { UIMessage } from 'ai';
+import type { ModelMessage, UIMessage } from 'ai';
 import type { VibesUIMessage } from './streaming';
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai';
 
 interface AgentStreamOptions {
     agent: VibeAgent;
-    uiMessages?: UIMessage[];
+    uiMessages?: ModelMessage[];
     abortSignal?: AbortSignal;
-    originalMessages?: UIMessage[];
+    originalMessages?: ModelMessage[];
 }
 
 /**

@@ -4,6 +4,8 @@ import { z } from "zod";
 import { logger } from "../logger";
 import sessionManager from "../session-manager";
 import { SqliteBackend, type VibesUIMessage, createDeepAgentStreamResponse } from "harness-vibes";
+import { ToolLoopAgent, createAgentUIStreamResponse } from "ai";
+import { openrouter } from "@openrouter/ai-sdk-provider";
 
 // Shared backend instance for session management (without a specific session)
 const sessionBackend = new SqliteBackend('workspace/vibes.db', 'default');
@@ -15,6 +17,19 @@ const mimoSchema = z.object({
 
 const app = new Hono();
 
+const techAgent = new ToolLoopAgent({
+    model: openrouter("claude-sonnet-4-5"),
+    instructions: `You are a technical documentation writer.
+
+  Writing style:
+  - Use clear, simple language
+  - Avoid jargon unless necessary
+  - Structure information with headers and bullet points
+  - Include code examples where relevant
+  - Write in second person ("you" instead of "the user")
+
+  Always format responses in Markdown.`,
+});
 // ============ SESSION MANAGEMENT ENDPOINTS ============
 
 /**
@@ -274,6 +289,13 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
         const sessionId = body.session_id || 'default';
         const messages = body.messages as any[];
 
+        // createAgentUIStreamResponse({
+        //     agent: techAgent,
+        //     uiMessages: messages,
+        // });
+
+
+
         logger.info({ sessionId }, 'Mimo-Code agent streaming request received');
 
         const agent = sessionManager.getOrCreateAgent(sessionId);
@@ -283,12 +305,18 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
         const lastMessage = messages[messages.length - 1];
         const originalMessages = lastMessage?.role === 'assistant' ? messages : undefined;
 
-        return createDeepAgentStreamResponse({
-            agent,
-            uiMessages: body.messages,
-            originalMessages,
+        // return createDeepAgentStreamResponse({
+        //     agent,
+        //     uiMessages: body.messages,
+        //     originalMessages,
+        // });
+
+        return createAgentUIStreamResponse({
+            agent: agent,
+            uiMessages: messages,
         });
-        
+
+
     } catch (error) {
         logger.error({
             error: error instanceof Error ? error.message : String(error),
