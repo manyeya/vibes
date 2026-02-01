@@ -1,0 +1,56 @@
+{
+  "name": "harness-vibes",
+  "version": "1.0.0",
+  "description": "DeepAgents framework - A powerful AI agent orchestrator with multi-step reasoning, memory, and collaboration",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": {
+      "import": "./index.ts",
+      "types": "./index.ts"
+    },
+    "./backend": {
+      "import": "./src/backend/sqlitebackend.ts",
+      "types": "./src/backend/sqlitebackend.ts"
+    }
+  },
+  "files": [
+    "index.ts",
+    "src"
+  ],
+  "scripts": {
+    "build": "bun build index.ts --outdir dist --target bun && tsc --emitDeclarationOnly",
+    "dev": "bun run --watch index.ts",
+    "test": "bun test",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/langchain": "^2.0.42",
+    "@ai-sdk/openai": "^3.0.12",
+    "@hono/zod-validator": "^0.7.6",
+    "@langchain/core": "^1.1.15",
+    "ai": "^6.0.39",
+    "deepagents": "^1.4.1",
+    "langchain": "^1.2.10",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "bun-types": "latest",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@ai-sdk/openai": "^3.0.0"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "multi-agent",
+    "orchestrator",
+    "langchain",
+    "ai-sdk"
+  ],
+  "author": "",
+  "license": "MIT"
+}

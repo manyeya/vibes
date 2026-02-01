@@ -2,7 +2,6 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger as honoLogger } from "hono/logger";
 import mimoCodeRouter from "./routers/mimo-code";
-import 'dotenv/config';
 import { logger } from "./logger";
 
 const PORT = parseInt(process.env.PORT || '3000', 10);

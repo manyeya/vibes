@@ -1,7 +1,7 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { createDeepAgent, } from './the-vibes';
+import { createDeepAgent, } from 'harness-vibes';
 import { mimoCodePrompt } from './prompts/mimo-code';
-import { wrapLanguageModel } from 'ai';
+import { InferAgentUIMessage, wrapLanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 
 const openrouter = createOpenRouter({
@@ -93,3 +93,6 @@ export const mimoCode = createDeepAgent({
 });
 
 export default mimoCode;
+
+
+export type MimoCodeUIMessage = InferAgentUIMessage<typeof mimoCode>;

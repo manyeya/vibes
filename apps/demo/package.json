@@ -1,11 +1,12 @@
 {
-  "name": "demo",
+  "name": "@vibes/demo",
   "version": "0.0.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build"
   },
   "dependencies": {
+    "harness-vibes": "workspace:*",
     "@ai-sdk/react": "^3.0.41",
     "ai": "^6.0.39",
     "clsx": "^2.1.1",

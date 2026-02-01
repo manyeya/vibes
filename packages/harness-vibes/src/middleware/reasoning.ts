@@ -5,7 +5,7 @@ import {
     type LanguageModel,
 } from 'ai';
 import { z } from 'zod';
-import { AgentUIMessage, Middleware } from '../core/types';
+import { VibesUIMessage, Middleware } from '../core/types';
 
 /**
  * Reasoning modes supported by the middleware
@@ -103,7 +103,7 @@ export interface ReasoningConfig {
 export class ReasoningMiddleware implements Middleware {
     name = 'ReasoningMiddleware';
 
-    private writer?: UIMessageStreamWriter<AgentUIMessage>;
+    private writer?: UIMessageStreamWriter<VibesUIMessage>;
     private model?: LanguageModel;
     private config: Required<ReasoningConfig>;
 
@@ -129,7 +129,7 @@ export class ReasoningMiddleware implements Middleware {
         this.state.mode = this.config.initialMode;
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = writer;
     }
 
@@ -578,12 +578,19 @@ ${modeInstructions[this.state.mode]}
     }
 
     /**
-     * Hook before model call to potentially suggest mode switching
+     * Hook before each step to potentially suggest mode switching.
+     * This replaces the deprecated beforeModel hook.
      */
-    async beforeModel(state: any): Promise<void> {
+    async prepareStep(options: {
+        steps: any[];
+        stepNumber: number;
+        model: import('ai').LanguageModel;
+        messages: any[];
+        experimental_context?: unknown;
+    }): Promise<void> {
         // Auto-suggest ToT for complex scenarios
         if (this.config.autoExplore && this.state.mode === 'react') {
-            const messages = state.messages || [];
+            const messages = options.messages || [];
             const toolCallCount = messages.filter((m: any) =>
                 m.role === 'assistant' && m.content.some((c: any) => c.type === 'tool-call')
             ).length;

@@ -8,6 +8,12 @@ import {
     type ToolSet,
 } from 'ai';
 
+// Re-export ModelMessage for middleware use
+export type { ModelMessage };
+
+// Import streaming types
+import type { VibesUIMessage, VibesDataParts } from './streaming.js';
+
 /**
  * A single item in the agent's internal todo list.
  * @deprecated Consider using TaskItem for more advanced task management
@@ -135,34 +141,91 @@ export interface SubAgent {
 }
 
 /**
- * Interface for agent middleware that can extend capabilities,
- * modify prompts, or run logic before/after model execution.
+ * Interface for agent middleware that can extend capabilities.
+ *
+ * Middleware provides tools and lifecycle hooks that run at specific points
+ * during agent execution. Hooks that duplicate AI SDK functionality are avoided.
+ *
+ * @example
+ * ```ts
+ * const myMiddleware: Middleware = {
+ *   name: 'MyMiddleware',
+ *   tools: { myTool },
+ *   modifySystemPrompt: (prompt) => prompt + '\\n\\nAdditional instructions...',
+ *   onStreamReady: (writer) => writer.write({ type: 'data-status', data: { message: 'Ready' } }),
+ *   waitReady: async () => { await initialize(); },
+ * }
+ * ```
  */
 export interface Middleware {
     /** Display name of the middleware */
     name: string;
+
     /** Optional collection of tools provided by this middleware to the agent */
     tools?: Record<string, any>;
-    /** Hook executed before the model is called */
-    beforeModel?: (state: AgentState) => Promise<void>;
-    /** Hook executed after the model provides a response */
-    afterModel?: (state: AgentState, response: any) => Promise<void>;
-    /** Hook executed when a tool execution starts (AI SDK v6) */
-    onInputStart?: (args: any) => void;
-    /** Hook executed when tool input delta is available (AI SDK v6) */
-    onInputDelta?: (delta: string) => void;
-    /** Hook executed when full tool input is available (AI SDK v6) */
-    onInputAvailable?: (args: any) => void;
+
+    /**
+     * Hook to modify settings for each step (runs before model call).
+     * This receives the AI SDK's prepareStep options and can return modifications.
+     * The options include: steps, stepNumber, model, messages, experimental_context
+     *
+     * Can return either:
+     * - void/undefined for side effects only
+     * - An object with modifications (model, toolChoice, activeTools, system, messages, etc.)
+     */
+    prepareStep?: (options: {
+        steps: any[];
+        stepNumber: number;
+        model: LanguageModel;
+        messages: ModelMessage[];
+        experimental_context?: unknown;
+    }) => (
+        | void
+        | Promise<void>
+        | {
+              model?: LanguageModel;
+              toolChoice?: any;
+              activeTools?: string[];
+              system?: string | any;
+              messages?: ModelMessage[];
+              experimental_context?: unknown;
+          }
+        | Promise<{
+              model?: LanguageModel;
+              toolChoice?: any;
+              activeTools?: string[];
+              system?: string | any;
+              messages?: ModelMessage[];
+              experimental_context?: unknown;
+          }>
+    );
+
     /** Function to modify or extend the system prompt (can be async) */
     modifySystemPrompt?: (prompt: string) => string | Promise<string>;
+
+    /** Hook executed after the model provides a response (no AI SDK equivalent) */
+    afterModel?: (state: AgentState, response: any) => Promise<void>;
+
+    /** Hook executed when a tool execution starts (AI SDK v6) */
+    onInputStart?: (args: any) => void;
+
+    /** Hook executed when tool input delta is available (AI SDK v6) */
+    onInputDelta?: (delta: string) => void;
+
+    /** Hook executed when full tool input is available (AI SDK v6) */
+    onInputAvailable?: (args: any) => void;
+
     /** Optional promise to wait for during initialization (e.g., sandbox startup) */
     waitReady?: () => Promise<void>;
+
     /** Optional hook to receive a data stream writer for real-time UI updates */
-    onStreamReady?: (writer: UIMessageStreamWriter<AgentUIMessage>) => void;
+    onStreamReady?: (writer: UIMessageStreamWriter<VibesUIMessage>) => void;
+
     /** Optional hook executed when the stream finishes (successful completion) */
     onStreamFinish?: (result: any) => Promise<void>;
-    /** Optional hook executed after each step in the reasoning loop */
-    onStepFinish?: (step: { stepNumber: number; stepType: string; text?: string; content?: any }) => void;
+
+    // REMOVED: beforeModel - use prepareStep instead (AI SDK built-in)
+    // REMOVED: onStepFinish - use ToolLoopAgent.onStepFinish (AI SDK built-in)
 }
 
 /**
@@ -228,8 +291,8 @@ export interface VibeAgentConfig {
     temperature?: number;
     /** Maximum retries for API failures (default: 2) */
     maxRetries?: number;
-    /** Callback for step progress updates */
-    onStepFinish?: (step: { stepNumber: number; stepType: string; text?: string }) => void;
+    /** Callback for step progress updates (passed to ToolLoopAgent) */
+    onStepFinish?: (step: { stepNumber: number; stepType: string; text?: string; content?: any }) => void | Promise<void>;
     /** Custom middleware to extend agent behavior */
     middleware?: Middleware[];
     /** Enable telemetry for observability (default: false) */

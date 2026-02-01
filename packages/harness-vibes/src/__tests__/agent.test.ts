@@ -1,5 +1,5 @@
 import { expect, test, describe, mock } from "bun:test";
-import { DeepAgent } from "../index";
+import { DeepAgent } from "../../index";
 import { openai } from "@ai-sdk/openai";
 
 describe("DeepAgent AI SDK v6 Enhancements", () => {

@@ -1,16 +1,20 @@
-import { DeepAgent } from './the-vibes';
+import { DeepAgent } from 'harness-vibes';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { wrapLanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { mimoCodePrompt } from './prompts/mimo-code';
 import { zhipu } from 'zhipu-ai-provider';
+import { dotenvLoad } from 'dotenv-mono';
+
+// Load env vars from root .env (automatically walks up directories)
+dotenvLoad();
 
 const openrouter = createOpenRouter({
     apiKey: process.env.OPENROUTER_API_KEY,
 });
 
 const model = wrapLanguageModel({
-    model: zhipu('glm-4.7-flash') as any,
+    model: zhipu('glm-4.7-flash', { apiKey: process.env.ZHIPU_API_KEY, }) as any,
     middleware: devToolsMiddleware(),
 });
 

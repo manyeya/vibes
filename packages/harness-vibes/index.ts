@@ -27,9 +27,9 @@ import {
     ErrorAnalysis,
     Fact,
     PatternApplication,
-} from './middleware';
-import MemoryMiddleware from './middleware/memory';
-import SqliteBackend from './backend/sqlitebackend';
+} from './src/middleware';
+import MemoryMiddleware from './src/middleware/memory';
+import SqliteBackend from './src/backend/sqlitebackend';
 import {
     AgentState,
     AgentDataParts,
@@ -42,8 +42,9 @@ import {
     VibesUIMessage,
     createDataStreamWriter,
     DataStreamWriter,
-} from './core/types';
-import { VibeAgent } from './core/agent';
+} from './src/core/types';
+import { VibeAgent } from './src/core/agent';
+export { createDeepAgentStreamResponse } from './src/core/agent-stream';
 
 /**
  * Configuration for initializing a DeepAgent instance.
@@ -267,4 +268,8 @@ export {
     type SwarmConfig,
     type ParallelDelegationResult,
     createDeepAgent,
+    SqliteBackend,
+    type VibeAgentConfig,
+    type SubAgent,
+    VibeAgent, // Old implementation (to be deprecated)
 };

@@ -6,7 +6,7 @@ import {
 import { z } from 'zod';
 import StateBackend from '../backend/statebackend';
 import TasksMiddleware from './tasks';
-import { AgentUIMessage, TaskItem, Middleware } from '../core/types';
+import { VibesUIMessage, TaskItem, Middleware, type ModelMessage } from '../core/types';
 
 /**
  * Planning configuration options
@@ -48,7 +48,7 @@ export interface PlanEntry {
  */
 export class PlanningMiddleware implements Middleware {
     name = 'PlanningMiddleware';
-    private writer?: UIMessageStreamWriter<AgentUIMessage>;
+    private writer?: UIMessageStreamWriter<VibesUIMessage>;
     private planPath: string;
     private maxRecitationTasks: number;
     private lastRecitedTasks: TaskItem[] = [];
@@ -68,7 +68,7 @@ export class PlanningMiddleware implements Middleware {
         this.maxRecitationTasks = config.maxRecitationTasks || 10;
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = writer;
         // Also forward to tasks middleware
         this.tasksMiddleware.onStreamReady(writer);
@@ -100,9 +100,17 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
     }
 
     /**
-     * Hook before model call to refresh task cache for recitation
+     * Hook before each step to refresh task cache for recitation.
+     * This replaces the deprecated beforeModel hook.
      */
-    async beforeModel(state: any): Promise<void> {
+    async prepareStep(_options: {
+        steps: any[];
+        stepNumber: number;
+        model: import('ai').LanguageModel;
+        messages: import('../core/types').ModelMessage[];
+        experimental_context?: unknown;
+    }): Promise<void> {
+        // Refresh task cache before each step
         await this.refreshRecitationCache();
     }
 

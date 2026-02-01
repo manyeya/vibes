@@ -1,42 +1,28 @@
 {
-  "name": "vibes",
-  "version": "1.0.50",
+  "name": "vibes-monorepo",
+  "version": "1.0.0",
   "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "bun run --watch src/index.ts",
-    "tui:dev": "cd tui && bun run dev",
-    "tui:build": "cd tui && bun run build",
-    "tui:start": "cd tui && bun run start",
-    "devtools": "npx @ai-sdk/devtools"
-  },
-  "dependencies": {
-    "@ai-sdk/devtools": "^0.0.8",
-    "@ai-sdk/langchain": "^2.0.42",
-    "@ai-sdk/mcp": "^1.0.10",
-    "@ai-sdk/openai": "^3.0.12",
-    "@ai-sdk/react": "^3.0.41",
-    "@hono/zod-validator": "^0.7.6",
-    "@langchain/core": "^1.1.15",
-    "@langchain/groq": "^1.0.3",
-    "@langchain/openai": "^1.2.2",
-    "@langchain/tavily": "^1.2.0",
-    "@openrouter/ai-sdk-provider": "^1.5.4",
-    "add": "^2.0.6",
-    "ai": "^6.0.39",
-    "bash-tool": "^1.3.6",
-    "deepagents": "^1.4.1",
-    "dotenv": "^17.2.3",
-    "hono": "^4.11.4",
-    "just-bash": "^2.5.2",
-    "langchain": "^1.2.10",
-    "pino": "^10.2.0",
-    "zhipu-ai-provider": "^0.2.2",
-    "zod": "^4.3.5"
+    "dev": "bun run --filter ./apps/api/src/index.ts",
+    "dev:api": "bun run --filter @vibes/api dev",
+    "dev:tui": "bun run --filter @vibes/tui dev",
+    "dev:demo": "bun run --filter @vibes/demo dev",
+    "build": "bun run build:packages && bun run build:apps",
+    "build:packages": "bun run --filter './packages/*' build",
+    "build:apps": "bun run --filter './apps/*' build",
+    "test": "bun run --filter './packages/*' test"
   },
   "devDependencies": {
     "bun-types": "latest",
-    "pino-pretty": "^13.1.3"
+    "pino-pretty": "^13.1.3",
+    "typescript": "^5.9.3"
   },
-  "module": "src/index.js"
+  "private": true,
+  "dependencies": {
+    "dotenv-mono": "^1.5.1"
+  }
 }

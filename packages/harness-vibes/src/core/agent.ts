@@ -8,10 +8,11 @@ import {
     type UIMessageStreamWriter,
     stepCountIs,
     ToolLoopAgent,
+    Agent
 } from 'ai';
 import {
     AgentState,
-    AgentUIMessage,
+    VibesUIMessage,
     VibeAgentConfig,
     VibeAgentGenerateResult,
     VibeAgentStreamResult,
@@ -79,9 +80,8 @@ export class VibeAgent extends ToolLoopAgent {
     protected toolsRequiringApproval: ToolsRequiringApprovalConfig = [];
     protected allowedTools?: string[];
     protected blockedTools?: string[];
-    protected onStepFinishCallback?: (step: { stepNumber: number; stepType: string; text?: string }) => void;
     /** Writer for sending data updates to UI during stream */
-    protected writer?: UIMessageStreamWriter<AgentUIMessage>;
+    protected writer?: UIMessageStreamWriter<VibesUIMessage>;
     /** Track last message count to prevent duplicate summarization notifications */
     protected lastSummarizedCount: number = 0;
     /** Error log tracked separately from context (never summarized) */
@@ -92,6 +92,9 @@ export class VibeAgent extends ToolLoopAgent {
     protected maxRecentErrors: number = 5;
 
     constructor(config: VibeAgentConfig, backend?: StateBackend) {
+        // Check if any middleware has prepareStep before calling super()
+        const hasPrepareStep = config.middleware?.some(mw => mw.prepareStep);
+
         super({
             model: config.model,
             instructions: config.instructions,
@@ -100,19 +103,11 @@ export class VibeAgent extends ToolLoopAgent {
                 isEnabled: true,
                 functionId: 'vibe-agent'
             } : undefined,
-            onStepFinish: async (step) => {
-                const stepData = {
-                    stepNumber: this.backend.getState().messages.length,
-                    stepType: step.finishReason,
-                    text: step.text,
-                    content: step.content,
-                };
-                this.onStepFinishCallback?.(stepData);
-                for (const mw of this.middleware) {
-                    mw.onStepFinish?.(stepData);
-                }
-            },
-            
+            // Use AI SDK's onStepFinish directly - no need to delegate to middleware
+            ...(config.onStepFinish ? {
+                onStepFinish: config.onStepFinish as (stepResult: any) => void | Promise<void>,
+            } : {}),
+
             prepareCall: async (settings) => {
                 const state = this.backend.getState();
                 const processedMessages = await this.pruneMessages(settings.messages || [], this.writer);
@@ -146,7 +141,24 @@ export class VibeAgent extends ToolLoopAgent {
                     tools,
                     temperature: this.temperature,
                 };
-            }
+            },
+
+            // Use middleware prepareStep hooks to modify settings per step
+            ...(hasPrepareStep ? {
+                prepareStep: async (options: any): Promise<any> => {
+                    let result: any = {};
+
+                    // Chain middleware prepareStep hooks
+                    for (const mw of this.middleware) {
+                        if (mw.prepareStep) {
+                            const mwResult = await mw.prepareStep(options);
+                            result = { ...result, ...mwResult };
+                        }
+                    }
+
+                    return result;
+                },
+            } : {}),
         });
 
         this.backend = backend || new StateBackend();
@@ -162,7 +174,6 @@ export class VibeAgent extends ToolLoopAgent {
         this.toolsRequiringApproval = config.toolsRequiringApproval || [];
         this.allowedTools = config.allowedTools;
         this.blockedTools = config.blockedTools;
-        this.onStepFinishCallback = config.onStepFinish;
 
         if (config.middleware) {
             this.addMiddleware(config.middleware);
@@ -556,7 +567,7 @@ export class VibeAgent extends ToolLoopAgent {
      *
      * Key principle from Manus: Keep errors visible, compress restorably.
      */
-    protected async pruneMessages(messages: ModelMessage[], writer?: UIMessageStreamWriter<AgentUIMessage>): Promise<ModelMessage[]> {
+    protected async pruneMessages(messages: ModelMessage[], writer?: UIMessageStreamWriter<VibesUIMessage>): Promise<ModelMessage[]> {
         const maxMessages = this.maxContextMessages;
 
         // Phase 1: Apply restorable compression
@@ -735,11 +746,7 @@ The conversation is formatted with:
         this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
         const currentState = this.backend.getState();
 
-        for (const mw of this.middleware) {
-            if (mw.beforeModel) {
-                await mw.beforeModel(currentState);
-            }
-        }
+        // Note: beforeModel was removed - use prepareStep in middleware instead (called by AI SDK)
 
         const result = await super.generate({
             messages: currentState.messages,
@@ -769,7 +776,7 @@ The conversation is formatted with:
     async stream(options: {
         messages?: UIMessage[] | ModelMessage[],
         state?: Partial<Omit<AgentState, 'messages'>>,
-        writer?: UIMessageStreamWriter<AgentUIMessage>,
+        writer?: UIMessageStreamWriter<VibesUIMessage>,
         abortSignal?: AbortSignal,
     } = {}): Promise<VibeAgentStreamResult> {
         const { messages, state = {}, writer, abortSignal } = options;
@@ -793,11 +800,7 @@ The conversation is formatted with:
             }
         }
 
-        for (const mw of this.middleware) {
-            if (mw.beforeModel) {
-                await mw.beforeModel(currentState);
-            }
-        }
+        // Note: beforeModel was removed - use prepareStep in middleware instead (called by AI SDK)
 
         const result = await super.stream({
             messages: currentState.messages,

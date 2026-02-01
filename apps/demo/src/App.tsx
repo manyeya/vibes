@@ -29,6 +29,7 @@ import {
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { motion, AnimatePresence } from 'framer-motion';
+import { type MimoCodeUIMessage } from '../../api/src/mimo-code';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -720,14 +721,14 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
 
     // ============ PROPER PATTERN: Use onData for streaming updates ============
-    onData: (dataPart) => {
+    onData: (dataPart: any) => {
       console.log('Streaming data:', dataPart);
 
       switch (dataPart.type) {
         case 'data-reasoning_mode':
           // Agent switched reasoning mode
           onAgentStatusChange({ ...agentStatus, reasoningMode: dataPart.data.mode });
-          break;
+          break;      
 
         case 'data-task_update':
           // Task status changed - use reconciliation by id
