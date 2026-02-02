@@ -1,29 +1,22 @@
 import {
-    generateText,
-    streamText,
+    ToolLoopAgent,
     convertToModelMessages,
-    stepCountIs,
     type LanguageModel,
     type ModelMessage,
     type ToolSet,
     type UIMessage,
     type UIMessageStreamWriter,
-    type Agent,
+    type ToolLoopAgentSettings,
     type AgentCallParameters,
-    type AgentStreamParameters,
-    type StepResult,
 } from 'ai';
 import {
-    AgentState,
     VibesUIMessage,
     VibeAgentConfig,
     VibeAgentGenerateResult,
     VibeAgentStreamResult,
     Middleware,
     ErrorEntry,
-    createDataStreamWriter,
 } from './types';
-import StateBackend from '../backend/statebackend';
 
 // Re-export ErrorEntry for convenience
 export type { ErrorEntry };
@@ -59,62 +52,42 @@ interface PartedMessage {
 }
 
 /**
- * Internal prepared call result - what prepareCall returns before generateText/streamText
+ * Options passed to ToolLoopAgent's prepareCall hook
  */
-interface PreparedCall {
+interface PrepareCallOptions {
     model: LanguageModel;
     instructions: string;
     messages: ModelMessage[];
-    tools: Record<string, unknown>;
+    tools: ToolSet;
     temperature?: number;
-    maxSteps?: number;
 }
 
 /**
  * VibeAgent is the core engine for autonomous multi-step reasoning.
- * It implements the AI SDK v6 Agent interface directly to provide
- * native agent support while maintaining middleware hooks and context compression.
+ * Extends ToolLoopAgent for proper AI SDK integration and onData callback support.
  *
  * Deep Agent Features:
  * - Restorable compression: Large content replaced with file/path references
  * - Error preservation: Errors tracked separately, never summarized
  * - KV-cache awareness: Stable prompt prefix for cache optimization
+ * - Middleware system for extensible capabilities
  *
- * Implements Agent interface directly (no longer extends ToolLoopAgent)
- * for cleaner control flow and proper type safety.
+ * By extending ToolLoopAgent, we get:
+ * - Proper streaming with toUIMessageStream() support
+ * - onData callback working correctly in useChat
+ * - Built-in tool loop management
+ * - prepareCall hook for custom logic injection
  */
-export class VibeAgent implements Agent<never, ToolSet, never> {
-    readonly version = 'agent-v1' as const;
-    // Agent interface requires id, we use undefined since we don't support named agents
-    readonly id = undefined;
-
-    // Agent interface required: tools getter
-    get tools(): ToolSet {
-        // Note: This returns cached tools. The Agent interface expects sync tools,
-        // so we preload tools in constructor and cache them.
-        return this.toolCache as ToolSet;
-    }
-
-    protected backend: StateBackend;
+export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     protected middleware: Middleware[] = [];
     protected model: LanguageModel;
-    protected baseInstructions: string;
     protected customSystemPrompt: string;
-    protected maxSteps: number;
-    protected enableTelemetry: boolean;
-    protected temperature?: number;
-    protected maxRetries: number;
     protected maxContextMessages: number;
+    protected maxRetries: number;
     protected customTools: Record<string, unknown>;
     protected toolsRequiringApproval: ToolsRequiringApprovalConfig = [];
     protected allowedTools?: string[];
     protected blockedTools?: string[];
-    /** Optional onStepFinish callback from config */
-    protected configOnStepFinish?: (stepResult: StepResult<ToolSet>) => void | Promise<void>;
-    /** Writer for sending data updates to UI during stream */
-    protected writer?: UIMessageStreamWriter<VibesUIMessage>;
-    /** Track last message count to prevent duplicate summarization notifications */
-    protected lastSummarizedCount: number = 0;
     /** Error log tracked separately from context (never summarized) */
     protected errorLog: ErrorEntry[] = [];
     /** Threshold for content compression (characters) */
@@ -122,25 +95,43 @@ export class VibeAgent implements Agent<never, ToolSet, never> {
     /** Maximum errors to show in recent errors section */
     protected maxRecentErrors: number = 5;
 
-    constructor(config: VibeAgentConfig, backend?: StateBackend) {
-        this.backend = backend || new StateBackend();
+    // Tool cache - initialize with empty object so tools getter always has a value
+    protected toolCache: Record<string, unknown> = {};
+    protected middlewareVersion: number = 0;
+
+    constructor(config: VibeAgentConfig) {
+        // Initialize ToolLoopAgent with base configuration and prepareCall hook
+        const settings: ToolLoopAgentSettings<never, ToolSet, never> = {
+            model: config.model,
+            instructions: config.instructions,
+            tools: config.tools || {},
+            temperature: config.temperature,
+            onStepFinish: config.onStepFinish,
+            // The prepareCall hook is called before each generate/stream
+            // This is where we inject our custom logic
+            prepareCall: async (baseOptions) => {
+                return this.prepareCallOverride(baseOptions as any);
+            },
+        };
+
+        super(settings);
+
+        // Store model reference for use in summarization and other features
         this.model = config.model;
-        this.baseInstructions = config.instructions;
         this.customSystemPrompt = config.systemPrompt || '';
-        this.maxSteps = config.maxSteps || 20;
-        this.enableTelemetry = config.enableTelemetry || false;
-        this.temperature = config.temperature;
-        this.maxRetries = config.maxRetries ?? 2;
         this.maxContextMessages = config.maxContextMessages ?? 30;
+        this.maxRetries = config.maxRetries ?? 2;
         this.customTools = config.tools || {};
         this.toolsRequiringApproval = config.toolsRequiringApproval || [];
         this.allowedTools = config.allowedTools;
         this.blockedTools = config.blockedTools;
-        this.configOnStepFinish = config.onStepFinish;
 
         if (config.middleware) {
             this.addMiddleware(config.middleware);
         }
+
+        // Pre-build tools for the base tools getter
+        this.preloadTools();
     }
 
     addMiddleware(middleware: Middleware | Middleware[]) {
@@ -149,105 +140,91 @@ export class VibeAgent implements Agent<never, ToolSet, never> {
         } else {
             this.middleware.push(middleware);
         }
+        // Invalidate tool cache when middleware is added
+        this.middlewareVersion = this.middleware.length;
+        this.toolCache = {};
     }
 
-    // ============ AGENT INTERFACE IMPLEMENTATION ============
+    /**
+     * Override the tools getter to provide dynamic tools from middleware.
+     * This is called by ToolLoopAgent before each generate/stream.
+     */
+    override get tools(): ToolSet {
+        return this.toolCache as ToolSet;
+    }
 
     /**
-     * Generate output from the agent (non-streaming).
-     * Implements the Agent interface generate method.
+     * Preload tools during construction for initial tools getter value.
      */
-    async generate(
-        options?: AgentCallParameters<never, ToolSet> & { messages?: UIMessage[] | ModelMessage[] }
-    ): Promise<VibeAgentGenerateResult> {
-        // Extract VibeAgent-specific options
-        const { messages, state: stateOptions, ...agentOptions } = options as any;
+    protected async preloadTools(): Promise<void> {
+        this.toolCache = await this.getAllTools();
+    }
 
-        // Convert and merge state
-        const modelMessages = messages
-            ? await this.convertMessages(messages)
-            : this.backend.getState().messages;
+    // ============ PREPARE CALL OVERRIDE ============
 
-        const stateToMerge = { ...stateOptions, messages: modelMessages };
-        this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
-        const currentState = this.backend.getState();
+    /**
+     * The prepareCall hook that's passed to ToolLoopAgent constructor.
+     * This is called before each generate/stream and allows us to modify:
+     * - system prompt (add middleware prompts)
+     * - messages (prune, compress)
+     * - tools (add middleware tools)
+     */
+    protected async prepareCallOverride(baseOptions: PrepareCallOptions): Promise<PrepareCallOptions> {
+        // Process messages with pruning and compression
+        const processedMessages = await this.pruneMessages(baseOptions.messages || []);
 
-        // Prepare the call (was done by ToolLoopAgent's prepareCall)
-        const prepared = await this.prepareCall({
-            messages: currentState.messages,
-        });
-
-        // Merge onStepFinish callbacks (config + method)
-        const onStepFinish = this.mergeOnStepFinishCallbacks(
-            (agentOptions as any).onStepFinish
-        );
-
-        // Call generateText directly (was super.generate())
-        const result = await generateText({
-            model: prepared.model,
-            messages: prepared.messages,
-            system: prepared.instructions,
-            tools: prepared.tools as ToolSet,
-            temperature: prepared.temperature,
-            stopWhen: stepCountIs(prepared.maxSteps || 20),
-            abortSignal: (agentOptions as any).abortSignal,
-            timeout: (agentOptions as any).timeout,
-            onStepFinish,
-            // Handle prepareStep middleware hooks if any exist
-            ...(this.hasPrepareStepMiddleware() ? {
-                experimental_prepareStep: async (stepOptions: any) => {
-                    return this.runPrepareStepHooks(stepOptions);
-                },
-            } : {}),
-        });
-
-        const toolErrors = result.steps?.flatMap(step =>
-            (step.content?.filter((part) => part.type === 'tool-error') ?? []) as Array<{ type: 'tool-error' }>
-        ) ?? [];
-
-        // result.response.messages are ONLY the new ones
-        const updatedMessages = [...currentState.messages, ...result.response.messages];
-        this.backend.setState({ messages: updatedMessages });
-
+        // Build system prompt with middleware modifications
+        let instructions = baseOptions.instructions;
         for (const mw of this.middleware) {
-            if (mw.afterModel) {
-                await mw.afterModel(this.backend.getState(), result);
+            if (mw.modifySystemPrompt) {
+                const result = mw.modifySystemPrompt(instructions);
+                instructions = result instanceof Promise ? await result : result;
             }
         }
 
+        // Add custom system prompt
+        if (this.customSystemPrompt) {
+            instructions += `\n\n## Custom Instructions\n${this.customSystemPrompt} `;
+        }
+
+        // Add recent errors to prompt (keep errors visible for self-correction)
+        const recentErrors = this.getRecentErrors();
+        if (recentErrors.length > 0) {
+            instructions += `\n\n${this.formatRecentErrors(recentErrors)}`;
+        }
+
+        // Get all tools with middleware tools and wrapping
+        const tools = await this.getAllTools();
+
         return {
-            ...result,
-            state: this.backend.getState(),
-            toolErrors: toolErrors.length > 0 ? toolErrors : undefined,
-        } as VibeAgentGenerateResult;
+            ...baseOptions,
+            instructions,
+            messages: processedMessages,
+            tools: tools as ToolSet,
+        };
     }
 
+    // ============ STREAM OVERRIDE ============
+
     /**
-     * Stream output from the agent.
-     * Implements the Agent interface stream method.
+     * Override stream to handle middleware lifecycle while using super.stream()
+     * for proper AI SDK streaming and onData callback support.
      */
-    async stream(
-        options?: AgentStreamParameters<never, ToolSet> & {
-            messages?: ModelMessage[];
-            state?: Partial<Omit<AgentState, 'messages'>>;
-            writer?: UIMessageStreamWriter<VibesUIMessage>;
-        }
+    override async stream(
+        options?: any
     ): Promise<VibeAgentStreamResult> {
-        // Extract VibeAgent-specific options
-        const { messages, state: stateOptions, writer, ...agentOptions } = options as any;
+        // Extract VibeAgent-specific options (writer)
+        // Also extract 'prompt' to avoid conflicts with 'messages' in super.stream()
+        const { messages, writer, prompt, ...agentOptions } = options || {};
 
-        // Store writer for use in prepareCall/pruneMessages
-        this.writer = writer;
-
-        // Convert and merge state
+        // Convert messages if provided (either 'messages' or 'prompt')
         const modelMessages = messages
             ? await this.convertMessages(messages)
-            : this.backend.getState().messages;
+            : prompt
+                ? await this.convertMessages(prompt as any)
+                : undefined;
 
-        const stateToMerge = { ...stateOptions, messages: modelMessages };
-        this.importState({ ...this.backend.getState(), ...stateToMerge } as AgentState);
-        const currentState = this.backend.getState();
-
+        // Trigger middleware onStreamReady hooks
         if (writer) {
             for (const mw of this.middleware) {
                 if (mw.onStreamReady) {
@@ -256,41 +233,15 @@ export class VibeAgent implements Agent<never, ToolSet, never> {
             }
         }
 
-        // Prepare the call
-        const prepared = await this.prepareCall({
-            messages: currentState.messages,
+        // Call super.stream() for proper AI SDK streaming
+        // Use 'messages' parameter consistently (avoid 'prompt' to prevent conflict)
+        const result = await super.stream({
+            ...agentOptions,
+            ...(modelMessages ? { messages: modelMessages } : {}),
         });
 
-        // Merge onStepFinish callbacks
-        const onStepFinish = this.mergeOnStepFinishCallbacks(
-            (agentOptions as any).onStepFinish
-        );
-
-        // Call streamText directly (was super.stream())
-        const result =  streamText({
-            model: prepared.model,
-            messages: prepared.messages,
-            system: prepared.instructions,
-            tools: prepared.tools as ToolSet,
-            temperature: prepared.temperature,
-            stopWhen: stepCountIs(prepared.maxSteps || 20),
-            abortSignal: (agentOptions as any).abortSignal,
-            timeout: (agentOptions as any).timeout,
-            experimental_transform: (agentOptions as any).experimental_transform,
-            onStepFinish,
-            // Handle prepareStep middleware hooks if any exist
-            ...(this.hasPrepareStepMiddleware() ? {
-                experimental_prepareStep: async (stepOptions: any) => {
-                    return this.runPrepareStepHooks(stepOptions);
-                },
-            } : {}),
-        });
-
-        // Handle stream completion with proper error handling
+        // Handle stream completion with middleware hooks
         Promise.resolve(result.response).then(async (finishResult) => {
-            const prevMessages = this.backend.getState().messages || [];
-            this.backend.setState({ messages: [...prevMessages, ...finishResult.messages] });
-
             for (const mw of this.middleware) {
                 if (mw.onStreamFinish) {
                     await mw.onStreamFinish(finishResult);
@@ -303,97 +254,39 @@ export class VibeAgent implements Agent<never, ToolSet, never> {
         return result;
     }
 
-    // ============ PREPARE CALL LOGIC ============
+    // ============ GENERATE OVERRIDE ============
 
     /**
-     * Prepare the call settings before invoking generateText/streamText.
-     * This was previously handled by ToolLoopAgent's prepareCall hook.
+     * Override generate to handle middleware hooks.
      */
-    protected async prepareCall(baseSettings: { messages?: ModelMessage[] }): Promise<PreparedCall> {
-        const state = this.backend.getState();
-        const processedMessages = await this.pruneMessages(baseSettings.messages || [], this.writer);
+    override async generate(
+        options?: AgentCallParameters<never, ToolSet> & { messages?: UIMessage[] | ModelMessage[] }
+    ): Promise<VibeAgentGenerateResult> {
+        // Extract VibeAgent-specific options
+        const { messages, ...agentOptions } = options as any;
 
-        let prompt = this.baseInstructions;
-        for (const mw of this.middleware) {
-            if (mw.modifySystemPrompt) {
-                const result = mw.modifySystemPrompt(prompt);
-                prompt = result instanceof Promise ? await result : result;
-            }
-        }
-        if (this.customSystemPrompt) {
-            prompt += `\n\n## Custom Instructions\n${this.customSystemPrompt} `;
-        }
-        if (state.summary) {
-            prompt += `\n\n## Previous Context Summary\n${state.summary}`;
-        }
+        // Convert messages if provided
+        const modelMessages = messages
+            ? await this.convertMessages(messages)
+            : undefined;
 
-        // Add recent errors to prompt (Manus: keep errors visible for self-correction)
-        const recentErrors = this.getRecentErrors();
-        if (recentErrors.length > 0) {
-            prompt += `\n\n${this.formatRecentErrors(recentErrors)}`;
-        }
+        // Call super.generate() for proper AI SDK generation
+        const result = await super.generate({
+            ...agentOptions,
+            ...(modelMessages ? { messages: modelMessages } : {}),
+        } as AgentCallParameters<never, ToolSet>);
 
-        const tools = await this.getAllTools(this.allowedTools);
+        const toolErrors = result.steps?.flatMap(step =>
+            (step.content?.filter((part) => part.type === 'tool-error') ?? []) as Array<{ type: 'tool-error' }>
+        ) ?? [];
 
         return {
-            model: this.model,
-            instructions: prompt,
-            messages: processedMessages,
-            tools,
-            temperature: this.temperature,
-            maxSteps: this.maxSteps,
-        };
-    }
-
-    /**
-     * Check if any middleware has prepareStep hooks
-     */
-    protected hasPrepareStepMiddleware(): boolean {
-        return this.middleware.some(mw => mw.prepareStep);
-    }
-
-    /**
-     * Run all middleware prepareStep hooks and merge their results
-     */
-    protected async runPrepareStepHooks(stepOptions: any): Promise<any> {
-        let result: any = {};
-
-        // Chain middleware prepareStep hooks
-        for (const mw of this.middleware) {
-            if (mw.prepareStep) {
-                const mwResult = await mw.prepareStep(stepOptions);
-                result = { ...result, ...mwResult };
-            }
-        }
-
-        return result;
-    }
-
-    /**
-     * Merge onStepFinish callbacks from config and method call
-     */
-    protected mergeOnStepFinishCallbacks(
-        methodCallback: ((stepResult: StepResult<ToolSet>) => void | Promise<void>) | undefined,
-    ): ((stepResult: StepResult<ToolSet>) => void | Promise<void>) | undefined {
-        const constructorCallback = this.configOnStepFinish as
-            | ((stepResult: StepResult<ToolSet>) => void | Promise<void>)
-            | undefined;
-
-        if (methodCallback && constructorCallback) {
-            return async (stepResult: StepResult<ToolSet>) => {
-                await constructorCallback(stepResult);
-                await methodCallback(stepResult);
-            };
-        }
-
-        return methodCallback ?? constructorCallback;
+            ...result,
+            toolErrors: toolErrors.length > 0 ? toolErrors : undefined,
+        } as VibeAgentGenerateResult;
     }
 
     // ============ TOOL MANAGEMENT ============
-
-    // Tool cache - initialize with empty object so tools getter always has a value
-    protected toolCache: Record<string, unknown> = {};
-    protected middlewareVersion: number = 0;
 
     protected async getAllTools(allowedTools?: string[]): Promise<Record<string, unknown>> {
         // Cache bust: always rebuild if allowedTools filter is specified
@@ -771,11 +664,9 @@ export class VibeAgent implements Agent<never, ToolSet, never> {
     /**
      * Prune messages using a hybrid approach:
      * 1. First pass: Restorable compression (lossless, replaces large content with references)
-     * 2. Second pass: Summarization (lossy, only if still over limit after compression)
-     *
-     * Key principle from Manus: Keep errors visible, compress restorably.
+     * 2. Second pass: Truncation to max messages if still over limit
      */
-    protected async pruneMessages(messages: ModelMessage[], writer?: UIMessageStreamWriter<VibesUIMessage>): Promise<ModelMessage[]> {
+    protected async pruneMessages(messages: ModelMessage[]): Promise<ModelMessage[]> {
         const maxMessages = this.maxContextMessages;
 
         // Phase 1: Apply restorable compression
@@ -793,8 +684,8 @@ export class VibeAgent implements Agent<never, ToolSet, never> {
             return compressed;
         }
 
-        // Phase 2: Summarization for messages still over limit
-        const keepCount = Math.floor(maxMessages / 2);
+        // Phase 2: Keep recent messages and truncate the rest
+        const keepCount = maxMessages;
         const messagesToKeep = compressed.slice(-keepCount);
 
         // Remove leading tool messages to ensure we start with meaningful content
@@ -802,147 +693,11 @@ export class VibeAgent implements Agent<never, ToolSet, never> {
             messagesToKeep.shift();
         }
 
-        // Extract errors to preserve them (they shouldn't be summarized)
-        const messagesToSummarize = compressed.slice(0, compressed.length - messagesToKeep.length);
-        const { messagesWithoutErrors, extractedErrors } = this.extractErrorsFromMessages(messagesToSummarize);
-
-        // Add extracted errors to the error log
-        for (const err of extractedErrors) {
-            this.logError(err.toolName, err.error, err.context);
-        }
-
-        if (messagesWithoutErrors.length === 0) {
-            return messagesToKeep;
-        }
-
-        // Skip if we already summarized this exact message count (deduplicate)
-        if (compressed.length === this.lastSummarizedCount) {
-            // Return with the existing summary prepended
-            const existingSummary = this.backend.getState().summary;
-            if (existingSummary) {
-                return [
-                    { role: 'system', content: `## Previous Context Summary\n${existingSummary}` },
-                    ...messagesToKeep
-                ] as ModelMessage[];
-            }
-            return messagesToKeep;
-        }
-
-        // Send starting status if writer is available
-        const streamWriter = createDataStreamWriter(writer);
-        streamWriter.writeSummarization(
-            'starting',
-            messagesToSummarize.length,
-            messagesToKeep.length
-        );
-
         if (process.env.DEBUG_VIBES) {
-            console.log(`[VibeAgent] Compressed ${messages.length} → ${compressed.length} messages, estimating ${estimatedTokens} tokens`);
-            console.log(`[VibeAgent] Summarizing ${messagesToSummarize.length} messages, keeping ${messagesToKeep.length}`);
+            console.log(`[VibeAgent] Pruned ${messages.length} → ${messagesToKeep.length} messages`);
         }
 
-        try {
-            const currentSummary = this.backend.getState().summary || 'No previous summary.';
-
-            // Send in_progress status
-            streamWriter.writeSummarization(
-                'in_progress',
-                messagesToSummarize.length,
-                messagesToKeep.length
-            );
-
-            // Format messages into readable conversation format
-            const formattedMessages = this.formatMessagesForSummary(messagesWithoutErrors);
-
-            const { text: newSummary } = await generateText({
-                model: this.model,
-                system: `You are a helpful assistant. Summarize the following conversation history into a concise, detailed narrative.
-Retain key decisions, user requirements, current potential plan status, and important context.
-Merge this with the "Existing Summary" strictly.
-
-IMPORTANT: Exclude any error messages or stack traces from the summary - errors are tracked separately.
-
-The conversation is formatted with:
-- [N] Role: prefix indicating message number and role (System, User, Assistant, Tool Result)
-- Content follows the role label
-- --- separates messages`,
-                messages: [
-                    {
-                        role: 'user',
-                        content: `Existing Summary:\n${currentSummary}\n\nNew Conversation to Summarize:\n${formattedMessages}`
-                    }
-                ],
-            });
-
-            this.backend.setState({ summary: newSummary });
-
-            // Track that we've summarized this message count
-            this.lastSummarizedCount = compressed.length;
-
-            if (process.env.DEBUG_VIBES) {
-                console.log('[VibeAgent] Summarization complete:', newSummary.slice(0, 200) + '...');
-            }
-
-            // Send complete status
-            streamWriter.writeSummarization(
-                'complete',
-                messagesToSummarize.length,
-                messagesToKeep.length
-            );
-
-            return [
-                { role: 'system', content: `## Previous Context Summary\n${newSummary}` },
-                ...messagesToKeep
-            ] as ModelMessage[];
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            console.error('[VibeAgent] Summarization failed:', errorMessage);
-
-            if (process.env.DEBUG_VIBES) {
-                console.error('[VibeAgent] Summarization error details:', error);
-            }
-
-            // Send failed status
-            streamWriter.writeSummarization(
-                'failed',
-                messagesToSummarize.length,
-                messagesToKeep.length,
-                undefined,
-                errorMessage
-            );
-
-            // Fallback: keep recent messages even if summarization fails
-            return messagesToKeep;
-        }
-    }
-
-    /**
-     * Extract error messages from the message stream before summarization.
-     * Errors should be tracked separately, not folded into summaries.
-     */
-    protected extractErrorsFromMessages(messages: ModelMessage[]): {
-        messagesWithoutErrors: ModelMessage[];
-        extractedErrors: Array<{ toolName?: string; error: string; context?: string }>;
-    } {
-        const messagesWithoutErrors: ModelMessage[] = [];
-        const extractedErrors: Array<{ toolName?: string; error: string; context?: string }> = [];
-
-        for (const msg of messages) {
-            if (this.isErrorMessage(msg)) {
-                const { toolName } = this.extractToolInfo(msg);
-                const content = this.extractMessageContent(msg);
-                extractedErrors.push({
-                    toolName,
-                    error: content,
-                    context: `Extracted during summarization`
-                });
-            } else {
-                messagesWithoutErrors.push(msg);
-            }
-        }
-
-        return { messagesWithoutErrors, extractedErrors };
+        return messagesToKeep;
     }
 
     /**
@@ -967,19 +722,5 @@ The conversation is formatted with:
             console.log('[VibeAgent] Converted Messages:', JSON.stringify(modelMessages, null, 2));
         }
         return modelMessages;
-    }
-
-    // ============ STATE MANAGEMENT ============
-
-    getState(): AgentState {
-        return this.backend.getState();
-    }
-
-    exportState(): AgentState {
-        return structuredClone(this.backend.getState());
-    }
-
-    importState(state: AgentState): void {
-        this.backend.setState(state);
     }
 }

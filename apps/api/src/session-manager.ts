@@ -1,6 +1,6 @@
 import { DeepAgent } from 'harness-vibes';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { wrapLanguageModel } from 'ai';
+import { LanguageModel, wrapLanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { mimoCodePrompt } from './prompts/mimo-code';
 import { zhipu } from 'zhipu-ai-provider';

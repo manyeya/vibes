@@ -49,5 +49,7 @@ yarn-error.log*
 package-lock.json
 **/*.bun
 
+dist
+
 workspace
 .devtools

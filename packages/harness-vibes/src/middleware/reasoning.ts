@@ -5,7 +5,7 @@ import {
     type LanguageModel,
 } from 'ai';
 import { z } from 'zod';
-import { VibesUIMessage, Middleware, DataStreamWriter } from '../core/types';
+import { VibesUIMessage, Middleware } from '../core/types';
 
 /**
  * Reasoning modes supported by the middleware
@@ -103,7 +103,7 @@ export interface ReasoningConfig {
 export class ReasoningMiddleware implements Middleware {
     name = 'ReasoningMiddleware';
 
-    private writer?: DataStreamWriter;
+    private writer?: UIMessageStreamWriter<VibesUIMessage>;
     private model?: LanguageModel;
     private config: Required<ReasoningConfig>;
 
@@ -129,7 +129,7 @@ export class ReasoningMiddleware implements Middleware {
         this.state.mode = this.config.initialMode;
     }
 
- 
+
 
     /**
      * Get current reasoning mode
@@ -182,7 +182,7 @@ Use 'plan-execute' for well-defined, multi-step processes.`,
                 },
             }),
 
-            explore_thoughts:tool({
+            explore_thoughts: tool({
                 description: `Generate multiple reasoning branches to explore different approaches.
 Use this when:
 - Facing a complex problem with multiple possible solutions
@@ -205,7 +205,7 @@ Creates N thought branches, each with a proposed approach and expected outcome.`
 
 
                     const actualCount = Math.min(count, this.config.maxBranches);
-  
+
                     try {
                         const { text } = await generateText({
                             model: this.model,
@@ -243,13 +243,13 @@ ${context ? `\nContext:\n${context}` : ''}`,
                         let data: { thoughts: any[] };
                         try {
                             const jsonMatch = text.match(/```json\s*(\{[\s\S]*\})\s*```/) ||
-                                            text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
-                                            text.match(/(\{[\s\S]*\})/);
+                                text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
+                                text.match(/(\{[\s\S]*\})/);
                             if (!jsonMatch) {
                                 throw new Error('No JSON found in response');
                             }
                             data = JSON.parse(jsonMatch[1]);
-             
+
                         } catch (e) {
                             return {
                                 success: false,
@@ -356,8 +356,8 @@ ${context ? `\nContext:\n${context}` : ''}`,
                         let data: { evaluations: any[] };
                         try {
                             const jsonMatch = text.match(/```json\s*(\{[\s\S]*\})\s*```/) ||
-                                            text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
-                                            text.match(/(\{[\s\S]*\})/);
+                                text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
+                                text.match(/(\{[\s\S]*\})/);
                             if (!jsonMatch) {
                                 throw new Error('No JSON found in response');
                             }

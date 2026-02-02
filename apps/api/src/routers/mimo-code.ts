@@ -4,8 +4,9 @@ import { z } from "zod";
 import { logger } from "../logger";
 import sessionManager from "../session-manager";
 import { SqliteBackend, type VibesUIMessage, createDeepAgentStreamResponse } from "harness-vibes";
-import { ToolLoopAgent, createAgentUIStreamResponse } from "ai";
-import { openrouter } from "@openrouter/ai-sdk-provider";
+import { createAgentUIStreamResponse } from "ai";
+import { agent as simpleAgent } from "../simple";
+
 
 // Shared backend instance for session management (without a specific session)
 const sessionBackend = new SqliteBackend('workspace/vibes.db', 'default');
@@ -17,19 +18,7 @@ const mimoSchema = z.object({
 
 const app = new Hono();
 
-const techAgent = new ToolLoopAgent({
-    model: openrouter("claude-sonnet-4-5"),
-    instructions: `You are a technical documentation writer.
 
-  Writing style:
-  - Use clear, simple language
-  - Avoid jargon unless necessary
-  - Structure information with headers and bullet points
-  - Include code examples where relevant
-  - Write in second person ("you" instead of "the user")
-
-  Always format responses in Markdown.`,
-});
 // ============ SESSION MANAGEMENT ENDPOINTS ============
 
 /**
@@ -264,7 +253,6 @@ app.post('/mimo-code', zValidator('json', mimoSchema), async (c) => {
         return c.json({
             success: true,
             response: (lastMessage?.content as any)?.[0]?.text || lastMessage?.content || null,
-            state: agent.getState(),
             duration,
             timestamp: new Date().toISOString(),
             sessionId,
@@ -308,6 +296,31 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
             agent,
             uiMessages: body.messages,
             originalMessages,
+        });
+
+
+    } catch (error) {
+        logger.error({
+            error: error instanceof Error ? error.message : String(error),
+        }, 'Mimo-Code agent streaming error');
+
+        return c.json({
+            success: false,
+            error: 'Failed to stream mimo-code agent request',
+        }, 500);
+    }
+});
+
+
+app.post('/simple/stream', zValidator('json', mimoSchema), async (c) => {
+    try {
+        const body = c.req.valid('json');
+        const messages = body.messages as any[];
+
+        
+        return createAgentUIStreamResponse({
+            agent: simpleAgent,
+            uiMessages: messages,
         });
 
 
