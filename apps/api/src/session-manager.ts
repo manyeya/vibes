@@ -5,7 +5,7 @@ import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { mimoCodePrompt } from './prompts/mimo-code';
 import { createZhipu} from 'zhipu-ai-provider';
 import { dotenvLoad } from 'dotenv-mono';
-
+import { webSearch } from "@exalabs/ai-sdk";
 // Load env vars from root .env (automatically walks up directories)
 dotenvLoad();
 
@@ -43,6 +43,7 @@ class SessionManager {
         let instance = this.sessions.get(sessionId);
 
         if (!instance) {
+            
             // Create new agent instance for this session
             const agent = new DeepAgent({
                 maxContextMessages: 30,
@@ -51,6 +52,9 @@ class SessionManager {
                 maxSteps: 60,
                 sessionId: sessionId,
                 dbPath: this.dbPath,
+                tools:{
+                      webSearch: webSearch() as any,
+                },
                 subAgents: [
                     {
                         name: 'Planner',

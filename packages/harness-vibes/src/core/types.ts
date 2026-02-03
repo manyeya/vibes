@@ -210,9 +210,6 @@ export interface Plugin {
     /** Function to modify or extend the system prompt (can be async) */
     modifySystemPrompt?: (prompt: string) => string | Promise<string>;
 
-    /** Hook executed after the model provides a response (no AI SDK equivalent) */
-    afterModel?: (state: AgentState, response: any) => Promise<void>;
-
     /** Hook executed when a tool execution starts (AI SDK v6) */
     onInputStart?: (args: any) => void;
 

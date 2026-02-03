@@ -9,7 +9,7 @@
  */
 
 import type { VibeAgent } from './agent';
-import type { ModelMessage, UIMessage } from 'ai';
+import type { ModelMessage } from 'ai';
 import type { VibesUIMessage } from './streaming';
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai';
 
@@ -45,7 +45,6 @@ export async function createDeepAgentStreamResponse(
                 messages: uiMessages,
                 writer,
                 abortSignal,
-                
             });
 
             // Merge the agent's UI message stream into the writer
