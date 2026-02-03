@@ -129,7 +129,12 @@ export class ReasoningMiddleware implements Middleware {
         this.state.mode = this.config.initialMode;
     }
 
-
+    /**
+     * Initialize the writer for streaming data to the UI
+     */
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
+        this.writer = writer;
+    }
 
     /**
      * Get current reasoning mode

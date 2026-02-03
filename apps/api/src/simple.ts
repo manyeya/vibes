@@ -2,12 +2,16 @@ import { DeepAgent } from "harness-vibes";
 import { mimoCodePrompt } from "./prompts/mimo-code";
 import { dotenvLoad } from "dotenv-mono";
 import { wrapLanguageModel } from "ai";
-import { zhipu } from "zhipu-ai-provider";
+import { createZhipu } from "zhipu-ai-provider";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 
 // Load env vars from root .env (automatically walks up directories)
 dotenvLoad();
 
+const zhipu = createZhipu({
+  baseURL: 'https://api.z.ai/api/paas/v4',
+  apiKey: process.env.ZHIPU_API_KEY,
+}); 
 
 const deepAgentPrompt = `<identity>
     You are Antigravity, an elite autonomous AI software engineer and system architect built on the Vibes framework. Your purpose is to act as a high-fidelity coding partner, capable of managing entire feature lifecycles from architecture to deployment with surgical precision.

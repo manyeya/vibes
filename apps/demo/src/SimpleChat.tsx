@@ -7,13 +7,14 @@ import { Streamdown } from 'streamdown';
 
 export default function SimpleChat() {
   const [input, setInput] = useState('');
+  const [dataReceived, setDataReceived] = useState<any[]>([]);
 
   const { messages, sendMessage, status, stop, error } = useChat({
     transport: new DefaultChatTransport({
       api: '/api/simple/stream',
     }),
     onData: (data) => {
-      console.log(data);
+      setDataReceived(prev => [...prev, data]);
     }
   });
 
@@ -33,6 +34,7 @@ export default function SimpleChat() {
 
     // Find text parts
     const textParts = parts.filter((p: any) => p.type === 'text');
+    
     if (textParts.length > 0) {
       return textParts.map((p: any) => p.text).join('');
     }
@@ -55,9 +57,17 @@ export default function SimpleChat() {
           </div>
           <div>
             <h1 className="text-sm font-semibold text-white">Simple Chat</h1>
-            <p className="text-xs text-zinc-500">Basic AI assistant</p>
+            <p className="text-xs text-zinc-500">
+              Basic AI assistant {dataReceived.length > 0 && `• ${dataReceived.length} data parts received`}
+            </p>
           </div>
         </div>
+        {/* Data received indicator */}
+        {dataReceived.length > 0 && (
+          <div className="mt-2 text-xs text-emerald-400">
+            Latest: {JSON.stringify(dataReceived[dataReceived.length - 1])}
+          </div>
+        )}
       </header>
 
       {/* Messages */}
@@ -76,7 +86,7 @@ export default function SimpleChat() {
               {messages.map((message) => {
                 const isUser = message.role === 'user';
                 const content = getMessageContent(message);
-
+                // console.log(message.parts);
                 if (!content && !isUser) return null;
 
                 return (

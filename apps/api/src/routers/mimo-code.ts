@@ -4,7 +4,6 @@ import { z } from "zod";
 import { logger } from "../logger";
 import sessionManager from "../session-manager";
 import { SqliteBackend, type VibesUIMessage, createDeepAgentStreamResponse } from "harness-vibes";
-import { createAgentUIStreamResponse } from "ai";
 import { agent as simpleAgent } from "../simple";
 
 
@@ -317,21 +316,21 @@ app.post('/simple/stream', zValidator('json', mimoSchema), async (c) => {
         const body = c.req.valid('json');
         const messages = body.messages as any[];
 
-        
-        return createAgentUIStreamResponse({
-            agent: simpleAgent,
+        // Use custom stream response that integrates with middleware writers
+        // This enables onData callbacks and custom data streaming
+        return createDeepAgentStreamResponse({
+            agent: simpleAgent as any, // TODO: fix type mismatch
             uiMessages: messages,
         });
-
 
     } catch (error) {
         logger.error({
             error: error instanceof Error ? error.message : String(error),
-        }, 'Mimo-Code agent streaming error');
+        }, 'Simple agent streaming error');
 
         return c.json({
             success: false,
-            error: 'Failed to stream mimo-code agent request',
+            error: 'Failed to stream simple agent request',
         }, 500);
     }
 });

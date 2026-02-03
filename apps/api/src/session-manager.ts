@@ -3,12 +3,16 @@ import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { LanguageModel, wrapLanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { mimoCodePrompt } from './prompts/mimo-code';
-import { zhipu } from 'zhipu-ai-provider';
+import { createZhipu} from 'zhipu-ai-provider';
 import { dotenvLoad } from 'dotenv-mono';
 
 // Load env vars from root .env (automatically walks up directories)
 dotenvLoad();
 
+const zhipu = createZhipu({
+  baseURL: 'https://api.z.ai/api/paas/v4',
+  apiKey: 'your-api-key',
+});
 
 const model = wrapLanguageModel({
     model: zhipu('glm-4.7-flash') as any,
@@ -115,7 +119,7 @@ class SessionManager {
                         - **Research**: Find design inspiration or technical solutions on the web.
                         - **UI Testing**: Automate browser actions to verify functionality and accessibility.
                         - **Visual Auditing**: Check for visual regressions and layout issues.`,
-                        allowedTools: ["writeFile", "readFile", "bash"]
+                        allowedTools: ["writeFile", "readFile", "bash","activate_skill"]
                     }
                 ]
             });
