@@ -11,7 +11,7 @@ dotenvLoad();
 
 const zhipu = createZhipu({
   baseURL: 'https://api.z.ai/api/paas/v4',
-  apiKey: 'your-api-key',
+  apiKey: process.env.ZHIPU_API_KEY,
 });
 
 const model = wrapLanguageModel({

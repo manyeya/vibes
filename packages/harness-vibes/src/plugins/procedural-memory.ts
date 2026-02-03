@@ -5,7 +5,7 @@ import {
     generateText,
 } from 'ai';
 import { z } from 'zod';
-import { AgentUIMessage, Middleware } from '../core/types';
+import { VibesUIMessage, Plugin } from '../core/types';
 
 /**
  * A stored procedural pattern - reusable approach to solving problems.
@@ -58,7 +58,7 @@ export interface PatternApplication {
 }
 
 /**
- * Configuration for ProceduralMemoryMiddleware
+ * Configuration for ProceduralMemoryPlugin
  */
 export interface ProceduralMemoryConfig {
     /** Maximum patterns to store (default: 50) */
@@ -70,7 +70,7 @@ export interface ProceduralMemoryConfig {
 }
 
 /**
- * ProceduralMemoryMiddleware stores reusable patterns and successful approaches.
+ * ProceduralMemoryPlugin stores reusable patterns and successful approaches.
  *
  * Unlike semantic memory (facts) and reflexion (lessons), procedural memory
  * focuses on "how to do things" - workflows, code patterns, debugging approaches.
@@ -82,10 +82,10 @@ export interface ProceduralMemoryConfig {
  * - testing: Testing strategies and patterns
  * - documentation: Documentation patterns
  */
-export class ProceduralMemoryMiddleware implements Middleware {
-    name = 'ProceduralMemoryMiddleware';
+export class ProceduralMemoryPlugin implements Plugin {
+    name = 'ProceduralMemoryPlugin';
 
-    private writer?: UIMessageStreamWriter<AgentUIMessage>;
+    private writer?: UIMessageStreamWriter<VibesUIMessage>;
     private model?: LanguageModel;
     private config: Required<ProceduralMemoryConfig>;
     private patterns: Map<string, Pattern> = new Map();
@@ -102,7 +102,7 @@ export class ProceduralMemoryMiddleware implements Middleware {
         };
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = writer;
     }
 
@@ -162,7 +162,7 @@ export class ProceduralMemoryMiddleware implements Middleware {
     }
 
     /**
-     * Tools provided by the procedural memory middleware
+     * Tools provided by the procedural memory plugin
      */
     get tools() {
         return {
@@ -617,4 +617,4 @@ ${context ? `Context: ${context}` : ''}`,
     }
 }
 
-export default ProceduralMemoryMiddleware;
+export default ProceduralMemoryPlugin;

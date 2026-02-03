@@ -6,8 +6,8 @@ import {
 } from 'ai';
 import { z } from 'zod';
 import {
-    AgentUIMessage,
-    Middleware,
+    VibesUIMessage,
+    Plugin,
     ErrorEntry,
     createDataStreamWriter,
     type DataStreamWriter,
@@ -54,7 +54,7 @@ export interface ErrorAnalysis {
 }
 
 /**
- * Configuration for ReflexionMiddleware
+ * Configuration for ReflexionPlugin
  */
 export interface ReflexionConfig {
     /** Maximum lessons to store (default: 100) */
@@ -70,7 +70,7 @@ export interface ReflexionConfig {
 }
 
 /**
- * ReflexionMiddleware adds self-improvement capabilities through
+ * ReflexionPlugin adds self-improvement capabilities through
  * structured error analysis and lesson learning.
  *
  * Based on the "Reflexion" framework (Shinn et al., 2023) where agents:
@@ -84,8 +84,8 @@ export interface ReflexionConfig {
  * - Contextual lesson retrieval
  * - Lesson application tracking
  */
-export class ReflexionMiddleware implements Middleware {
-    name = 'ReflexionMiddleware';
+export class ReflexionPlugin implements Plugin {
+    name = 'ReflexionPlugin';
 
     private writer?: DataStreamWriter;
     private model?: LanguageModel;
@@ -108,7 +108,7 @@ export class ReflexionMiddleware implements Middleware {
         };
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = createDataStreamWriter(writer);
     }
 
@@ -200,7 +200,7 @@ export class ReflexionMiddleware implements Middleware {
     }
 
     /**
-     * Tools provided by the reflexion middleware
+     * Tools provided by the reflexion plugin
      */
     get tools() {
         return {
@@ -634,4 +634,4 @@ Automatically extracts lessons from the session experience.`,
     }
 }
 
-export default ReflexionMiddleware;
+export default ReflexionPlugin;

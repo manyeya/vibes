@@ -1,5 +1,5 @@
 import { tool } from "ai";
-import { Middleware } from "../core/types";
+import { Plugin } from "../core/types";
 import z from "zod";
 
 /**
@@ -7,8 +7,8 @@ import z from "zod";
  * 1. Scratchpad: A "thinking file" for the current session state.
  * 2. Reflexion: A "lessons learned" file for cross-session improvement.
  */
-export default class MemoryMiddleware implements Middleware {
-    name = 'MemoryMiddleware';
+export default class MemoryPlugin implements Plugin {
+    name = 'MemoryPlugin';
 
     private scratchpadPath: string;
     private reflexionPath: string;

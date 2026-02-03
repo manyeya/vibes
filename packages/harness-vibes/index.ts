@@ -2,16 +2,16 @@
 
 import { openai } from '@ai-sdk/openai';
 import {
-    SkillsMiddleware,
-    PlanningMiddleware,
-    ReasoningMiddleware,
-    ReflexionMiddleware,
-    SemanticMemoryMiddleware,
-    ProceduralMemoryMiddleware,
-    SwarmMiddleware,
-    FilesystemMiddleware,
-    BashMiddleware,
-    SubAgentMiddleware,
+    SkillsPlugin,
+    PlanningPlugin,
+    ReasoningPlugin,
+    ReflexionPlugin,
+    SemanticMemoryPlugin,
+    ProceduralMemoryPlugin,
+    SwarmPlugin,
+    FilesystemPlugin,
+    BashPlugin,
+    SubAgentPlugin,
     AgentSignal,
     ProceduralMemoryConfig,
     SharedStateEntry,
@@ -27,8 +27,8 @@ import {
     ErrorAnalysis,
     Fact,
     PatternApplication,
-} from './src/middleware';
-import MemoryMiddleware from './src/middleware/memory';
+} from './src/plugins';
+import MemoryPlugin from './src/plugins/memory';
 import SqliteBackend from './src/backend/sqlitebackend';
 import {
     AgentState,
@@ -54,8 +54,8 @@ interface DeepAgentConfig extends Partial<Omit<VibeAgentConfig, 'instructions'>>
     systemPrompt?: string;
     /** Registry of sub-agents available for delegation */
     subAgents?: SubAgent[];
-    /** If true, standard middleware (Tasks, Skills, Filesystem) will not be loaded */
-    skipDefaultMiddleware?: boolean;
+    /** If true, standard plugins (Tasks, Skills, Filesystem) will not be loaded */
+    skipDefaultPlugins?: boolean;
     /** Optional shared state backend for state inheritance (used in sub-agents) */
     backend?: any;
     /** Unique session identifier for persistent SQLite storage */
@@ -74,7 +74,7 @@ interface DeepAgentConfig extends Partial<Omit<VibeAgentConfig, 'instructions'>>
 export class DeepAgent extends VibeAgent {
     /**
      * Initializes a new DeepAgent instance.
-     * @param config Optional configuration to customize model, prompt, and middleware.
+     * @param config Optional configuration to customize model, prompt, and plugins.
      */
     constructor(config: DeepAgentConfig = {}) {
         const baseInstructions = `<identity>
@@ -90,7 +90,7 @@ export class DeepAgent extends VibeAgent {
 </mindset>
 
 <extensible_capabilities>
-    You are extensible via a middleware-driven architecture. Your tools reflect these capabilities:
+    You are extensible via a plugin-driven architecture. Your tools reflect these capabilities:
 
     <capability name="Planning & Tasks">
         - use \`generate_tasks\` to decompose requests into actionable steps.
@@ -153,72 +153,72 @@ export class DeepAgent extends VibeAgent {
             ...config,
         });
 
-        // Initialize built-in middleware
-        this.initializeMiddleware(config);
+        // Initialize built-in plugins
+        this.initializePlugins(config);
     }
 
-    private initializeMiddleware(config: DeepAgentConfig): void {
-        const skipDefaults = config.skipDefaultMiddleware === true;
+    private initializePlugins(config: DeepAgentConfig): void {
+        const skipDefaults = config.skipDefaultPlugins === true;
         const workspaceDir = config.workspaceDir || 'workspace';
 
         if (!skipDefaults) {
-            this.addMiddleware([
-                // PlanningMiddleware extends TasksMiddleware with deep agent features:
+            this.addPlugin([
+                // PlanningPlugin extends TasksPlugin with deep agent features:
                 // - Task recitation (always-in-view current plan)
                 // - Plan save/load from filesystem
                 // - Hierarchical task support
-                new PlanningMiddleware(this.model, {
+                new PlanningPlugin(this.model, {
                     planPath: `${workspaceDir}/plan.md`,
                     maxRecitationTasks: 10,
                 }),
-                // ReasoningMiddleware provides multiple reasoning patterns:
+                // ReasoningPlugin provides multiple reasoning patterns:
                 // - ReAct: Think-act loop (default)
                 // - ToT: Tree-of-Thoughts for parallel exploration
                 // - Plan-Execute: Separate planning and execution phases
-                new ReasoningMiddleware(this.model, {
+                new ReasoningPlugin(this.model, {
                     initialMode: 'tot',
                     maxBranches: 5,
                     autoExplore: true,
                     complexityThreshold: 5,
                 }),
-                // ReflexionMiddleware adds self-improvement capabilities:
+                // ReflexionPlugin adds self-improvement capabilities:
                 // - Automatic error analysis and lesson extraction
                 // - Structured lesson storage with metadata
                 // - Contextual lesson retrieval and suggestion
-                new ReflexionMiddleware(this.model, {
+                new ReflexionPlugin(this.model, {
                     maxLessons: 100,
                     lessonsPath: `${workspaceDir}/lessons.json`,
                     autoAnalyzeErrors: true,
                     analysisThreshold: 2,
                     autoSuggestLessons: true,
                 }),
-                // SemanticMemoryMiddleware provides vector-based fact storage:
+                // SemanticMemoryPlugin provides vector-based fact storage:
                 // - Store facts with optional embeddings for semantic search
                 // - Retrieve relevant facts by meaning (RAG-style memory)
                 // - Keyword-based fallback when embeddings unavailable
                 // - Persistent storage to workspace/facts.json
-                new SemanticMemoryMiddleware(this.model, {
+                new SemanticMemoryPlugin(undefined, {
                     maxFacts: 200,
                     factsPath: `${workspaceDir}/facts.json`,
                     similarityThreshold: 0.3,
                     autoExtract: true,
                 }),
-                // ProceduralMemoryMiddleware stores reusable patterns and workflows:
+                // ProceduralMemoryPlugin stores reusable patterns and workflows:
                 // - Store successful approaches as reusable patterns
                 // - Retrieve relevant patterns by context
                 // - Track pattern success rates over time
                 // - Persistent storage to workspace/patterns.json
-                new ProceduralMemoryMiddleware(this.model, {
+                new ProceduralMemoryPlugin(this.model, {
                     maxPatterns: 50,
                     patternsPath: `${workspaceDir}/patterns.json`,
                     autoSuggest: true,
                 }),
-                // SwarmMiddleware enables decentralized multi-agent collaboration:
+                // SwarmPlugin enables decentralized multi-agent collaboration:
                 // - Shared state between agents
                 // - Signaling between agents
                 // - Task proposal and claiming for swarm coordination
                 // - Persistent swarm state
-                new SwarmMiddleware(
+                new SwarmPlugin(
                     config.swarmId || config.sessionId || 'default',
                     {
                         maxStateEntries: 100,
@@ -227,14 +227,14 @@ export class DeepAgent extends VibeAgent {
                         persistState: true,
                     }
                 ),
-                new SkillsMiddleware(),
-                new FilesystemMiddleware({ baseDir: workspaceDir }),
-                new BashMiddleware(workspaceDir),
-                new MemoryMiddleware()
+                new SkillsPlugin(),
+                new FilesystemPlugin({ baseDir: workspaceDir }),
+                new BashPlugin(workspaceDir),
+                new MemoryPlugin()
             ])
         }
 
-        // SubAgent middleware
+        // SubAgent plugin
         const subAgentMap = new Map<string, SubAgent>();
 
         if (config.subAgents) {
@@ -243,17 +243,17 @@ export class DeepAgent extends VibeAgent {
             });
         }
 
-        this.addMiddleware(new SubAgentMiddleware(
+        this.addPlugin(new SubAgentPlugin(
             subAgentMap,
             this.model,
             () => this.getAllTools(),
-            () => this.middleware,
+            () => this.plugins,
             workspaceDir
         ))
 
-        // Custom middleware
-        if (config.middleware) {
-            this.addMiddleware([...config.middleware]);
+        // Custom plugins
+        if (config.plugins) {
+            this.addPlugin([...config.plugins]);
         }
     }
 }
@@ -277,12 +277,12 @@ export {
     type VibesUIMessage,
     createDataStreamWriter,
     DataStreamWriter,
-    PlanningMiddleware,
-    ReasoningMiddleware,
-    ReflexionMiddleware,
-    SemanticMemoryMiddleware,
-    ProceduralMemoryMiddleware,
-    SwarmMiddleware,
+    PlanningPlugin,
+    ReasoningPlugin,
+    ReflexionPlugin,
+    SemanticMemoryPlugin,
+    ProceduralMemoryPlugin,
+    SwarmPlugin,
     type ReasoningMode,
     type ReasoningConfig,
     type Lesson,

@@ -4,8 +4,8 @@ import {
     type LanguageModel,
 } from 'ai';
 import { z } from 'zod';
-import TasksMiddleware from './tasks';
-import { VibesUIMessage, TaskItem, Middleware, type ModelMessage } from '../core/types';
+import TasksPlugin from './tasks';
+import { VibesUIMessage, TaskItem, Plugin, type ModelMessage } from '../core/types';
 
 /**
  * Planning configuration options
@@ -35,46 +35,46 @@ export interface PlanEntry {
 }
 
 /**
- * PlanningMiddleware composes TasksMiddleware with deep agent planning features:
+ * PlanningPlugin composes TasksPlugin with deep agent planning features:
  * - Task recitation: Always-in-view current plan for attention manipulation
  * - Plan persistence: Save/load plans from filesystem
  * - Hierarchical decomposition: Parent-child task relationships
  * - Smart recitation: Format plan for readability and focus
  */
-export class PlanningMiddleware implements Middleware {
-    name = 'PlanningMiddleware';
+export class PlanningPlugin implements Plugin {
+    name = 'PlanningPlugin';
     private writer?: UIMessageStreamWriter<VibesUIMessage>;
     private planPath: string;
     private maxRecitationTasks: number;
     private lastRecitedTasks: TaskItem[] = [];
 
-    // Compose TasksMiddleware instead of extending to avoid type conflicts
-    private tasksMiddleware: TasksMiddleware;
+    // Compose TasksPlugin instead of extending to avoid type conflicts
+    private tasksPlugin: TasksPlugin;
 
     constructor(
         model?: LanguageModel,
         config: PlanningConfig = {}
     ) {
-        this.tasksMiddleware = new TasksMiddleware(model, { tasksPath: config.planPath });
+        this.tasksPlugin = new TasksPlugin(model, { tasksPath: config.planPath });
         this.planPath = config.planPath || 'workspace/plan.md';
         this.maxRecitationTasks = config.maxRecitationTasks || 10;
     }
 
     async waitReady(): Promise<void> {
-        await this.tasksMiddleware.waitReady();
+        await this.tasksPlugin.waitReady();
     }
 
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = writer;
-        // Also forward to tasks middleware
-        this.tasksMiddleware.onStreamReady(writer);
+        // Also forward to tasks plugin
+        this.tasksPlugin.onStreamReady(writer);
     }
 
     /**
      * Modify system prompt to inject task recitation.
      */
     modifySystemPrompt(prompt: string): string | Promise<string> {
-        const basePrompt = this.tasksMiddleware.modifySystemPrompt(prompt);
+        const basePrompt = this.tasksPlugin.modifySystemPrompt(prompt);
         const planningInstructions = `
 
 ## Planning & Task Management
@@ -110,7 +110,7 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
      * Refresh the cached task list for recitation.
      */
     private async refreshRecitationCache(): Promise<void> {
-        const allTasks = await this.tasksMiddleware.getTasks();
+        const allTasks = await this.tasksPlugin.getTasks();
         const pendingTasks = allTasks.filter((t: TaskItem) => t.status !== 'completed' && t.status !== 'failed');
 
         const statusOrder: Record<string, number> = {
@@ -202,7 +202,7 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
     }
 
     get tools(): any {
-        const baseTools = this.tasksMiddleware.tools;
+        const baseTools = this.tasksPlugin.tools;
 
         return Object.assign({}, baseTools, {
 
@@ -213,7 +213,7 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                 }),
                 execute: async ({ path }) => {
                     const savePath = path || this.planPath;
-                    const tasks = await this.tasksMiddleware.getTasks();
+                    const tasks = await this.tasksPlugin.getTasks();
 
                     let content = `# Task Plan\n\n`;
                     content += `Generated: ${new Date().toISOString()}\n`;
@@ -323,7 +323,7 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                     priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
                 }),
                 execute: async ({ parentTaskId, title, description, priority }) => {
-                    const tasks = await this.tasksMiddleware.getTasks();
+                    const tasks = await this.tasksPlugin.getTasks();
                     const parent = tasks.find(t => t.id === parentTaskId);
 
                     if (!parent) {
@@ -350,8 +350,8 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                         tags: [],
                     };
 
-                    await this.tasksMiddleware.addTask(subtask);
-                    await this.tasksMiddleware.updateTask(parentTaskId, { blocks: [...parent.blocks, subtaskId] });
+                    await this.tasksPlugin.addTask(subtask);
+                    await this.tasksPlugin.updateTask(parentTaskId, { blocks: [...parent.blocks, subtaskId] });
 
                     await this.refreshRecitationCache();
 
@@ -367,9 +367,9 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
     }
 
     async onStreamFinish(): Promise<void> {
-        await this.tasksMiddleware.onStreamFinish();
+        await this.tasksPlugin.onStreamFinish();
         await this.refreshRecitationCache();
     }
 }
 
-export default PlanningMiddleware;
+export default PlanningPlugin;

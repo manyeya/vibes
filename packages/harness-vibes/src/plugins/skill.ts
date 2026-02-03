@@ -1,5 +1,5 @@
 import { tool, UIMessageStreamWriter } from "ai";
-import { AgentUIMessage, Middleware } from "../core/types";
+import { VibesUIMessage, Plugin } from "../core/types";
 import z from "zod";
 import * as path from "path";
 
@@ -21,19 +21,19 @@ interface SkillMetadata {
  *
  * Supports Obsidian-style file includes: ![[path/to/file.md]]
  */
-export default class SkillsMiddleware implements Middleware {
-    name = 'SkillsMiddleware';
+export default class SkillsPlugin implements Plugin {
+    name = 'SkillsPlugin';
     private skills: Map<string, SkillMetadata> = new Map();
     private activeSkills: Set<string> = new Set();
     private initializationPromise: Promise<void>;
-    private writer?: UIMessageStreamWriter<AgentUIMessage>;
+    private writer?: UIMessageStreamWriter<VibesUIMessage>;
     private includeCache: Map<string, string> = new Map();
 
     constructor() {
         this.initializationPromise = this.init();
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = writer;
     }
 

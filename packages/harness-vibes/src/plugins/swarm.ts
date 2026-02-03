@@ -3,7 +3,7 @@ import {
     type UIMessageStreamWriter,
 } from 'ai';
 import { z } from 'zod';
-import { AgentUIMessage, Middleware } from '../core/types';
+import { VibesUIMessage, Plugin } from '../core/types';
 
 /**
  * A signal sent between agents.
@@ -46,7 +46,7 @@ export interface SharedStateEntry {
 }
 
 /**
- * Configuration for SwarmMiddleware
+ * Configuration for SwarmPlugin
  */
 export interface SwarmConfig {
     /** Maximum shared state entries (default: 100) */
@@ -60,7 +60,7 @@ export interface SwarmConfig {
 }
 
 /**
- * SwarmMiddleware enables decentralized agent collaboration.
+ * SwarmPlugin enables decentralized agent collaboration.
  *
  * Features:
  * - Shared state: Agents can read/write shared variables
@@ -71,10 +71,10 @@ export interface SwarmConfig {
  * This enables multi-agent collaboration without a central coordinator.
  * Agents can coordinate through shared state and signaling.
  */
-export class SwarmMiddleware implements Middleware {
-    name = 'SwarmMiddleware';
+export class SwarmPlugin implements Plugin {
+    name = 'SwarmPlugin';
 
-    private writer?: UIMessageStreamWriter<AgentUIMessage>;
+    private writer?: UIMessageStreamWriter<VibesUIMessage>;
     private config: Required<SwarmConfig>;
     private agentId: string;
 
@@ -100,7 +100,7 @@ export class SwarmMiddleware implements Middleware {
         };
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = writer;
     }
 
@@ -192,7 +192,7 @@ export class SwarmMiddleware implements Middleware {
     }
 
     /**
-     * Tools provided by the swarm middleware
+     * Tools provided by the swarm plugin
      */
     get tools() {
         return {
@@ -683,4 +683,4 @@ Use \`get_swarm_status()\` to see overall swarm state.
     }
 }
 
-export default SwarmMiddleware;
+export default SwarmPlugin;

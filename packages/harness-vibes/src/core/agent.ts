@@ -5,7 +5,6 @@ import {
     type ModelMessage,
     type ToolSet,
     type UIMessage,
-    type UIMessageStreamWriter,
     type ToolLoopAgentSettings,
     type AgentCallParameters,
 } from 'ai';
@@ -14,7 +13,7 @@ import {
     VibeAgentConfig,
     VibeAgentGenerateResult,
     VibeAgentStreamResult,
-    Middleware,
+    Plugin,
     ErrorEntry,
 } from './types';
 
@@ -70,7 +69,7 @@ interface PrepareCallOptions {
  * - Restorable compression: Large content replaced with file/path references
  * - Error preservation: Errors tracked separately, never summarized
  * - KV-cache awareness: Stable prompt prefix for cache optimization
- * - Middleware system for extensible capabilities
+ * - Plugin system for extensible capabilities
  *
  * By extending ToolLoopAgent, we get:
  * - Proper streaming with toUIMessageStream() support
@@ -79,7 +78,7 @@ interface PrepareCallOptions {
  * - prepareCall hook for custom logic injection
  */
 export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
-    protected middleware: Middleware[] = [];
+    protected plugins: Plugin[] = [];
     protected model: LanguageModel;
     protected customSystemPrompt: string;
     protected maxContextMessages: number;
@@ -97,7 +96,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
 
     // Tool cache - initialize with empty object so tools getter always has a value
     protected toolCache: Record<string, unknown> = {};
-    protected middlewareVersion: number = 0;
+    protected pluginsVersion: number = 0;
 
     constructor(config: VibeAgentConfig) {
         // Initialize ToolLoopAgent with base configuration and prepareCall hook
@@ -126,27 +125,27 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         this.allowedTools = config.allowedTools;
         this.blockedTools = config.blockedTools;
 
-        if (config.middleware) {
-            this.addMiddleware(config.middleware);
+        if (config.plugins) {
+            this.addPlugin(config.plugins);
         }
 
         // Pre-build tools for the base tools getter
         this.preloadTools();
     }
 
-    addMiddleware(middleware: Middleware | Middleware[]) {
-        if (Array.isArray(middleware)) {
-            this.middleware.push(...middleware);
+    addPlugin(plugin: Plugin | Plugin[]) {
+        if (Array.isArray(plugin)) {
+            this.plugins.push(...plugin);
         } else {
-            this.middleware.push(middleware);
+            this.plugins.push(plugin);
         }
-        // Invalidate tool cache when middleware is added
-        this.middlewareVersion = this.middleware.length;
+        // Invalidate tool cache when plugin is added
+        this.pluginsVersion = this.plugins.length;
         this.toolCache = {};
     }
 
     /**
-     * Override the tools getter to provide dynamic tools from middleware.
+     * Override the tools getter to provide dynamic tools from plugins.
      * This is called by ToolLoopAgent before each generate/stream.
      */
     override get tools(): ToolSet {
@@ -165,19 +164,19 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     /**
      * The prepareCall hook that's passed to ToolLoopAgent constructor.
      * This is called before each generate/stream and allows us to modify:
-     * - system prompt (add middleware prompts)
+     * - system prompt (add plugin prompts)
      * - messages (prune, compress)
-     * - tools (add middleware tools)
+     * - tools (add plugin tools)
      */
     protected async prepareCallOverride(baseOptions: PrepareCallOptions): Promise<PrepareCallOptions> {
         // Process messages with pruning and compression
         const processedMessages = await this.pruneMessages(baseOptions.messages || []);
 
-        // Build system prompt with middleware modifications
+        // Build system prompt with plugin modifications
         let instructions = baseOptions.instructions;
-        for (const mw of this.middleware) {
-            if (mw.modifySystemPrompt) {
-                const result = mw.modifySystemPrompt(instructions);
+        for (const plugin of this.plugins) {
+            if (plugin.modifySystemPrompt) {
+                const result = plugin.modifySystemPrompt(instructions);
                 instructions = result instanceof Promise ? await result : result;
             }
         }
@@ -193,7 +192,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             instructions += `\n\n${this.formatRecentErrors(recentErrors)}`;
         }
 
-        // Get all tools with middleware tools and wrapping
+        // Get all tools with plugin tools and wrapping
         const tools = await this.getAllTools();
 
         return {
@@ -207,7 +206,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     // ============ STREAM OVERRIDE ============
 
     /**
-     * Override stream to handle middleware lifecycle while using super.stream()
+     * Override stream to handle plugin lifecycle while using super.stream()
      * for proper AI SDK streaming and onData callback support.
      */
     override async stream(
@@ -224,11 +223,11 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                 ? await this.convertMessages(prompt as any)
                 : undefined;
 
-        // Trigger middleware onStreamReady hooks
+        // Trigger plugin onStreamReady hooks
         if (writer) {
-            for (const mw of this.middleware) {
-                if (mw.onStreamReady) {
-                    mw.onStreamReady(writer);
+            for (const plugin of this.plugins) {
+                if (plugin.onStreamReady) {
+                    plugin.onStreamReady(writer);
                 }
             }
         }
@@ -240,11 +239,11 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             ...(modelMessages ? { messages: modelMessages } : {}),
         });
 
-        // Handle stream completion with middleware hooks
+        // Handle stream completion with plugin hooks
         Promise.resolve(result.response).then(async (finishResult) => {
-            for (const mw of this.middleware) {
-                if (mw.onStreamFinish) {
-                    await mw.onStreamFinish(finishResult);
+            for (const plugin of this.plugins) {
+                if (plugin.onStreamFinish) {
+                    await plugin.onStreamFinish(finishResult);
                 }
             }
         }).catch((error: Error) => {
@@ -257,7 +256,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     // ============ GENERATE OVERRIDE ============
 
     /**
-     * Override generate to handle middleware hooks.
+     * Override generate to handle plugin hooks.
      */
     override async generate(
         options?: AgentCallParameters<never, ToolSet> & { messages?: UIMessage[] | ModelMessage[] }
@@ -294,25 +293,25 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             return this.toolCache;
         }
 
-        // Invalidate cache if middleware was added/removed
-        const currentMiddlewareVersion = this.middleware.length;
-        if (this.middlewareVersion !== currentMiddlewareVersion && Object.keys(this.toolCache).length > 0) {
+        // Invalidate cache if plugin was added/removed
+        const currentPluginsVersion = this.plugins.length;
+        if (this.pluginsVersion !== currentPluginsVersion && Object.keys(this.toolCache).length > 0) {
             this.toolCache = {};
         }
 
         const allTools: Record<string, unknown> = {};
 
-        // Wait for all middleware to be ready
-        for (const mw of this.middleware) {
-            if (mw.waitReady) {
-                await mw.waitReady();
+        // Wait for all plugins to be ready
+        for (const plugin of this.plugins) {
+            if (plugin.waitReady) {
+                await plugin.waitReady();
             }
         }
 
-        // Collect tools from all middleware
-        for (const mw of this.middleware) {
-            if (mw.tools) {
-                Object.assign(allTools, mw.tools);
+        // Collect tools from all plugins
+        for (const plugin of this.plugins) {
+            if (plugin.tools) {
+                Object.assign(allTools, plugin.tools);
             }
         }
 
@@ -343,8 +342,8 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                 needsApproval: needsApproval || (toolDefRecord.needsApproval as boolean | undefined),
                 execute: originalExecute ? async (args: unknown, options: unknown) => {
                     // Trigger lifecycle hooks
-                    for (const mw of this.middleware) {
-                        mw.onInputAvailable?.(args);
+                    for (const plugin of this.plugins) {
+                        plugin.onInputAvailable?.(args);
                     }
 
                     // Retry logic for tool execution
@@ -385,7 +384,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         }
 
         this.toolCache = resolvedTools;
-        this.middlewareVersion = this.middleware.length;
+        this.pluginsVersion = this.plugins.length;
         return resolvedTools;
     }
 

@@ -1,23 +1,23 @@
 import { tool, type UIMessageStreamWriter } from "ai";
-import { AgentUIMessage, Middleware } from "../core/types";
+import { VibesUIMessage, Plugin } from "../core/types";
 import z from "zod";
 import { $ } from "bun";
 import * as path from "path";
 
 /**
- * Middleware that grants the agent access to execute shell commands
+ * Plugin that grants the agent access to execute shell commands
  * on the host system within a specific directory.
  */
-export default class BashMiddleware implements Middleware {
-    name = 'BashMiddleware';
-    private writer?: UIMessageStreamWriter<AgentUIMessage>;
+export default class BashPlugin implements Plugin {
+    name = 'BashPlugin';
+    private writer?: UIMessageStreamWriter<VibesUIMessage>;
     private baseDir: string;
 
     constructor(baseDir: string = 'workspace') {
         this.baseDir = path.resolve(process.cwd(), baseDir);
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = writer;
     }
 

@@ -1,7 +1,7 @@
 import { type LanguageModel, type UIMessageStreamWriter, tool } from "ai";
 import {
-    AgentUIMessage,
-    Middleware,
+    VibesUIMessage,
+    Plugin,
     SubAgent,
     createDataStreamWriter,
     type DataStreamWriter,
@@ -153,11 +153,11 @@ export interface ParallelDelegationResult {
 }
 
 /**
- * Middleware that allows an agent to delegate tasks to specialized sub-agents.
- * Uses the VibeAgent core for full middleware support in sub-agents.
+ * Plugin that allows an agent to delegate tasks to specialized sub-agents.
+ * Uses the VibeAgent core for full plugin support in sub-agents.
  */
-export default class SubAgentMiddleware implements Middleware {
-    name = 'SubAgentMiddleware';
+export default class SubAgentPlugin implements Plugin {
+    name = 'SubAgentPlugin';
     private writer?: DataStreamWriter;
     private registry: DelegationRegistry;
 
@@ -165,7 +165,7 @@ export default class SubAgentMiddleware implements Middleware {
         private subAgents: Map<string, SubAgent>,
         private baseModel: LanguageModel,
         private _getGlobalTools: () => Record<string, any>,
-        private getGlobalMiddleware: () => Middleware[] = () => [],
+        private getGlobalPlugins: () => Plugin[] = () => [],
         private workspaceDir: string = 'workspace',
         private cacheTTL: number = 60 * 60 * 1000 // Default 1 hour TTL
     ) {
@@ -179,7 +179,7 @@ export default class SubAgentMiddleware implements Middleware {
         return this.registry;
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = createDataStreamWriter(writer);
     }
 
@@ -277,7 +277,7 @@ You have been assigned a specific task to complete. When you finish your work, y
 
 This ensures the main agent knows your work is finished and can move forward.`;
 
-                    // Create a VibeAgent for the sub-task to support full middleware stack
+                    // Create a VibeAgent for the sub-task to support full plugin stack
                     // CRITICAL: Always include task_completion in allowedTools
                     const allowedToolsWithCompletion = subAgentDesc.allowedTools
                         ? [...subAgentDesc.allowedTools, 'task_completion']
@@ -287,8 +287,8 @@ This ensures the main agent knows your work is finished and can move forward.`;
                         model: subAgentDesc.model || this.baseModel,
                         instructions: enhancedSystemPrompt,
                         maxSteps: 30, // Limit subagent steps to prevent infinite loops
-                        // Inherit global middleware if none specified for this sub-agent
-                        middleware: subAgentDesc.middleware || this.getGlobalMiddleware(),
+                        // Inherit global plugins if none specified for this sub-agent
+                        plugins: subAgentDesc.plugins || subAgentDesc.middleware || this.getGlobalPlugins(),
                         // Custom tool definitions (object format only, string arrays are deprecated)
                         tools: (() => {
                             const customTools = typeof subAgentDesc.tools === 'object' && !Array.isArray(subAgentDesc.tools)
@@ -377,7 +377,7 @@ ${filesList.length > 0 ? filesList.map(f => `- \`${f}\``).join('\n') : 'No files
                 await Bun.write(fullPath, resultContent);
 
                 if (process.env.DEBUG_VIBES) {
-                    console.log(`[SubAgentMiddleware] ${agent_name} completed:`, {
+                    console.log(`[SubAgentPlugin] ${agent_name} completed:`, {
                         textLength: result.text?.length || 0,
                         filesCreated: filesList.length,
                         completionConfirmed,
@@ -401,7 +401,7 @@ ${filesList.length > 0 ? filesList.map(f => `- \`${f}\``).join('\n') : 'No files
                 };
                 } catch (error) {
                     const errorMessage = error instanceof Error ? error.message : String(error);
-                    console.error(`[SubAgentMiddleware] Error executing ${agent_name}:`, errorMessage);
+                    console.error(`[SubAgentPlugin] Error executing ${agent_name}:`, errorMessage);
 
                     this.writer?.writeStatus(
                         `Error in ${agent_name}: ${errorMessage}`
@@ -531,7 +531,7 @@ You have been assigned a specific task to complete. When you finish your work, y
                             model: subAgentDesc.model || this.baseModel,
                             instructions: enhancedSystemPrompt,
                             maxSteps: 30,
-                            middleware: subAgentDesc.middleware || this.getGlobalMiddleware(),
+                            plugins: subAgentDesc.plugins || subAgentDesc.middleware || this.getGlobalPlugins(),
                             tools: (() => {
                                 const customTools = typeof subAgentDesc.tools === 'object' && !Array.isArray(subAgentDesc.tools)
                                     ? { ...subAgentDesc.tools as Record<string, any> }

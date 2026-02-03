@@ -7,19 +7,19 @@ import {
 import { z } from 'zod';
 
 import {
-    AgentUIMessage,
-    Middleware,
+    VibesUIMessage,
+    Plugin,
     TaskItem,
     createDataStreamWriter,
     type DataStreamWriter,
 } from '../core/types';
 
 /**
- * Middleware that provides task management with dependencies.
+ * Plugin that provides task management with dependencies.
  * Tasks are created by an LLM to break down work into specific, actionable steps.
  */
-export default class TasksMiddleware implements Middleware {
-    name = 'TasksMiddleware';
+export default class TasksPlugin implements Plugin {
+    name = 'TasksPlugin';
     protected writer?: DataStreamWriter;
     private tasks: TaskItem[] = [];
     private tasksPath: string;
@@ -31,7 +31,7 @@ export default class TasksMiddleware implements Middleware {
         this.tasksPath = config.tasksPath || 'workspace/tasks.json';
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = createDataStreamWriter(writer);
     }
 

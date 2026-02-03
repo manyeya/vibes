@@ -5,10 +5,10 @@ import {
     type LanguageModel,
 } from 'ai';
 import { z } from 'zod';
-import { VibesUIMessage, Middleware } from '../core/types';
+import { VibesUIMessage, Plugin } from '../core/types';
 
 /**
- * Reasoning modes supported by the middleware
+ * Reasoning modes supported by the plugin
  */
 export type ReasoningMode = 'react' | 'tot' | 'plan-execute';
 
@@ -63,7 +63,7 @@ interface ReasoningState {
 }
 
 /**
- * Configuration for ReasoningMiddleware
+ * Configuration for ReasoningPlugin
  */
 export interface ReasoningConfig {
     /** Initial reasoning mode (default: 'react') */
@@ -77,7 +77,7 @@ export interface ReasoningConfig {
 }
 
 /**
- * ReasoningMiddleware provides multiple reasoning patterns:
+ * ReasoningPlugin provides multiple reasoning patterns:
  *
  * **ReAct (Reasoning + Acting)**: Default think-act loop for dynamic environments
  * - Agent thinks about the current state
@@ -100,8 +100,8 @@ export interface ReasoningConfig {
  * - "Tree of Thoughts" (Yao et al., 2023)
  * - "Reflexion: Language Agents with Verbal Reinforcement Learning"
  */
-export class ReasoningMiddleware implements Middleware {
-    name = 'ReasoningMiddleware';
+export class ReasoningPlugin implements Plugin {
+    name = 'ReasoningPlugin';
 
     private writer?: UIMessageStreamWriter<VibesUIMessage>;
     private model?: LanguageModel;
@@ -151,7 +151,7 @@ export class ReasoningMiddleware implements Middleware {
     }
 
     /**
-     * Tools provided by the reasoning middleware
+     * Tools provided by the reasoning plugin
      */
     get tools() {
         return {
@@ -655,4 +655,4 @@ ${modeInstructions[this.state.mode]}
     }
 }
 
-export default ReasoningMiddleware;
+export default ReasoningPlugin;

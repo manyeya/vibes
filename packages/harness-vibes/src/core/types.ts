@@ -9,7 +9,7 @@ import {
     type StepResult,
 } from 'ai';
 
-// Re-export ModelMessage for middleware use
+// Re-export ModelMessage for plugin use
 export type { ModelMessage };
 
 // Import streaming types
@@ -141,20 +141,22 @@ export interface SubAgent {
     blockedTools?: string[];
     /** Optional specific model to use for this sub-agent */
     model?: LanguageModel;
-    /** Optional existing middleware instances to share with this sub-agent */
-    middleware?: Middleware[];
+    /** Optional existing plugin instances to share with this sub-agent */
+    plugins?: Plugin[];
+    /** @deprecated Use plugins instead - kept for backward compatibility */
+    middleware?: Plugin[];
 }
 
 /**
- * Interface for agent middleware that can extend capabilities.
+ * Interface for agent plugins that can extend capabilities.
  *
- * Middleware provides tools and lifecycle hooks that run at specific points
+ * Plugins provide tools and lifecycle hooks that run at specific points
  * during agent execution. Hooks that duplicate AI SDK functionality are avoided.
  *
  * @example
  * ```ts
- * const myMiddleware: Middleware = {
- *   name: 'MyMiddleware',
+ * const myPlugin: Plugin = {
+ *   name: 'MyPlugin',
  *   tools: { myTool },
  *   modifySystemPrompt: (prompt) => prompt + '\\n\\nAdditional instructions...',
  *   onStreamReady: (writer) => writer.write({ type: 'data-status', data: { message: 'Ready' } }),
@@ -162,11 +164,11 @@ export interface SubAgent {
  * }
  * ```
  */
-export interface Middleware {
-    /** Display name of the middleware */
+export interface Plugin {
+    /** Display name of the plugin */
     name: string;
 
-    /** Optional collection of tools provided by this middleware to the agent */
+    /** Optional collection of tools provided by this plugin to the agent */
     tools?: Record<string, any>;
 
     /**
@@ -294,8 +296,8 @@ export interface VibeAgentConfig {
     maxRetries?: number;
     /** Callback for step progress updates (matches AI SDK's StepResult) */
     onStepFinish?: (stepResult: StepResult<ToolSet>) => void | Promise<void>;
-    /** Custom middleware to extend agent behavior */
-    middleware?: Middleware[];
+    /** Custom plugins to extend agent behavior */
+    plugins?: Plugin[];
     /** Enable telemetry for observability (default: false) */
     enableTelemetry?: boolean;
     /** The base directory for filesystem operations (e.g., 'workspace') */

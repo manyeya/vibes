@@ -1,11 +1,11 @@
 /**
- * Custom agent streaming response that properly integrates middleware writers.
+ * Custom agent streaming response that properly integrates plugin writers.
  *
  * The AI SDK's createAgentUIStreamResponse doesn't expose the writer,
- * so middleware can't send custom data parts (status, task updates, etc.).
+ * so plugins can't send custom data parts (status, task updates, etc.).
  *
  * This implementation uses createUIMessageStream to create a stream where we
- * can control the writer and pass it to the agent for middleware hooks.
+ * can control the writer and pass it to the agent for plugin hooks.
  */
 
 import type { VibeAgent } from './agent';
@@ -21,11 +21,11 @@ interface AgentStreamOptions {
 }
 
 /**
- * Creates a streaming response with proper middleware writer integration.
+ * Creates a streaming response with proper plugin writer integration.
  *
  * This follows the same pattern as the working /mimo-code/stream endpoint:
  * 1. Creates a UI message stream with execute function that receives writer
- * 2. Calls agent.stream() with the writer (triggers middleware onStreamReady hooks)
+ * 2. Calls agent.stream() with the writer (triggers plugin onStreamReady hooks)
  * 3. Uses writer.merge(result.toUIMessageStream()) to properly forward the agent's response
  *
  * The toUIMessageStream() method handles proper conversion of the agent's stream
@@ -40,11 +40,12 @@ export async function createDeepAgentStreamResponse(
     const stream = createUIMessageStream<VibesUIMessage>({
         async execute({ writer }) {
             // Call the agent's stream method with the writer
-            // The agent will call middleware onStreamReady hooks with this writer
+            // The agent will call plugin onStreamReady hooks with this writer
             const result = await agent.stream({
                 messages: uiMessages,
                 writer,
                 abortSignal,
+                
             });
 
             // Merge the agent's UI message stream into the writer

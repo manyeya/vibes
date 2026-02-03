@@ -4,15 +4,15 @@ import {
 } from 'ai';
 import { z } from 'zod';
 
-import { AgentUIMessage, Middleware, TodoItem } from '../core/types';
+import { VibesUIMessage, Plugin, TodoItem } from '../core/types';
 
 /**
- * Middleware that provides a structured Todo List capability,
+ * Plugin that provides a structured Todo List capability,
  * enabling the agent to plan and track its own progress.
  */
-export default class TodoListMiddleware implements Middleware {
-    name = 'TodoListMiddleware';
-    private writer?: UIMessageStreamWriter<AgentUIMessage>;
+export default class TodoListPlugin implements Plugin {
+    name = 'TodoListPlugin';
+    private writer?: UIMessageStreamWriter<VibesUIMessage>;
     private todos: TodoItem[] = [];
     private todosPath: string;
 
@@ -20,7 +20,7 @@ export default class TodoListMiddleware implements Middleware {
         this.todosPath = config.todosPath || 'workspace/todos.json';
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = writer;
     }
 

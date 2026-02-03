@@ -1,12 +1,13 @@
+// @ts-ignore - @ai-sdk/mcp is an optional dependency
 import { mcpTool } from '@ai-sdk/mcp';
-import { Middleware } from '../core/types';
+import { Plugin } from '../core/types';
 
 /**
- * Middleware that integrates MCP (Model Context Protocol) servers.
+ * Plugin that integrates MCP (Model Context Protocol) servers.
  * Allows agents to use tools from any MCP server compatible with AI SDK.
  */
-export class McpMiddleware implements Middleware {
-    name = 'McpMiddleware';
+export class McpPlugin implements Plugin {
+    name = 'McpPlugin';
     tools: Record<string, any> = {};
 
     constructor(private servers: Array<{ name: string; url: string }>) { }

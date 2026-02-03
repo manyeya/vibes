@@ -1,5 +1,5 @@
 import { tool, type UIMessageStreamWriter } from "ai";
-import { AgentUIMessage, Middleware } from "../core/types";
+import { VibesUIMessage, Plugin } from "../core/types";
 import z from "zod";
 import { $ } from "bun";
 import * as path from "path";
@@ -43,12 +43,12 @@ function getFileType(filePath: string): string {
 }
 
 /**
- * Middleware that grants the agent access to a specific directory
+ * Plugin that grants the agent access to a specific directory
  * on the host filesystem. Use Bun's native performance.
  */
-export default class FilesystemMiddleware implements Middleware {
-    name = 'FilesystemMiddleware';
-    private writer?: UIMessageStreamWriter<AgentUIMessage>;
+export default class FilesystemPlugin implements Plugin {
+    name = 'FilesystemPlugin';
+    private writer?: UIMessageStreamWriter<VibesUIMessage>;
     private baseDir: string;
     private trackedFilesPath: string;
     private trackedFiles: Set<string> = new Set();
@@ -62,7 +62,7 @@ export default class FilesystemMiddleware implements Middleware {
         await this.loadTrackedFiles();
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = writer;
     }
 
@@ -89,7 +89,7 @@ export default class FilesystemMiddleware implements Middleware {
             await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
             await fs.writeFile(fullPath, JSON.stringify(Array.from(this.trackedFiles), null, 2));
         } catch (e) {
-            console.error('[FilesystemMiddleware] Failed to persist tracked files:', e);
+            console.error('[FilesystemPlugin] Failed to persist tracked files:', e);
         }
     }
 

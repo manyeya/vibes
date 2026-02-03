@@ -2,10 +2,11 @@ import {
     tool,
     type UIMessageStreamWriter,
     type LanguageModel,
+    type EmbeddingModel,
     embed,
 } from 'ai';
 import { z } from 'zod';
-import { AgentUIMessage, Middleware, TaskItem } from '../core/types';
+import { VibesUIMessage, Plugin, TaskItem } from '../core/types';
 
 /**
  * A stored fact with its embedding vector.
@@ -48,7 +49,7 @@ export interface FactMatch {
 }
 
 /**
- * Configuration for SemanticMemoryMiddleware
+ * Configuration for SemanticMemoryPlugin
  */
 export interface SemanticMemoryConfig {
     /** Maximum facts to store (default: 200) */
@@ -60,7 +61,7 @@ export interface SemanticMemoryConfig {
     /** Whether to auto-extract facts from task completion (default: true) */
     autoExtract?: boolean;
     /** Embedding model to use (optional - falls back to keyword matching) */
-    embeddingModel?: LanguageModel;
+    embeddingModel?: EmbeddingModel;
 }
 
 /**
@@ -195,7 +196,7 @@ class SimpleVectorStore {
 }
 
 /**
- * SemanticMemoryMiddleware provides vector-based fact storage and retrieval.
+ * SemanticMemoryPlugin provides vector-based fact storage and retrieval.
  *
  * Features:
  * - Store facts with optional embeddings for semantic search
@@ -207,30 +208,31 @@ class SimpleVectorStore {
  * Uses simple cosine similarity for in-memory vector operations.
  * Can integrate with embedding models (OpenAI, etc.) for better semantic matching.
  */
-export class SemanticMemoryMiddleware implements Middleware {
-    name = 'SemanticMemoryMiddleware';
+export class SemanticMemoryPlugin implements Plugin {
+    name = 'SemanticMemoryPlugin';
 
-    private writer?: UIMessageStreamWriter<AgentUIMessage>;
-    private embeddingModel?: LanguageModel;
-    private config: Required<SemanticMemoryConfig>;
+    private writer?: UIMessageStreamWriter<VibesUIMessage>;
+    private embeddingModel?: EmbeddingModel;
+    private config: Omit<Required<SemanticMemoryConfig>, 'embeddingModel'> & { embeddingModel?: EmbeddingModel };
     private vectorStore: SimpleVectorStore;
 
     constructor(
-        embeddingModel?: LanguageModel,
+        embeddingModel?: EmbeddingModel,
         config: SemanticMemoryConfig = {}
     ) {
         this.embeddingModel = embeddingModel;
+        const effectiveModel = config.embeddingModel || embeddingModel;
         this.config = {
             maxFacts: config.maxFacts || 200,
             factsPath: config.factsPath || 'workspace/facts.json',
             similarityThreshold: config.similarityThreshold || 0.3,
             autoExtract: config.autoExtract ?? true,
-            embeddingModel: config.embeddingModel || embeddingModel,
+            embeddingModel: effectiveModel,
         };
         this.vectorStore = new SimpleVectorStore();
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<AgentUIMessage>) {
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.writer = writer;
     }
 
@@ -273,7 +275,7 @@ export class SemanticMemoryMiddleware implements Middleware {
     }
 
     /**
-     * Tools provided by the semantic memory middleware
+     * Tools provided by the semantic memory plugin
      */
     get tools() {
         return {
@@ -650,4 +652,4 @@ The AI will identify the most important facts and store them.`,
     }
 }
 
-export default SemanticMemoryMiddleware;
+export default SemanticMemoryPlugin;
