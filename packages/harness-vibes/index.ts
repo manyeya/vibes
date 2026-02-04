@@ -1,4 +1,5 @@
-/// <reference types="bun-types" />
+// Bun types are only available in Bun runtime
+// This file doesn't use Bun-specific APIs directly, so no reference needed
 
 import { openai } from '@ai-sdk/openai';
 import {
