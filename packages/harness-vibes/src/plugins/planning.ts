@@ -2,6 +2,7 @@ import {
     tool,
     type UIMessageStreamWriter,
     type LanguageModel,
+    generateText,
 } from 'ai';
 import { z } from 'zod';
 import TasksPlugin from './tasks';
@@ -35,6 +36,32 @@ export interface PlanEntry {
 }
 
 /**
+ * High-level project plan
+ */
+export interface Plan {
+    id: string;
+    title: string;
+    createdAt: string;
+    problem: string;
+    solution: string;
+    phases: Array<{ name: string; goal: string }>;
+    milestones: string[];
+    risks: string[];
+}
+
+/**
+ * Plan data returned by LLM
+ */
+interface PlanLLMOutput {
+    title: string;
+    problem: string;
+    solution: string;
+    phases: Array<{ name: string; goal: string }>;
+    milestones: string[];
+    risks: string[];
+}
+
+/**
  * PlanningPlugin composes TasksPlugin with deep agent planning features:
  * - Task recitation: Always-in-view current plan for attention manipulation
  * - Plan persistence: Save/load plans from filesystem
@@ -47,6 +74,8 @@ export class PlanningPlugin implements Plugin {
     private planPath: string;
     private maxRecitationTasks: number;
     private lastRecitedTasks: TaskItem[] = [];
+    private currentPlan?: Plan;
+    private model?: LanguageModel;
 
     // Compose TasksPlugin instead of extending to avoid type conflicts
     private tasksPlugin: TasksPlugin;
@@ -55,7 +84,9 @@ export class PlanningPlugin implements Plugin {
         model?: LanguageModel,
         config: PlanningConfig = {}
     ) {
-        this.tasksPlugin = new TasksPlugin(model, { tasksPath: config.planPath });
+        this.model = model;
+        // TasksPlugin uses its own path (workspace/tasks.json), separate from plan.md
+        this.tasksPlugin = new TasksPlugin(model, {});
         this.planPath = config.planPath || 'workspace/plan.md';
         this.maxRecitationTasks = config.maxRecitationTasks || 10;
     }
@@ -79,11 +110,22 @@ export class PlanningPlugin implements Plugin {
 
 ## Planning & Task Management
 
-Your current tasks are always visible in the plan above. Use these tools:
+**Planning Workflow:**
+1. Use \`create_plan()\` to generate a high-level project brief
+2. Use \`generate_tasks_from_plan()\` to create specific tasks from the plan
+3. Work through tasks sequentially, marking them complete as you go
+
+**Available Tools:**
+- \`create_plan(request)\` - Generate a high-level project plan (problem, solution, phases, milestones)
+- \`generate_tasks_from_plan()\` - Create specific actionable tasks from the current plan
 - \`save_plan()\` - Save the current task plan to a file
 - \`load_plan()\` - Load a task plan from a file
 - \`recite_plan()\` - Refresh and view your current task plan
 - \`create_subtask()\` - Create a subtask under an existing parent task
+
+**Task-Plan Linking:**
+Tasks generated from a plan include metadata.planId and metadata.planReference.
+This lets you trace each task back to the specific part of the plan it relates to.
 
 Remember: Focus on the current task. Mark it complete before moving to the next.
 `;
@@ -201,10 +243,397 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
         return entry + '\n';
     }
 
+    /**
+     * Format a plan as markdown for saving to plan.md
+     */
+    private formatPlanAsMarkdown(plan: Plan): string {
+        let content = `# Project Plan: ${plan.title}\n\n`;
+        content += `**Plan ID**: \`${plan.id}\`\n`;
+        content += `**Created**: ${plan.createdAt}\n\n`;
+
+        content += `## Problem Statement\n\n${plan.problem}\n\n`;
+
+        content += `## Proposed Solution\n\n${plan.solution}\n\n`;
+
+        if (plan.phases.length > 0) {
+            content += `## Phases\n\n`;
+            for (let i = 0; i < plan.phases.length; i++) {
+                const phase = plan.phases[i];
+                content += `${i + 1}. **${phase.name}** - ${phase.goal}\n`;
+            }
+            content += `\n`;
+        }
+
+        if (plan.milestones.length > 0) {
+            content += `## Milestones\n\n`;
+            for (const milestone of plan.milestones) {
+                content += `- [ ] ${milestone}\n`;
+            }
+            content += `\n`;
+        }
+
+        if (plan.risks.length > 0) {
+            content += `## Risks & Considerations\n\n`;
+            for (const risk of plan.risks) {
+                content += `- ${risk}\n`;
+            }
+            content += `\n`;
+        }
+
+        return content;
+    }
+
+    /**
+     * Save a plan to plan.md
+     */
+    private async savePlanToFile(plan: Plan, path?: string): Promise<void> {
+        const savePath = path || this.planPath;
+        const content = this.formatPlanAsMarkdown(plan);
+
+        const fs = await import('fs/promises');
+        const pathModule = await import('path');
+        const fullPath = pathModule.resolve(process.cwd(), savePath);
+
+        await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
+        await fs.writeFile(fullPath, content);
+    }
+
+    /**
+     * Load plan from plan.md
+     */
+    private async loadPlanFromFile(path?: string): Promise<Plan | null> {
+        const loadPath = path || this.planPath;
+        const fs = await import('fs/promises');
+        const pathModule = await import('path');
+        const fullPath = pathModule.resolve(process.cwd(), loadPath);
+
+        try {
+            const content = await fs.readFile(fullPath, 'utf-8');
+            return this.parsePlanFromMarkdown(content);
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Parse plan from markdown content
+     */
+    private parsePlanFromMarkdown(content: string): Plan | null {
+        // Extract Plan ID from frontmatter-like line
+        const planIdMatch = content.match(/\*\*Plan ID\*\*:\s*`([^`]+)`/);
+        const planId = planIdMatch ? planIdMatch[1] : `plan_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+
+        // Extract title
+        const titleMatch = content.match(/^# Project Plan:\s*(.+)$/m);
+        const title = titleMatch ? titleMatch[1] : 'Untitled Plan';
+
+        // Extract created date
+        const createdMatch = content.match(/\*\*Created\*\*:\s*([^\n]+)/);
+        const createdAt = createdMatch ? createdMatch[1].trim() : new Date().toISOString();
+
+        // Extract sections
+        const problemMatch = content.match(/## Problem Statement\n\n([\s\S]+?)(?=\n##|$)/);
+        const problem = problemMatch ? problemMatch[1].trim() : '';
+
+        const solutionMatch = content.match(/## Proposed Solution\n\n([\s\S]+?)(?=\n##|$)/);
+        const solution = solutionMatch ? solutionMatch[1].trim() : '';
+
+        // Extract phases
+        const phases: Array<{ name: string; goal: string }> = [];
+        const phasesMatch = content.match(/## Phases\n\n([\s\S]+?)(?=\n##|$)/);
+        if (phasesMatch) {
+            const phaseLines = phasesMatch[1].trim().split('\n');
+            for (const line of phaseLines) {
+                const phaseMatch = line.match(/^\d+\.\s*\*\*([^*]+)\*\*\s*-\s*(.+)$/);
+                if (phaseMatch) {
+                    phases.push({ name: phaseMatch[1].trim(), goal: phaseMatch[2].trim() });
+                }
+            }
+        }
+
+        // Extract milestones
+        const milestones: string[] = [];
+        const milestonesMatch = content.match(/## Milestones\n\n([\s\S]+?)(?=\n##|$)/);
+        if (milestonesMatch) {
+            const milestoneLines = milestonesMatch[1].trim().split('\n');
+            for (const line of milestoneLines) {
+                const milestoneMatch = line.match(/^-\s*\[\]\s*(.+)$/);
+                if (milestoneMatch) {
+                    milestones.push(milestoneMatch[1].trim());
+                }
+            }
+        }
+
+        // Extract risks
+        const risks: string[] = [];
+        const risksMatch = content.match(/## Risks & Considerations\n\n([\s\S]+?)(?=$)/);
+        if (risksMatch) {
+            const riskLines = risksMatch[1].trim().split('\n');
+            for (const line of riskLines) {
+                const riskMatch = line.match(/^-\s*(.+)$/);
+                if (riskMatch) {
+                    risks.push(riskMatch[1].trim());
+                }
+            }
+        }
+
+        return {
+            id: planId,
+            title,
+            createdAt,
+            problem,
+            solution,
+            phases,
+            milestones,
+            risks,
+        };
+    }
+
     get tools(): any {
         const baseTools = this.tasksPlugin.tools;
 
         return Object.assign({}, baseTools, {
+
+            create_plan: tool({
+                description: `Create a high-level project plan with problem statement, solution approach, phases, and milestones.`,
+                inputSchema: z.object({
+                    request: z.string().describe('The user request to create a plan for'),
+                }),
+                execute: async ({ request }) => {
+                    if (!this.model) {
+                        return {
+                            success: false,
+                            error: 'No model available for plan generation',
+                        };
+                    }
+
+                    const { text } = await generateText({
+                        model: this.model,
+                        system: `You are a project planner. Create a high-level project brief with:
+1. Problem Statement - What problem are we solving?
+2. Proposed Solution - High-level approach, architecture, technical considerations
+3. Phases - 3-6 phases with clear goals (e.g., "Phase 1: Setup & Configuration")
+4. Milestones - Key deliverables and checkpoints
+5. Risks & Considerations - Potential issues to watch out for
+
+Output ONLY valid JSON matching this schema:
+{
+  "title": "Brief project title",
+  "problem": "What problem we're solving and why it matters",
+  "solution": "High-level approach, architecture, technologies",
+  "phases": [
+    {"name": "Phase name", "goal": "What this phase accomplishes"}
+  ],
+  "milestones": ["Milestone 1", "Milestone 2"],
+  "risks": ["Risk 1", "Risk 2"]
+}
+
+Keep each section concise but informative. Focus on clarity over verbosity.`,
+                        prompt: `Create a project plan for:\n\n${request}`,
+                    });
+
+                    // Parse JSON response
+                    let planData: PlanLLMOutput;
+                    try {
+                        const jsonMatch = text.match(/```json\s*(\{[\s\S]*\})\s*```/) ||
+                            text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
+                            text.match(/(\{[\s\S]*\})/);
+                        if (!jsonMatch) {
+                            throw new Error('No JSON found in response');
+                        }
+                        planData = JSON.parse(jsonMatch[1]);
+                    } catch (e) {
+                        return {
+                            success: false,
+                            error: `Failed to parse plan generation: ${e}. Response was: ${text.slice(0, 200)}`,
+                        };
+                    }
+
+                    // Create plan object
+                    const planId = `plan_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+                    const plan: Plan = {
+                        id: planId,
+                        title: planData.title,
+                        createdAt: new Date().toISOString(),
+                        problem: planData.problem,
+                        solution: planData.solution,
+                        phases: planData.phases || [],
+                        milestones: planData.milestones || [],
+                        risks: planData.risks || [],
+                    };
+
+                    // Save plan
+                    this.currentPlan = plan;
+                    await this.savePlanToFile(plan);
+
+                    this.writer?.write({
+                        type: 'data-status',
+                        data: { message: `Plan created: ${plan.title}` },
+                    });
+
+                    return {
+                        success: true,
+                        planId: plan.id,
+                        title: plan.title,
+                        phases: plan.phases.length,
+                        milestones: plan.milestones.length,
+                    };
+                },
+            }),
+
+            generate_tasks_from_plan: tool({
+                description: `Generate specific actionable tasks from the current plan. Tasks will include planId and planReference in metadata.`,
+                inputSchema: z.object({
+                    maxTasks: z.number().optional().default(8).describe('Maximum number of tasks to generate'),
+                }),
+                execute: async ({ maxTasks }) => {
+                    if (!this.model) {
+                        return {
+                            success: false,
+                            error: 'No model available for task generation',
+                        };
+                    }
+
+                    // Load current plan if not in memory
+                    let plan = this.currentPlan;
+                    if (!plan) {
+                        plan = await this.loadPlanFromFile() || undefined;
+                    }
+
+                    if (!plan) {
+                        return {
+                            success: false,
+                            error: 'No plan found. Use create_plan() first.',
+                        };
+                    }
+
+                    // Build plan context for LLM
+                    const planContext = `
+## Plan: ${plan.title}
+**Plan ID**: ${plan.id}
+
+### Problem
+${plan.problem}
+
+### Solution
+${plan.solution}
+
+### Phases
+${plan.phases.map((p, i) => `${i + 1}. ${p.name} - ${p.goal}`).join('\n')}
+
+### Milestones
+${plan.milestones.map(m => `- ${m}`).join('\n')}
+`;
+
+                    const { text } = await generateText({
+                        model: this.model,
+                        system: `You are a task planner. Break down the plan into specific, actionable tasks.
+
+RULES:
+1. Create 3-${maxTasks} tasks maximum
+2. Each task must be SPECIFIC and ACTIONABLE
+3. Include actual file paths when relevant
+4. Tasks should follow the phase structure
+5. Each task must reference which part of the plan it relates to
+6. DO NOT create generic tasks like "analyze" or "implement"
+7. Focus on WHAT files to change and WHAT changes to make
+
+Output ONLY valid JSON, no markdown:
+{
+  "tasks": [
+    {
+      "title": "Specific task title",
+      "description": "What exactly to do, with file paths",
+      "planPhase": "Phase name this task belongs to",
+      "planReference": "## Phases > Phase name > specific goal",
+      "priority": "high",
+      "fileReferences": ["path/to/file"]
+    }
+  ]
+}
+
+The planReference field should be a clear path to the plan section so you can trace back.`,
+                        prompt: `Generate tasks from this plan:\n\n${planContext}`,
+                    });
+
+                    // Parse JSON response
+                    let tasksData: { tasks: any[] };
+                    try {
+                        const jsonMatch = text.match(/```json\s*(\{[\s\S]*\})\s*```/) ||
+                            text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
+                            text.match(/(\{[\s\S]*\})/);
+                        if (!jsonMatch) {
+                            throw new Error('No JSON found in response');
+                        }
+                        tasksData = JSON.parse(jsonMatch[1]);
+                    } catch (e) {
+                        return {
+                            success: false,
+                            error: `Failed to parse task generation: ${e}. Response was: ${text.slice(0, 200)}`,
+                        };
+                    }
+
+                    // Create tasks with plan metadata
+                    const now = new Date().toISOString();
+                    const createdTasks: TaskItem[] = [];
+
+                    for (let i = 0; i < tasksData.tasks.length; i++) {
+                        const taskDef = tasksData.tasks[i];
+                        const id = `task_${Date.now()}_${i}`;
+
+                        // Handle dependencies (previous tasks)
+                        const blockedBy = i > 0 ? [`task_${Date.now()}_${i - 1}`] : [];
+
+                        const newTask: TaskItem = {
+                            id,
+                            title: taskDef.title,
+                            description: taskDef.description,
+                            status: i === 0 ? 'pending' : 'blocked',
+                            priority: taskDef.priority || 'medium',
+                            createdAt: now,
+                            updatedAt: now,
+                            blocks: [],
+                            blockedBy,
+                            fileReferences: taskDef.fileReferences || [],
+                            taskReferences: [],
+                            urlReferences: [],
+                            metadata: {
+                                planId: plan.id,
+                                planPhase: taskDef.planPhase || '',
+                                planReference: taskDef.planReference || '',
+                            },
+                            tags: [],
+                        };
+
+                        // Update previous task's blocks
+                        if (i > 0 && createdTasks[i - 1]) {
+                            createdTasks[i - 1].blocks.push(id);
+                        }
+
+                        createdTasks.push(newTask);
+                        await this.tasksPlugin.addTask(newTask);
+
+                        this.writer?.write({
+                            type: 'data-task_update',
+                            data: { id: newTask.id, status: newTask.status, title: newTask.title },
+                        });
+                    }
+
+                    // Persist tasks
+                    await (this.tasksPlugin as any).persistTasks();
+
+                    return {
+                        success: true,
+                        message: `Generated ${createdTasks.length} tasks from plan "${plan.title}"`,
+                        planId: plan.id,
+                        tasks: createdTasks.map(t => ({
+                            id: t.id,
+                            title: t.title,
+                            planPhase: t.metadata.planPhase,
+                        })),
+                    };
+                },
+            }),
 
             save_plan: tool({
                 description: `Save the current task plan to a file for persistence and cross-session continuity.`,
