@@ -12,8 +12,8 @@ const sessionBackend = new SqliteBackend('workspace/vibes.db', 'default');
 
 const mimoSchema = z.object({
     messages: z.array(z.any()),
-    session_id: z.string().optional(),
-});
+    session_id: z.string().nullable().optional(),
+}).passthrough();
 
 const app = new Hono();
 
@@ -59,7 +59,7 @@ app.get('/sessions/:id', async (c) => {
 
         // Get files for this session
         const tempBackend = new SqliteBackend('workspace/vibes.db', sessionId);
-   
+
 
         return c.json({
             success: true,
@@ -173,7 +173,7 @@ app.get('/sessions/:id/files', async (c) => {
     try {
         const sessionId = c.req.param('id');
         const tempBackend = new SqliteBackend('workspace/vibes.db', sessionId);
-       
+
 
         return c.json({
             success: true,

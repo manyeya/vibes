@@ -145,6 +145,24 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     }
 
     /**
+     * Set up plugin dependencies after all plugins are added.
+     * This wires up plugins that need references to other plugins.
+     */
+    protected setupPluginDependencies(): void {
+        // Find TasksPlugin
+        const tasksPlugin = this.plugins.find((p: any) => p.name === 'TasksPlugin' || p.constructor?.name === 'TasksPlugin');
+
+        // Wire up ReflexionPlugin with TasksPlugin
+        for (const plugin of this.plugins) {
+            if ((plugin as any).name === 'ReflexionPlugin' && tasksPlugin) {
+                if ((plugin as any).setTasksPlugin) {
+                    (plugin as any).setTasksPlugin(tasksPlugin);
+                }
+            }
+        }
+    }
+
+    /**
      * Override the tools getter to provide dynamic tools from plugins.
      * This is called by ToolLoopAgent before each generate/stream.
      */
@@ -156,6 +174,8 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
      * Preload tools during construction for initial tools getter value.
      */
     protected async preloadTools(): Promise<void> {
+        // Setup plugin dependencies before any plugin operations
+        this.setupPluginDependencies();
         this.toolCache = await this.getAllTools();
     }
 

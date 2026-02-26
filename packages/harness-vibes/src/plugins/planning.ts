@@ -6,7 +6,7 @@ import {
 } from 'ai';
 import { z } from 'zod';
 import TasksPlugin from './tasks';
-import { VibesUIMessage, TaskItem, Plugin, type ModelMessage } from '../core/types';
+import { VibesUIMessage, TaskItem, Plugin, TaskType, type ModelMessage } from '../core/types';
 
 /**
  * Planning configuration options
@@ -44,7 +44,8 @@ export interface Plan {
     createdAt: string;
     problem: string;
     solution: string;
-    phases: Array<{ name: string; goal: string }>;
+    requirements?: string[];
+    phases: Array<{ name: string; goal: string; steps?: string[] }>;
     milestones: string[];
     risks: string[];
 }
@@ -56,7 +57,8 @@ interface PlanLLMOutput {
     title: string;
     problem: string;
     solution: string;
-    phases: Array<{ name: string; goal: string }>;
+    requirements: string[];
+    phases: Array<{ name: string; goal: string; steps?: string[] }>;
     milestones: string[];
     risks: string[];
 }
@@ -255,11 +257,24 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
 
         content += `## Proposed Solution\n\n${plan.solution}\n\n`;
 
+        if (plan.requirements && plan.requirements.length > 0) {
+            content += `## Requirements\n\n`;
+            for (const req of plan.requirements) {
+                content += `- ${req}\n`;
+            }
+            content += `\n`;
+        }
+
         if (plan.phases.length > 0) {
             content += `## Phases\n\n`;
             for (let i = 0; i < plan.phases.length; i++) {
                 const phase = plan.phases[i];
                 content += `${i + 1}. **${phase.name}** - ${phase.goal}\n`;
+                if (phase.steps && phase.steps.length > 0) {
+                    for (const step of phase.steps) {
+                        content += `   - ${step}\n`;
+                    }
+                }
             }
             content += `\n`;
         }
@@ -338,17 +353,43 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
         const solutionMatch = content.match(/## Proposed Solution\n\n([\s\S]+?)(?=\n##|$)/);
         const solution = solutionMatch ? solutionMatch[1].trim() : '';
 
-        // Extract phases
-        const phases: Array<{ name: string; goal: string }> = [];
-        const phasesMatch = content.match(/## Phases\n\n([\s\S]+?)(?=\n##|$)/);
-        if (phasesMatch) {
-            const phaseLines = phasesMatch[1].trim().split('\n');
-            for (const line of phaseLines) {
-                const phaseMatch = line.match(/^\d+\.\s*\*\*([^*]+)\*\*\s*-\s*(.+)$/);
-                if (phaseMatch) {
-                    phases.push({ name: phaseMatch[1].trim(), goal: phaseMatch[2].trim() });
+        // Extract requirements
+        const requirements: string[] = [];
+        const requirementsMatch = content.match(/## Requirements\n\n([\s\S]+?)(?=\n##|$)/);
+        if (requirementsMatch) {
+            const reqLines = requirementsMatch[1].trim().split('\n');
+            for (const line of reqLines) {
+                const reqMatch = line.match(/^-\s*(.+)$/);
+                if (reqMatch) {
+                    requirements.push(reqMatch[1].trim());
                 }
             }
+        }
+
+        // Extract phases
+        const phases: Array<{ name: string; goal: string; steps?: string[] }> = [];
+        const phasesMatch = content.match(/## Phases\n\n([\s\S]+?)(?=\n##|$)/);
+        if (phasesMatch) {
+            const lines = phasesMatch[1].trim().split('\n');
+            let currentPhase: { name: string; goal: string; steps: string[] } | null = null;
+
+            for (const line of lines) {
+                const phaseMatch = line.match(/^\d+\.\s*\*\*([^*]+)\*\*\s*-\s*(.+)$/);
+                if (phaseMatch) {
+                    if (currentPhase) phases.push(currentPhase);
+                    currentPhase = {
+                        name: phaseMatch[1].trim(),
+                        goal: phaseMatch[2].trim(),
+                        steps: []
+                    };
+                } else {
+                    const stepMatch = line.match(/^\s*-\s*(.+)$/);
+                    if (stepMatch && currentPhase) {
+                        currentPhase.steps.push(stepMatch[1].trim());
+                    }
+                }
+            }
+            if (currentPhase) phases.push(currentPhase);
         }
 
         // Extract milestones
@@ -383,6 +424,7 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
             createdAt,
             problem,
             solution,
+            requirements,
             phases,
             milestones,
             risks,
@@ -409,26 +451,42 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
 
                     const { text } = await generateText({
                         model: this.model,
-                        system: `You are a project planner. Create a high-level project brief with:
-1. Problem Statement - What problem are we solving?
-2. Proposed Solution - High-level approach, architecture, technical considerations
-3. Phases - 3-6 phases with clear goals (e.g., "Phase 1: Setup & Configuration")
-4. Milestones - Key deliverables and checkpoints
-5. Risks & Considerations - Potential issues to watch out for
+                        system: `You are an expert Project Architect and Lead Planner. Your goal is to create a COMPREHENSIVE, SOLID, and HIGHLY DETAILED project plan.
+No matter how simple the request, you must provide a "professional grade" plan that covers all bases.
+
+### Rarity & Rigor
+- If it's Software Development: Consider PRD requirements, Design System tokens/components, Technical Architecture (patterns, states, APIs), Testing, and Deployment.
+- If it's Content/Design: Consider Style Guides, Audience Personas, Distribution channels, and Quality benchmarks.
+- If it's Research: Consider Methodology, Data Sources, Validation checks, and Reporting structures.
+
+### Plan Sections Required:
+1. **Problem Statement**: Deep analysis of context, constraints, and success criteria.
+2. **Proposed Solution**: Architectural overview, design patterns, and core logic.
+3. **Detailed Requirements**: A list of specific functional and non-functional requirements.
+4. **Implementation Phases**: 3-6 phases. Each phase MUST have:
+   - A name and a high-level goal.
+   - A list of **specific steps** or sub-tasks that will turn that goal into reality.
+5. **Measurable Milestones**: Concrete deliverables with clear criteria.
+6. **Detailed Risk Analysis**: Identify technical/domain risks and provide specific mitigations.
 
 Output ONLY valid JSON matching this schema:
 {
-  "title": "Brief project title",
-  "problem": "What problem we're solving and why it matters",
-  "solution": "High-level approach, architecture, technologies",
+  "title": "Professional Project Title",
+  "problem": "Comprehensive multi-paragraph problem analysis...",
+  "solution": "Detailed architectural solution describing the 'how'...",
+  "requirements": ["Requirement 1", "Requirement 2", ...],
   "phases": [
-    {"name": "Phase name", "goal": "What this phase accomplishes"}
+    {
+      "name": "Phase Name", 
+      "goal": "Broad objective",
+      "steps": ["Detailed sub-step 1", "Detailed sub-step 2", ...]
+    }
   ],
-  "milestones": ["Milestone 1", "Milestone 2"],
-  "risks": ["Risk 1", "Risk 2"]
+  "milestones": ["Deliverable/Checkpoint 1", ...],
+  "risks": ["Risk description with mitigation strategy", ...]
 }
 
-Keep each section concise but informative. Focus on clarity over verbosity.`,
+NEVER be concise. Be exhaustive. Break every objective down into its smallest actionable components.`,
                         prompt: `Create a project plan for:\n\n${request}`,
                     });
 
@@ -457,6 +515,7 @@ Keep each section concise but informative. Focus on clarity over verbosity.`,
                         createdAt: new Date().toISOString(),
                         problem: planData.problem,
                         solution: planData.solution,
+                        requirements: planData.requirements || [],
                         phases: planData.phases || [],
                         milestones: planData.milestones || [],
                         risks: planData.risks || [],
@@ -518,8 +577,17 @@ ${plan.problem}
 ### Solution
 ${plan.solution}
 
+### Requirements
+${(plan.requirements || []).map(r => `- ${r}`).join('\n')}
+
 ### Phases
-${plan.phases.map((p, i) => `${i + 1}. ${p.name} - ${p.goal}`).join('\n')}
+${plan.phases.map((p, i) => {
+                        let s = `${i + 1}. ${p.name} - ${p.goal}`;
+                        if (p.steps && p.steps.length > 0) {
+                            s += '\n' + p.steps.map(step => `   - ${step}`).join('\n');
+                        }
+                        return s;
+                    }).join('\n')}
 
 ### Milestones
 ${plan.milestones.map(m => `- ${m}`).join('\n')}
@@ -527,32 +595,32 @@ ${plan.milestones.map(m => `- ${m}`).join('\n')}
 
                     const { text } = await generateText({
                         model: this.model,
-                        system: `You are a task planner. Break down the plan into specific, actionable tasks.
+                        system: `You are an expert Implementation Engineer. Your job is to translate a project plan into high-fidelity, actionable tasks.
 
 RULES:
-1. Create 3-${maxTasks} tasks maximum
-2. Each task must be SPECIFIC and ACTIONABLE
-3. Include actual file paths when relevant
-4. Tasks should follow the phase structure
-5. Each task must reference which part of the plan it relates to
-6. DO NOT create generic tasks like "analyze" or "implement"
-7. Focus on WHAT files to change and WHAT changes to make
+1. Create 3-${maxTasks} tasks.
+2. Each task MUST be extremely SPECIFIC, TECHNICAL, and ACTIONABLE.
+3. Reference EXACT files and line areas where possible (e.g., "In src/components/button.tsx, add the following props...").
+4. Tasks MUST be sequential and follow the plan's phases.
+5. For each task, provide a robust description that leaves NO ambiguity about the implementation steps.
+6. If the plan mentions specific requirements or architecture, incorporate those into the task details.
+7. Focus on DELIVERABLES and concrete CHANGES.
 
-Output ONLY valid JSON, no markdown:
+Output ONLY valid JSON, no markdown formatting:
 {
   "tasks": [
     {
-      "title": "Specific task title",
-      "description": "What exactly to do, with file paths",
+      "title": "Clear technical title",
+      "description": "Deeply detailed implementation instructions including logic, styles, and edge cases.",
       "planPhase": "Phase name this task belongs to",
-      "planReference": "## Phases > Phase name > specific goal",
+      "planReference": "Specific plan section (e.g., Phase 1 -> Step 2)",
       "priority": "high",
       "fileReferences": ["path/to/file"]
     }
   ]
 }
 
-The planReference field should be a clear path to the plan section so you can trace back.`,
+The planReference field should be a clear path to the plan section so you can trace back exactly why this task exists.`,
                         prompt: `Generate tasks from this plan:\n\n${planContext}`,
                     });
 
@@ -586,6 +654,7 @@ The planReference field should be a clear path to the plan section so you can tr
 
                         const newTask: TaskItem = {
                             id,
+                            type: TaskType.UserRequest,
                             title: taskDef.title,
                             description: taskDef.description,
                             status: i === 0 ? 'pending' : 'blocked',
@@ -764,6 +833,7 @@ The planReference field should be a clear path to the plan section so you can tr
 
                     const subtask: TaskItem = {
                         id: subtaskId,
+                        type: TaskType.SubTask,
                         title,
                         description,
                         status: 'blocked',

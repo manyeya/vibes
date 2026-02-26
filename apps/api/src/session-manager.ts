@@ -3,15 +3,15 @@ import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { LanguageModel, wrapLanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { mimoCodePrompt } from './prompts/mimo-code';
-import { createZhipu} from 'zhipu-ai-provider';
+import { createZhipu } from 'zhipu-ai-provider';
 import { dotenvLoad } from 'dotenv-mono';
 import { webSearch } from "@exalabs/ai-sdk";
 // Load env vars from root .env (automatically walks up directories)
 dotenvLoad();
 
 const zhipu = createZhipu({
-  baseURL: 'https://api.z.ai/api/paas/v4',
-  apiKey: process.env.ZHIPU_API_KEY,
+    baseURL: 'https://api.z.ai/api/paas/v4',
+    apiKey: process.env.ZHIPU_API_KEY,
 });
 
 const model = wrapLanguageModel({
@@ -43,7 +43,7 @@ class SessionManager {
         let instance = this.sessions.get(sessionId);
 
         if (!instance) {
-            
+
             // Create new agent instance for this session
             const agent = new DeepAgent({
                 maxContextMessages: 30,
@@ -52,8 +52,8 @@ class SessionManager {
                 maxSteps: 60,
                 sessionId: sessionId,
                 dbPath: this.dbPath,
-                tools:{
-                      webSearch: webSearch() as any,
+                tools: {
+                    webSearch: webSearch() as any,
                 },
                 subAgents: [
                     {
@@ -112,7 +112,7 @@ class SessionManager {
                         - **Visual Design**: High-end aesthetics and layout.
                         - **Implementation**: Writing clean, robust, and performant code.
                         - **Component Architecture**: Scalable design systems.`,
-                        allowedTools: ["writeFile", "readFile", "bash","activate_skill"],
+                        allowedTools: ["writeFile", "readFile", "bash", "activate_skill"],
                     },
                     {
                         name: 'BrowserAgent',
@@ -123,7 +123,7 @@ class SessionManager {
                         - **Research**: Find design inspiration or technical solutions on the web.
                         - **UI Testing**: Automate browser actions to verify functionality and accessibility.
                         - **Visual Auditing**: Check for visual regressions and layout issues.`,
-                        allowedTools: ["writeFile", "readFile", "bash","activate_skill"]
+                        allowedTools: ["writeFile", "readFile", "bash", "activate_skill"]
                     }
                 ]
             });

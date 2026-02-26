@@ -15,6 +15,18 @@ if (NODE_ENV === 'production' && !process.env.OPENAI_API_KEY) {
 
 const app = new Hono();
 
+app.use('/api/*', async (c, next) => {
+  if (c.req.method === 'POST') {
+    try {
+      const body = await c.req.raw.clone().json();
+      logger.info({ body, path: c.req.path }, 'Incoming POST request');
+    } catch (e) {
+      // Not JSON or other error
+    }
+  }
+  await next();
+});
+
 app.use('/*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],

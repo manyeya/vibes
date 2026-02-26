@@ -4,6 +4,7 @@
 import { openai } from '@ai-sdk/openai';
 import {
     SkillsPlugin,
+    TasksPlugin,
     PlanningPlugin,
     ReasoningPlugin,
     ReflexionPlugin,
@@ -39,6 +40,7 @@ import {
     SubAgent,
     TaskItem,
     TaskTemplate,
+    TaskType,
     VibesDataParts,
     VibesUIMessage,
     createDataStreamWriter,
@@ -274,10 +276,12 @@ export {
     type AgentUIMessage,
     type TaskItem,
     type TaskTemplate,
+    TaskType,
     type VibesDataParts,
     type VibesUIMessage,
     createDataStreamWriter,
     DataStreamWriter,
+    TasksPlugin,
     PlanningPlugin,
     ReasoningPlugin,
     ReflexionPlugin,
