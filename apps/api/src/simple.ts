@@ -1,5 +1,4 @@
 import { DeepAgent } from "harness-vibes";
-import { mimoCodePrompt } from "./prompts/mimo-code";
 import { dotenvLoad } from "dotenv-mono";
 import { wrapLanguageModel } from "ai";
 import { createZhipu } from "zhipu-ai-provider";

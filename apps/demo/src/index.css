@@ -14,6 +14,16 @@ code {
     monospace;
 }
 
+/* ============ OVERFLOW HELPERS ============ */
+.overflow-wrap-break-word {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.min-w-0 {
+  min-width: 0;
+}
+
 /* ============ STREAMDOWN STYLES ============ */
 .streamdown h1 {
   font-size: 1.5rem;
@@ -89,8 +99,11 @@ code {
   border-radius: 0.5rem;
   padding: 0.75rem;
   overflow-x: auto;
+  overflow-y: visible;
   margin-top: 0.75rem;
   margin-bottom: 0.75rem;
+  min-height: 2rem;
+  max-width: 100%;
 }
 
 .streamdown pre code {

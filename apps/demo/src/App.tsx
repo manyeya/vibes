@@ -31,6 +31,19 @@ import { cn } from './lib/utils';
 import { DataPartRenderer, isDataPart, reasoningConfig, ReasoningModePart } from './components/data-parts';
 import { TextPart, ReasoningPart, ToolResultPart } from './components/message-parts';
 
+// Import new Vercel-style UI components
+import { Button } from './components/ui/Button';
+import { Textarea } from './components/ui/Input';
+import { Card } from './components/ui/Card';
+import { Badge } from './components/ui/Badge';
+import { Avatar } from './components/ui/Avatar';
+import { IconButton } from './components/ui/IconButton';
+import { Skeleton } from './components/ui/Skeleton';
+import { Divider } from './components/ui/Divider';
+import { ChatBubble } from './components/chat/ChatBubble';
+import { TypingIndicator } from './components/chat/TypingIndicator';
+import { SessionCard } from './components/chat/SessionCard';
+
 // ============ TYPES ============
 interface Session {
   id: string;
@@ -85,12 +98,12 @@ const AgentStatusPanel = ({ status, isOpen, onToggle }: AgentStatusPanelProps) =
     }
   };
 
-  const getModeColor = (mode: string) => {
+  const getModeBadgeVariant = (mode: string): 'cyan' | 'violet' | 'amber' => {
     switch (mode) {
-      case 'tot': return 'text-violet-400';
-      case 'plan-execute': return 'text-amber-400';
-      case 'react': return 'text-cyan-400';
-      default: return 'text-cyan-400';
+      case 'tot': return 'violet';
+      case 'plan-execute': return 'amber';
+      case 'react': return 'cyan';
+      default: return 'cyan';
     }
   };
 
@@ -105,18 +118,28 @@ const AgentStatusPanel = ({ status, isOpen, onToggle }: AgentStatusPanelProps) =
     }
   };
 
-  const getStatusColor = (taskStatus: string) => {
+  const getStatusBadgeVariant = (taskStatus: string): 'zinc' | 'amber' | 'emerald' | 'red' => {
     switch (taskStatus) {
-      case 'in_progress': return 'text-yellow-400';
-      case 'completed': return 'text-emerald-400';
-      case 'blocked': return 'text-red-400';
-      case 'failed': return 'text-red-400';
+      case 'in_progress': return 'amber';
+      case 'completed': return 'emerald';
+      case 'blocked': return 'red';
+      case 'failed': return 'red';
       case 'pending':
-      default: return 'text-zinc-500';
+      default: return 'zinc';
     }
   };
 
-  const getPriorityColor = (priority?: string) => {
+  const getPriorityBadgeVariant = (priority?: string): 'red' | 'amber' | 'emerald' | 'zinc' => {
+    switch (priority) {
+      case 'critical': return 'red';
+      case 'high': return 'amber';
+      case 'medium': return 'amber';
+      case 'low': return 'emerald';
+      default: return 'zinc';
+    }
+  };
+
+  const getPriorityColor = (priority?: string): string => {
     switch (priority) {
       case 'critical': return 'bg-red-500';
       case 'high': return 'bg-orange-500';
@@ -137,12 +160,11 @@ const AgentStatusPanel = ({ status, isOpen, onToggle }: AgentStatusPanelProps) =
           <Activity className="w-4 h-4 text-cyan-400" />
           <span className="text-sm font-medium text-zinc-200">Agent Status</span>
         </div>
-        <button
+        <IconButton
+          icon={<Settings2 className={cn("w-4 h-4 transition-transform", isOpen && "rotate-90")} />}
+          label="Toggle panel"
           onClick={onToggle}
-          className="p-1 rounded hover:bg-zinc-800 transition-colors"
-        >
-          <Settings2 className={cn("w-4 h-4 text-zinc-500 transition-transform", isOpen && "rotate-90")} />
-        </button>
+        />
       </div>
 
       <AnimatePresence>
@@ -155,23 +177,23 @@ const AgentStatusPanel = ({ status, isOpen, onToggle }: AgentStatusPanelProps) =
           >
             <div className="p-4 space-y-4">
               {/* Reasoning Mode */}
-              <div className="p-3 rounded-lg bg-gradient-to-r from-cyan-500/10 to-violet-500/10 border border-cyan-500/20">
+              <Card gradient hover>
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs text-zinc-500">Reasoning Mode</span>
                   {status.isProcessing && (
-                    <span className="flex items-center gap-1 text-xs text-cyan-400">
-                      <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse" />
+                    <Badge variant="cyan" size="sm">
+                      <span className="w-1 h-1 bg-cyan-400 rounded-full animate-pulse mr-1" />
                       Processing
-                    </span>
+                    </Badge>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-lg">{getModeIcon(status.reasoningMode)}</span>
-                  <span className={cn("text-sm font-medium", getModeColor(status.reasoningMode))}>
+                  <Badge variant={getModeBadgeVariant(status.reasoningMode)} size="md">
                     {getModeLabel(status.reasoningMode)}
-                  </span>
+                  </Badge>
                 </div>
-              </div>
+              </Card>
 
               {/* Memory Systems */}
               <div>
@@ -180,21 +202,21 @@ const AgentStatusPanel = ({ status, isOpen, onToggle }: AgentStatusPanelProps) =
                   <span className="text-xs font-medium text-zinc-400">Memory Systems</span>
                 </div>
                 <div className="grid grid-cols-3 gap-2">
-                  <div className="p-2 rounded-lg bg-zinc-800/50 text-center">
+                  <Card hover className="p-2 text-center">
                     <Lightbulb className="w-3.5 h-3.5 text-amber-400 mx-auto mb-1" />
                     <div className="text-lg font-semibold text-white">{status.lessonsLearned}</div>
                     <div className="text-[9px] text-zinc-500">Lessons</div>
-                  </div>
-                  <div className="p-2 rounded-lg bg-zinc-800/50 text-center">
+                  </Card>
+                  <Card hover className="p-2 text-center">
                     <FileText className="w-3.5 h-3.5 text-blue-400 mx-auto mb-1" />
                     <div className="text-lg font-semibold text-white">{status.factsStored}</div>
                     <div className="text-[9px] text-zinc-500">Facts</div>
-                  </div>
-                  <div className="p-2 rounded-lg bg-zinc-800/50 text-center">
+                  </Card>
+                  <Card hover className="p-2 text-center">
                     <Network className="w-3.5 h-3.5 text-emerald-400 mx-auto mb-1" />
                     <div className="text-lg font-semibold text-white">{status.patternsCount}</div>
                     <div className="text-[9px] text-zinc-500">Patterns</div>
-                  </div>
+                  </Card>
                 </div>
               </div>
 
@@ -204,24 +226,27 @@ const AgentStatusPanel = ({ status, isOpen, onToggle }: AgentStatusPanelProps) =
                   <div className="flex items-center gap-2 mb-2">
                     <Zap className="w-3.5 h-3.5 text-yellow-400" />
                     <span className="text-xs font-medium text-zinc-400">
-                      Active Tasks ({activeTasks.length})
+                      Active Tasks
                     </span>
+                    <Badge variant="amber" size="sm">{activeTasks.length}</Badge>
                   </div>
                   <div className="space-y-1.5">
                     {activeTasks.slice(0, 5).map((task) => (
-                      <div key={task.id} className="flex items-center gap-2 p-2 rounded-lg bg-zinc-800/30">
-                        <span className={getStatusColor(task.status)}>
-                          {getStatusIcon(task.status)}
-                        </span>
-                        <span className={cn("text-xs truncate flex-1",
-                          task.status === 'pending' ? 'text-zinc-500' : 'text-zinc-300'
-                        )}>
-                          {task.title.length > 28 ? task.title.slice(0, 28) + '...' : task.title}
-                        </span>
-                        {task.priority && (
-                          <span className={cn("w-1.5 h-1.5 rounded-full", getPriorityColor(task.priority))} />
-                        )}
-                      </div>
+                      <Card key={task.id} hover className="p-2">
+                        <div className="flex items-center gap-2">
+                          <Badge variant={getStatusBadgeVariant(task.status)} size="sm">
+                            {getStatusIcon(task.status)}
+                          </Badge>
+                          <span className={cn("text-xs truncate flex-1",
+                            task.status === 'pending' ? 'text-zinc-500' : 'text-zinc-300'
+                          )}>
+                            {task.title.length > 28 ? task.title.slice(0, 28) + '...' : task.title}
+                          </span>
+                          {task.priority && (
+                            <span className={cn("w-1.5 h-1.5 rounded-full", getPriorityColor(task.priority))} />
+                          )}
+                        </div>
+                      </Card>
                     ))}
                     {activeTasks.length > 5 && (
                       <div className="text-[10px] text-zinc-600 text-center">
@@ -238,17 +263,20 @@ const AgentStatusPanel = ({ status, isOpen, onToggle }: AgentStatusPanelProps) =
                   <div className="flex items-center gap-2 mb-2">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                     <span className="text-xs font-medium text-zinc-400">
-                      Completed ({completedTasks.length})
+                      Completed
                     </span>
+                    <Badge variant="emerald" size="sm">{completedTasks.length}</Badge>
                   </div>
                   <div className="space-y-1">
                     {completedTasks.slice(-3).map((task) => (
-                      <div key={task.id} className="flex items-center gap-2 p-2 rounded-lg bg-zinc-800/20">
-                        <span className="text-emerald-400 text-xs">✓</span>
-                        <span className="text-xs text-zinc-500 truncate">
-                          {task.title.length > 30 ? task.title.slice(0, 30) + '...' : task.title}
-                        </span>
-                      </div>
+                      <Card key={task.id} hover className="p-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-emerald-400 text-xs">✓</span>
+                          <span className="text-xs text-zinc-500 truncate">
+                            {task.title.length > 30 ? task.title.slice(0, 30) + '...' : task.title}
+                          </span>
+                        </div>
+                      </Card>
                     ))}
                     {completedTasks.length > 3 && (
                       <div className="text-[10px] text-zinc-600 text-center">
@@ -267,26 +295,24 @@ const AgentStatusPanel = ({ status, isOpen, onToggle }: AgentStatusPanelProps) =
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   {['Planning', 'Tree-of-Thoughts', 'Semantic Memory', 'Reflexion', 'Procedural', 'Swarm'].map((cap) => (
-                    <span
-                      key={cap}
-                      className="px-2 py-0.5 text-[10px] rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20"
-                    >
+                    <Badge key={cap} variant="cyan" size="sm">
                       {cap}
-                    </span>
+                    </Badge>
                   ))}
                 </div>
               </div>
 
               {/* Token Usage */}
               {status.tokenCount > 0 && (
-                <div className="pt-2 border-t border-zinc-800">
+                <>
+                  <Divider />
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-zinc-500">Total Tokens</span>
                     <span className="text-zinc-300 font-mono">
                       {status.tokenCount.toLocaleString()}
                     </span>
                   </div>
-                </div>
+                </>
               )}
             </div>
           </motion.div>
@@ -342,7 +368,7 @@ const ApprovalCard = ({ toolName, args, approvalId, onApprove, onDeny }: Approva
           <Shield className="w-4 h-4 text-amber-400" />
           <div>
             <span className="text-sm font-medium text-white">Permission Required</span>
-            <span className="text-xs text-zinc-500 ml-2">{toolName}</span>
+            <Badge variant="amber" size="sm" className="ml-2">{toolName}</Badge>
           </div>
         </div>
         <ChevronDown className={cn("w-4 h-4 text-zinc-500 transition-transform", isExpanded && "rotate-180")} />
@@ -361,72 +387,25 @@ const ApprovalCard = ({ toolName, args, approvalId, onApprove, onDeny }: Approva
                 {formatJson(args)}
               </pre>
               <div className="flex gap-2">
-                <button
+                <Button
+                  variant="secondary"
+                  className="flex-1"
                   onClick={() => onDeny(approvalId)}
-                  className="flex-1 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm text-zinc-300 transition-colors"
                 >
                   Deny (N)
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="primary"
+                  className="flex-1"
                   onClick={() => onApprove(approvalId)}
-                  className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm text-white transition-colors"
                 >
                   Approve (Y)
-                </button>
+                </Button>
               </div>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
-    </motion.div>
-  );
-};
-
-// ============ SESSION ITEM ============
-interface SessionItemProps {
-  session: Session;
-  isActive: boolean;
-  onSelect: () => void;
-  onDelete: () => void;
-}
-
-const SessionItem = ({ session, isActive, onSelect, onDelete }: SessionItemProps) => {
-  return (
-    <motion.div
-      initial={{ opacity: 0, x: -10 }}
-      animate={{ opacity: 1, x: 0 }}
-      className={cn(
-        "group relative flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all",
-        isActive
-          ? "bg-cyan-500/10 border border-cyan-500/30"
-          : "hover:bg-zinc-800/50 border border-transparent"
-      )}
-      onClick={onSelect}
-    >
-      {isActive && <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-cyan-400 rounded-full" />}
-
-      <MessageSquare className={cn("w-4 h-4 shrink-0", isActive ? "text-cyan-400" : "text-zinc-500")} />
-
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium truncate text-zinc-200">
-          {session.metadata?.title || 'Untitled Session'}
-        </div>
-        <div className="text-[10px] text-zinc-600">
-          {session.messageCount} messages
-        </div>
-      </div>
-
-      {session.id !== 'default' && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-500/20 hover:text-red-400 text-zinc-600 transition-all"
-        >
-          <X className="w-3.5 h-3.5" />
-        </button>
-      )}
     </motion.div>
   );
 };
@@ -460,12 +439,11 @@ const SessionSidebar = ({
             <History className="w-4 h-4 text-zinc-400" />
             <h2 className="text-sm font-medium text-zinc-200">Sessions</h2>
           </div>
-          <button
+          <IconButton
+            icon={<Plus className="w-4 h-4" />}
+            label="New session"
             onClick={onNewSession}
-            className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
+          />
         </div>
 
         <div className="flex-1 overflow-y-auto p-3">
@@ -480,10 +458,12 @@ const SessionSidebar = ({
           ) : (
             <div className="space-y-1">
               {sessions.map((session) => (
-                <SessionItem
+                <SessionCard
                   key={session.id}
-                  session={session}
+                  id={session.id}
+                  title={session.metadata?.title}
                   isActive={session.id === currentSessionId}
+                  messageCount={session.messageCount}
                   onSelect={() => {
                     onSessionSelect(session.id);
                     onClose();
@@ -509,73 +489,92 @@ interface ChatMessageProps {
 const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
   const isUser = message.role === 'user';
   const parts = (message as any).parts || [];
-  const isEmptyAssistant = !isUser && parts.length === 0;
-  if (isEmptyAssistant) return null;
 
   const seenToolApprovals = new Set<string>();
   const seenToolResults = new Set<string>();
 
+  // Render parts and collect results
+  const renderedParts = parts.map((part: any, partIndex: number) => {
+    // Text content
+    if (part.type === 'text') {
+      return <TextPart key={`text-${partIndex}`} text={part.text} isUser={isUser} />;
+    }
+
+    // Thinking/reasoning
+    if (part.type === 'reasoning' || part.type === 'thinking') {
+      return <ReasoningPart key={`reasoning-${partIndex}`} text={part.text} />;
+    }
+
+    // Data parts - handle both wrapped and direct formats
+    if (isDataPart(part)) {
+      return <DataPartRenderer key={`data-${partIndex}`} part={part} />;
+    }
+    if (part.type === 'data' && isDataPart(part.data)) {
+      return <DataPartRenderer key={`data-${partIndex}`} part={part.data} />;
+    }
+
+    // Tool approvals
+    const needsApproval = part.state === 'call' || part.state === 'approval-requested' || part.state === 'input-available';
+    if (needsApproval && part.toolCallId && !seenToolApprovals.has(part.toolCallId) && part.approval?.id) {
+      seenToolApprovals.add(part.toolCallId);
+      return (
+        <ApprovalCard
+          key={`approval-${part.toolCallId}`}
+          toolName={part.toolName || part.name || 'Unknown Tool'}
+          args={part.args || part.input || {}}
+          approvalId={part.approval.id}
+          onApprove={onApprove}
+          onDeny={onDeny}
+        />
+      );
+    }
+
+    // Tool results
+    const isToolPart = part.type?.startsWith('tool-') || part.type === 'dynamic-tool';
+    const isComplete = ['output-available', 'output-error', 'output-denied'].includes(part.state);
+    if (isToolPart && isComplete && part.toolCallId && !seenToolResults.has(part.toolCallId)) {
+      seenToolResults.add(part.toolCallId);
+      return (
+        <ToolResultPart
+          key={`result-${part.toolCallId}`}
+          toolName={part.toolName || part.name}
+          isError={part.state === 'output-error' || part.state === 'output-denied'}
+        />
+      );
+    }
+
+    return null;
+  });
+
+  // Filter out null parts and check if any content was rendered
+  const hasContent = renderedParts.some((part: React.ReactNode) => part !== null) ||
+    (!isUser && (message as any).usage);
+
+  // Filter out empty assistant messages (no rendered content)
+  if (!isUser && !hasContent) return null;
+
+  // Use ChatBubble for simple text messages, custom layout for complex ones
+  const hasComplexContent = renderedParts.some((part: React.ReactNode) =>
+    part && (React.isValidElement(part) && part.type !== TextPart)
+  );
+
+  if (!hasComplexContent) {
+    // Simple text message - use ChatBubble
+    const textContent = parts.find((p: any) => p.type === 'text')?.text || '';
+    return (
+      <ChatBubble role={isUser ? 'user' : 'assistant'}>
+        {renderedParts}
+      </ChatBubble>
+    );
+  }
+
+  // Complex message with tool results/approvals - use custom layout
   return (
     <div className={cn("flex gap-3 mb-6", isUser && "flex-row-reverse")}>
-      <div className={cn(
-        "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
-        isUser ? "bg-zinc-800" : "bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border border-cyan-500/20"
-      )}>
-        {isUser ? <User className="w-4 h-4 text-zinc-400" /> : <Bot className="w-4 h-4 text-cyan-400" />}
-      </div>
+      <Avatar type={isUser ? 'user' : 'bot'} size="md" />
 
       <div className={cn("flex-1 space-y-2 min-w-0", isUser && "flex flex-col items-end")}>
-        {parts.map((part: any, partIndex: number) => {
-          // Text content
-          if (part.type === 'text') {
-            return <TextPart key={`text-${partIndex}`} text={part.text} isUser={isUser} />;
-          }
-
-          // Thinking/reasoning
-          if (part.type === 'reasoning' || part.type === 'thinking') {
-            return <ReasoningPart key={`reasoning-${partIndex}`} text={part.text} />;
-          }
-
-          // Data parts - handle both wrapped and direct formats
-          if (isDataPart(part)) {
-            return <DataPartRenderer key={`data-${partIndex}`} part={part} />;
-          }
-          if (part.type === 'data' && isDataPart(part.data)) {
-            return <DataPartRenderer key={`data-${partIndex}`} part={part.data} />;
-          }
-
-          // Tool approvals
-          const needsApproval = part.state === 'call' || part.state === 'approval-requested' || part.state === 'input-available';
-          if (needsApproval && part.toolCallId && !seenToolApprovals.has(part.toolCallId) && part.approval?.id) {
-            seenToolApprovals.add(part.toolCallId);
-            return (
-              <ApprovalCard
-                key={`approval-${part.toolCallId}`}
-                toolName={part.toolName || part.name || 'Unknown Tool'}
-                args={part.args || part.input || {}}
-                approvalId={part.approval.id}
-                onApprove={onApprove}
-                onDeny={onDeny}
-              />
-            );
-          }
-
-          // Tool results
-          const isToolPart = part.type?.startsWith('tool-') || part.type === 'dynamic-tool';
-          const isComplete = ['output-available', 'output-error', 'output-denied'].includes(part.state);
-          if (isToolPart && isComplete && part.toolCallId && !seenToolResults.has(part.toolCallId)) {
-            seenToolResults.add(part.toolCallId);
-            return (
-              <ToolResultPart
-                key={`result-${part.toolCallId}`}
-                toolName={part.toolName || part.name}
-                isError={part.state === 'output-error' || part.state === 'output-denied'}
-              />
-            );
-          }
-
-          return null;
-        })}
+        {renderedParts}
 
         {!isUser && (message as any).usage && (
           <div className="text-[9px] text-zinc-600 font-mono">
@@ -613,7 +612,7 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
       const { type, data } = dataPart;
       console.log("dataPart no fucking data:",dataPart);
       switch (type) {
-        
+
         // Reasoning mode updates - update agent status
         case 'data-reasoning_mode':
           onAgentStatusChange({ ...agentStatus, reasoningMode: data.mode });
@@ -784,57 +783,101 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
             </div>
           ) : messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-center">
-              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border border-cyan-500/20 flex items-center justify-center mb-4">
-                <Bot className="w-6 h-6 text-cyan-400" />
-              </div>
+              <Avatar type="bot" size="lg" className="mb-4" />
               <h2 className="text-lg font-medium text-white mb-1">Vibes</h2>
               <p className="text-sm text-zinc-500">Your Deep Agent assistant</p>
               <div className="mt-4 flex flex-wrap justify-center gap-2">
                 {['Planning', 'Tree-of-Thoughts', 'Memory', 'Reflexion', 'Swarm'].map((cap) => (
-                  <span key={cap} className="px-2 py-1 text-[10px] rounded-full bg-zinc-800 text-zinc-500">
+                  <Badge key={cap} variant="zinc" size="sm">
                     {cap}
-                  </span>
+                  </Badge>
                 ))}
               </div>
             </div>
           ) : (
             <AnimatePresence mode="popLayout">
-              {messages.map((message) => (
-                <ChatMessage
-                  key={message.id}
-                  message={message}
-                  onApprove={(id) => addToolApprovalResponse({ id, approved: true, reason: 'Approved' })}
-                  onDeny={(id) => addToolApprovalResponse({ id, approved: false, reason: 'user denied' })}
-                />
-              ))}
+              {messages.map((message) => {
+                // Pre-filter messages: skip assistant messages with no parts or empty parts
+                const parts = message.parts || [];
+                const isUser = message.role === 'user';
+
+                if (!isUser && parts.length === 0) {
+                  return null;
+                }
+
+                // Check if any part has actual content
+                const hasActualContent = parts.some((part: any) => {
+                  // Text with content
+                  if (part.type === 'text' && part.text) return true;
+                  // Reasoning with content
+                  if ((part.type === 'reasoning' || part.type === 'thinking') && part.text) return true;
+                  // Data parts
+                  if (part.type?.startsWith('data-')) return true;
+                  // Tool approvals with id
+                  if (part.approval?.id) return true;
+                  // Completed tool parts
+                  if ((part.type?.startsWith('tool-') || part.type === 'dynamic-tool') &&
+                      ['output-available', 'output-error', 'output-denied'].includes(part.state)) {
+                    return true;
+                  }
+                  return false;
+                });
+
+                if (!isUser && !hasActualContent) {
+                  return null;
+                }
+
+                return (
+                  <ChatMessage
+                    key={message.id}
+                    message={message}
+                    onApprove={(id) => addToolApprovalResponse({ id, approved: true, reason: 'Approved' })}
+                    onDeny={(id) => addToolApprovalResponse({ id, approved: false, reason: 'user denied' })}
+                  />
+                );
+              })}
             </AnimatePresence>
           )}
 
           {/* Loading indicator */}
-          {isLoading && !isLoadingHistory && messages.length > 0 && messages[messages.length - 1].role === 'user' && (
-            <div className="flex items-center gap-3 py-4">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border border-cyan-500/20 flex items-center justify-center">
-                <Bot className="w-4 h-4 text-cyan-400" />
-              </div>
-              <div className="flex items-center gap-1">
-                {[0, 1, 2].map((i) => (
-                  <motion.div
-                    key={i}
-                    className="w-1.5 h-1.5 bg-cyan-400 rounded-full"
-                    animate={{ scale: [1, 1.3, 1], opacity: [0.4, 1, 0.4] }}
-                    transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.15 }}
-                  />
-                ))}
-              </div>
-            </div>
+          {(() => {
+            const lastMessage = messages[messages.length - 1];
+            if (!lastMessage) return false;
+
+            const lastMessageParts = lastMessage.parts || [];
+
+            // Check if last message has actual content (matches the filter in messages.map)
+            const lastMessageHasActualContent = lastMessageParts.some((part: any) => {
+              // Text with content
+              if (part.type === 'text' && part.text) return true;
+              // Reasoning with content
+              if ((part.type === 'reasoning' || part.type === 'thinking') && part.text) return true;
+              // Data parts
+              if (part.type?.startsWith('data-')) return true;
+              // Tool approvals with id
+              if (part.approval?.id) return true;
+              // Completed tool parts
+              if ((part.type?.startsWith('tool-') || part.type === 'dynamic-tool') &&
+                  ['output-available', 'output-error', 'output-denied'].includes(part.state)) {
+                return true;
+              }
+              return false;
+            });
+
+            const shouldShowLoading = isLoading && !isLoadingHistory && messages.length > 0 && (
+              lastMessage.role === 'user' ||
+              (lastMessage.role === 'assistant' && !lastMessageHasActualContent)
+            );
+
+            return shouldShowLoading;
+          })() && (
+            <TypingIndicator />
           )}
 
           {/* Streaming data parts */}
           {dataParts.length > 0 && (
             <div className="flex items-start gap-3 py-2">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border border-cyan-500/20 flex items-center justify-center shrink-0">
-                <Bot className="w-4 h-4 text-cyan-400" />
-              </div>
+              <Avatar type="bot" size="md" />
               <div className="flex-1 space-y-2">
                 <AnimatePresence mode="popLayout">
                   {dataParts.map((part) => (
@@ -855,9 +898,9 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
 
           {/* Error */}
           {error && (
-            <div className="mb-4 p-3 rounded-lg border border-red-500/20 bg-red-500/5 text-sm text-red-400">
-              {error.message || 'An error occurred'}
-            </div>
+            <Card className="mb-4 border-red-500/20 bg-red-500/5">
+              <p className="text-sm text-red-400">{error.message || 'An error occurred'}</p>
+            </Card>
           )}
         </div>
       </div>
@@ -869,12 +912,12 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
             "flex items-end gap-2 bg-zinc-900 rounded-xl border p-2 transition-colors",
             document.activeElement?.tagName === 'TEXTAREA' ? "border-cyan-500/50" : "border-zinc-800"
           )}>
-            <textarea
-              className="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-zinc-600 resize-none px-3 py-2 max-h-32 min-h-[40px]"
+            <Textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="What would you like to build?"
-              rows={1}
+              autoResize
+              maxLength={5000}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
@@ -882,21 +925,19 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
                 }
               }}
             />
-            <button
-              type={isLoading ? "button" : "submit"}
+            <IconButton
+              icon={isLoading ? <Square className="w-4 h-4" /> : <Send className="w-4 h-4" />}
+              label={isLoading ? "Stop" : "Send"}
               onClick={isLoading ? () => stop?.() : undefined}
               disabled={!isLoading && !input.trim()}
+              variant={isLoading ? "ghost" : "ghost"}
               className={cn(
-                "w-9 h-9 rounded-lg flex items-center justify-center transition-all",
-                !isLoading && !input.trim()
-                  ? "bg-zinc-800 text-zinc-600 cursor-not-allowed"
-                  : isLoading
-                    ? "bg-red-500 text-white hover:bg-red-400"
-                    : "bg-cyan-500 text-white hover:bg-cyan-400"
+                "shrink-0",
+                !isLoading && !input.trim() && "opacity-50 cursor-not-allowed",
+                isLoading && "text-red-400 hover:bg-red-500/20",
+                !isLoading && input.trim() && "text-cyan-400 hover:bg-cyan-500/20"
               )}
-            >
-              {isLoading ? <Square className="w-4 h-4" /> : <Send className="w-4 h-4" />}
-            </button>
+            />
           </div>
           {agentStatus.tokenCount > 0 && (
             <div className="text-[10px] text-zinc-600 text-center mt-2">
@@ -1021,17 +1062,15 @@ export default function App() {
         {/* Header */}
         <header className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 bg-zinc-950/50">
           <div className="flex items-center gap-3">
-            <button
+            <IconButton
+              icon={<History className="w-5 h-5 text-zinc-400" />}
+              label="Toggle sessions"
               onClick={() => setIsSessionSidebarOpen(!isSessionSidebarOpen)}
-              className="lg:hidden p-2 rounded-lg hover:bg-zinc-800 transition-colors"
-            >
-              <History className="w-5 h-5 text-zinc-400" />
-            </button>
+              className="lg:hidden"
+            />
 
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-violet-500 flex items-center justify-center">
-                <Bot className="w-4 h-4 text-white" />
-              </div>
+              <Avatar type="custom" size="md" icon={<Bot className="w-4 h-4 text-white" />} className="bg-gradient-to-br from-cyan-500 to-violet-500 border-0" />
               <div>
                 <h1 className="text-sm font-semibold text-white">Vibes</h1>
                 <p className="text-[10px] text-zinc-500 truncate max-w-[120px]">
@@ -1054,9 +1093,7 @@ export default function App() {
             </div>
 
             {sessions.length > 1 && (
-              <span className="text-[10px] text-zinc-600 hidden sm:inline">
-                {sessions.length} sessions
-              </span>
+              <Badge variant="zinc" size="sm">{sessions.length} sessions</Badge>
             )}
           </div>
         </header>

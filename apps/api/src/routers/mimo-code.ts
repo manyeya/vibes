@@ -25,7 +25,7 @@ const app = new Hono();
  */
 app.get('/sessions', async (c) => {
     try {
-        const sessions = await sessionBackend.listSessions();
+        const sessions = await sessionManager.listSessions();
         return c.json({
             success: true,
             sessions,
@@ -48,7 +48,7 @@ app.get('/sessions', async (c) => {
 app.get('/sessions/:id', async (c) => {
     try {
         const sessionId = c.req.param('id');
-        const session = await sessionBackend.getSession(sessionId);
+        const session = await sessionManager.getSessionInfo(sessionId);
 
         if (!session) {
             return c.json({
@@ -56,10 +56,6 @@ app.get('/sessions/:id', async (c) => {
                 error: 'Session not found',
             }, 404);
         }
-
-        // Get files for this session
-        const tempBackend = new SqliteBackend('workspace/vibes.db', sessionId);
-
 
         return c.json({
             success: true,
@@ -88,7 +84,7 @@ app.post('/sessions', async (c) => {
         const title = body.title;
         const metadata = body.metadata || {};
 
-        const sessionId = await sessionBackend.createSession(title, metadata);
+        const sessionId = await sessionManager.createSession(title, metadata);
 
         return c.json({
             success: true,
@@ -112,12 +108,7 @@ app.post('/sessions', async (c) => {
 app.delete('/sessions/:id', async (c) => {
     try {
         const sessionId = c.req.param('id');
-
-        // Unload from memory if loaded
-        sessionManager.unloadSession(sessionId);
-
-        // Delete from database
-        await sessionBackend.deleteSession(sessionId);
+        await sessionManager.deleteSession(sessionId);
 
         return c.json({
             success: true,
@@ -142,13 +133,13 @@ app.patch('/sessions/:id', async (c) => {
         const sessionId = c.req.param('id');
         const body = await c.req.json().catch(() => ({}));
 
-        await sessionBackend.updateSession(sessionId, {
+        await sessionManager.updateSession(sessionId, {
             title: body.title,
             summary: body.summary,
             metadata: body.metadata,
         });
 
-        const updated = await sessionBackend.getSession(sessionId);
+        const updated = await sessionManager.getSessionInfo(sessionId);
 
         return c.json({
             success: true,
@@ -286,6 +277,9 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
 
         const agent = sessionManager.getOrCreateAgent(sessionId);
 
+        // Get or create the backend for this session to persist messages
+        const sessionBackend = new SqliteBackend('workspace/vibes.db', sessionId);
+
         // Pass originalMessages to enable proper message continuation when resubmitting after approval
         // This ensures the stream uses the correct message ID for the last assistant message
         const lastMessage = messages[messages.length - 1];
@@ -295,6 +289,7 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
             agent,
             uiMessages: body.messages,
             originalMessages,
+            backend: sessionBackend,
         });
 
 
@@ -318,9 +313,11 @@ app.post('/simple/stream', zValidator('json', mimoSchema), async (c) => {
 
         // Use custom stream response that integrates with middleware writers
         // This enables onData callbacks and custom data streaming
+        const sessionBackend = new SqliteBackend('workspace/vibes.db', 'default');
         return createDeepAgentStreamResponse({
             agent: simpleAgent as any, // TODO: fix type mismatch
             uiMessages: messages,
+            backend: sessionBackend,
         });
 
     } catch (error) {

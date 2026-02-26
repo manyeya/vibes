@@ -1,14 +1,27 @@
+/**
+ * API Session Manager - Manages sessions with per-session isolated workspaces.
+ *
+ * This file provides the session management layer for the API server.
+ * Each session gets:
+ * - Isolated workspace: workspace/sessions/{sessionId}/
+ * - DeepAgent instance with specialized sub-agents
+ * - SQLite metadata storage via harness-vibes
+ */
+
+import { SessionManager as HarnessSessionManager } from 'harness-vibes';
 import { DeepAgent } from 'harness-vibes';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { LanguageModel, wrapLanguageModel } from 'ai';
+import { wrapLanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { mimoCodePrompt } from './prompts/mimo-code';
 import { createZhipu } from 'zhipu-ai-provider';
 import { dotenvLoad } from 'dotenv-mono';
 import { webSearch } from "@exalabs/ai-sdk";
-// Load env vars from root .env (automatically walks up directories)
+
+// Load env vars from root .env
 dotenvLoad();
 
+// Model setup
 const zhipu = createZhipu({
     baseURL: 'https://api.z.ai/api/paas/v4',
     apiKey: process.env.ZHIPU_API_KEY,
@@ -19,121 +32,120 @@ const model = wrapLanguageModel({
     middleware: devToolsMiddleware(),
 });
 
+// Sub-agents configuration
+const defaultSubAgents = [
+    {
+        name: 'Planner',
+        description: 'Specialized in high-level task breakdown, recursive execution, and progress tracking.',
+        systemPrompt: `You are Planner, the strategic logical core of the team.
+        Your role is to break complex requests into exhaustive, actionable todo lists.`,
+        allowedTools: ["writeFile", "readFile"]
+    },
+    {
+        name: 'Librarian',
+        description: 'Focused on codebase documentation, design patterns, and systemic context.',
+        systemPrompt: `You are Librarian. Your role is to maintain the "Source of Truth" for the project.`,
+        allowedTools: ["writeFile", "readFile"]
+    },
+    {
+        name: 'Explorer',
+        description: 'Specialized in navigating large codebases and finding relevant files/logic.',
+        systemPrompt: `You are Explorer. Your role is to map out the codebase and find exactly what is needed.`,
+        allowedTools: ["writeFile", "readFile", "bash"]
+    },
+    {
+        name: 'Oracle',
+        description: 'RAG-based knowledge retrieval and expert Q&A for the codebase.',
+        systemPrompt: `You are Oracle. Your role is to answer complex questions about the system logic and architecture.`,
+        allowedTools: ["writeFile", "readFile"]
+    },
+    {
+        name: 'SuperCoder',
+        description: 'Elite Front End UI/UX Engineer and Creative Technologist.',
+        systemPrompt: `You are SuperCoder, the master of implementation. Focus on stunning visuals, fluid interactions, and flawless performance.`,
+        allowedTools: ["writeFile", "readFile", "bash", "activate_skill"],
+    },
+    {
+        name: 'BrowserAgent',
+        description: 'Browser Automation with agent-browser for research and testing.',
+        systemPrompt: `You are BrowserAgent. Your role is to interact with the web and verify the UI.`,
+        allowedTools: ["writeFile", "readFile", "bash", "activate_skill"]
+    }
+];
+
+/**
+ * In-memory agent instance with metadata
+ */
 interface AgentInstance {
     agent: DeepAgent;
     lastAccessed: number;
 }
 
 /**
- * SessionManager manages multiple agent instances, one per session.
- * Each session has its own isolated state and conversation history.
+ * APISessionManager manages sessions with isolated workspaces.
+ *
+ * Uses HarnessSessionManager for:
+ * - Session metadata storage (SQLite)
+ * - Workspace directory management
+ * - Session listing/deletion
+ *
+ * Maintains its own cache of DeepAgent instances in memory.
  */
-class SessionManager {
+class APISessionManager {
     private sessions: Map<string, AgentInstance> = new Map();
-    private dbPath: string;
+    private harnessManager: HarnessSessionManager;
 
-    constructor(dbPath: string = 'workspace/vibes.db') {
-        this.dbPath = dbPath;
+    constructor() {
+        this.harnessManager = new HarnessSessionManager({
+            dbPath: 'workspace/vibes.db',
+            sessionsDir: 'workspace/sessions',
+        });
+
+        // Start periodic cleanup (every 30 minutes)
+        setInterval(() => {
+            this.cleanup();
+        }, 30 * 60 * 1000);
     }
 
     /**
-     * Get or create an agent instance for the given session ID
+     * Get or create an agent instance for the given session ID.
+     * This is the primary entry point for the API.
      */
     getOrCreateAgent(sessionId: string = 'default'): DeepAgent {
         let instance = this.sessions.get(sessionId);
 
         if (!instance) {
+            // Get the workspace directory for this session
+            const workspaceDir = this.harnessManager.getSessionWorkspace(sessionId);
 
-            // Create new agent instance for this session
+            // Ensure workspace directory exists (sync version)
+            const proc = Bun.spawnSync(['mkdir', '-p', workspaceDir]);
+
+            // Create new DeepAgent instance for this session with its own workspace
             const agent = new DeepAgent({
-                maxContextMessages: 30,
-                model: model,
+                model,
                 systemPrompt: mimoCodePrompt,
                 maxSteps: 60,
-                sessionId: sessionId,
-                dbPath: this.dbPath,
+                maxContextMessages: 30,
+                sessionId,
+                workspaceDir,
                 tools: {
                     webSearch: webSearch() as any,
                 },
-                subAgents: [
-                    {
-                        name: 'Planner',
-                        description: 'Specialized in high-level task breakdown, recursive execution, and progress tracking (Planner-Sisyphus equivalent).',
-                        systemPrompt: `You are Planner, the strategic logical core of the team.
-                        Your role is to break complex requests into exhaustive, actionable todo lists.
-
-                        Key areas:
-                        - **Task Decomposition**: Split massive goals into small, verifiable chunks.
-                        - **Execution Strategy**: Determine the optimal order of operations.
-                        - **Progress Monitoring**: Regularly update the todo list as sub-agents complete their work.`,
-                        allowedTools: ["writeFile", "readFile"]
-                    },
-                    {
-                        name: 'Librarian',
-                        description: 'Focused on codebase documentation, design patterns, and systemic context.',
-                        systemPrompt: `You are Librarian. Your role is to maintain the "Source of Truth" for the project.
-
-                        Key areas:
-                        - **Documentation**: Write and maintain READMEs, design docs, and API specs.
-                        - **Pattern Discovery**: Identify re-usable patterns and components in the codebase.
-                        - **Context Management**: Ensure all agents have the necessary background information.`,
-                        allowedTools: ["writeFile", "readFile"]
-                    },
-                    {
-                        name: 'Explorer',
-                        description: 'Specialized in navigating large codebases and finding relevant files/logic.',
-                        systemPrompt: `You are Explorer. Your role is to map out the codebase and find exactly what is needed.
-
-                        Key areas:
-                        - **Code Search**: Use grep, find, and file listings to locate specific logic.
-                        - **Dependency Mapping**: Understand how different parts of the system interact.
-                        - **Entry Point Identification**: Find where to start making changes.`,
-                        allowedTools: ["writeFile", "readFile", "bash"]
-                    },
-                    {
-                        name: 'Oracle',
-                        description: 'RAG-based knowledge retrieval and expert Q&A for the codebase.',
-                        systemPrompt: `You are Oracle. Your role is to answer complex questions about the system logic and architecture.
-
-                        Key areas:
-                        - **Logic Explanation**: Explain *why* certain code is written the way it is.
-                        - **Constraint Analysis**: Identify potential side-effects or breaking changes.
-                        - **Architectural Guidance**: Provide advice on how to integrate new features.`,
-                        allowedTools: ["writeFile", "readFile"]
-                    },
-                    {
-                        name: 'SuperCoder',
-                        description: 'Elite Front End UI/UX Engineer and Creative Technologist.',
-                        systemPrompt: `You are SuperCoder, the master of implementation.
-                        Focus on stunning visuals, fluid interactions, and flawless performance.
-
-                        Use the awwwards skills to ensure your work is visually stunning and engaging.
-                        Key areas:
-                        - **Visual Design**: High-end aesthetics and layout.
-                        - **Implementation**: Writing clean, robust, and performant code.
-                        - **Component Architecture**: Scalable design systems.`,
-                        allowedTools: ["writeFile", "readFile", "bash", "activate_skill"],
-                    },
-                    {
-                        name: 'BrowserAgent',
-                        description: 'Browser Automation with agent-browser for research and testing.',
-                        systemPrompt: `You are BrowserAgent. Your role is to interact with the web and verify the UI.
-
-                        Key areas:
-                        - **Research**: Find design inspiration or technical solutions on the web.
-                        - **UI Testing**: Automate browser actions to verify functionality and accessibility.
-                        - **Visual Auditing**: Check for visual regressions and layout issues.`,
-                        allowedTools: ["writeFile", "readFile", "bash", "activate_skill"]
-                    }
-                ]
+                subAgents: defaultSubAgents,
             });
 
             instance = {
                 agent,
-                lastAccessed: Date.now()
+                lastAccessed: Date.now(),
             };
 
             this.sessions.set(sessionId, instance);
+
+            // Create session record in database (metadata only)
+            this.harnessManager.getOrCreateSession({ id: sessionId }).catch((err: Error) => {
+                console.error(`Failed to create session record for ${sessionId}:`, err);
+            });
         } else {
             // Update last accessed time
             instance.lastAccessed = Date.now();
@@ -150,7 +162,68 @@ class SessionManager {
     }
 
     /**
-     * Get all currently loaded sessions
+     * Delete a session completely (memory + disk)
+     */
+    async deleteSession(sessionId: string): Promise<void> {
+        // Unload from memory
+        this.unloadSession(sessionId);
+        // Delete workspace and metadata via harness manager
+        await this.harnessManager.deleteSession(sessionId);
+    }
+
+    /**
+     * List all sessions from the database
+     */
+    async listSessions(): Promise<Array<{
+        id: string;
+        summary?: string;
+        metadata?: Record<string, any>;
+        createdAt?: string;
+        updatedAt?: string;
+        messageCount?: number;
+    }>> {
+        return await this.harnessManager.listSessions();
+    }
+
+    /**
+     * Get session info from database (doesn't load into memory)
+     */
+    async getSessionInfo(sessionId: string): Promise<{
+        id: string;
+        summary?: string;
+        metadata?: Record<string, any>;
+        createdAt?: string;
+        updatedAt?: string;
+        messageCount?: number;
+    } | null> {
+        return await this.harnessManager.getSessionInfo(sessionId);
+    }
+
+    /**
+     * Create a new session
+     */
+    async createSession(title?: string, metadata: Record<string, any> = {}): Promise<string> {
+        // Create session record in database
+        const session = await this.harnessManager.getOrCreateSession({
+            title,
+            metadata,
+        });
+        return session.id;
+    }
+
+    /**
+     * Update session metadata
+     */
+    async updateSession(sessionId: string, updates: {
+        title?: string;
+        summary?: string;
+        metadata?: Record<string, any>;
+    }): Promise<void> {
+        await this.harnessManager.updateSession(sessionId, updates);
+    }
+
+    /**
+     * Get all currently loaded session IDs
      */
     getLoadedSessions(): string[] {
         return Array.from(this.sessions.keys());
@@ -159,7 +232,8 @@ class SessionManager {
     /**
      * Clean up sessions that haven't been accessed in a while
      */
-    cleanup(maxAge: number = 1000 * 60 * 30): void { // 30 minutes default
+    private cleanup(): void {
+        const maxAge = 1000 * 60 * 30; // 30 minutes
         const now = Date.now();
         const toDelete: string[] = [];
 
@@ -170,11 +244,22 @@ class SessionManager {
         }
 
         for (const sessionId of toDelete) {
-            this.sessions.delete(sessionId);
+            this.unloadSession(sessionId);
         }
+
+        if (toDelete.length > 0) {
+            console.log(`[APISessionManager] Unloaded ${toDelete.length} idle sessions`);
+        }
+    }
+
+    /**
+     * Get the workspace directory for a session
+     */
+    getSessionWorkspace(sessionId: string): string {
+        return this.harnessManager.getSessionWorkspace(sessionId);
     }
 }
 
 // Global session manager instance
-export const sessionManager = new SessionManager();
+export const sessionManager = new APISessionManager();
 export default sessionManager;

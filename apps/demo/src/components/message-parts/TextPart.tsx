@@ -9,14 +9,7 @@ interface TextPartProps {
 
 export const TextPart: React.FC<TextPartProps> = ({ text, isUser }) => {
   return (
-    <div
-      className={cn(
-        "rounded-xl px-4 py-2.5 text-sm streamdown",
-        isUser
-          ? "bg-cyan-500 text-white"
-          : "bg-zinc-800/50 border border-zinc-800 text-zinc-200"
-      )}
-    >
+    <div className="text-sm streamdown text-zinc-100 leading-relaxed overflow-x-auto">
       <Streamdown>{text}</Streamdown>
     </div>
   );
