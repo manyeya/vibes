@@ -188,6 +188,7 @@ export interface SubAgent {
  *   tools: { myTool },
  *   modifySystemPrompt: (prompt) => prompt + '\\n\\nAdditional instructions...',
  *   onStreamReady: (writer) => writer.write({ type: 'data-status', data: { message: 'Ready' } }),
+ *   onError: (error) => console.error('Tool failed:', error),
  *   waitReady: async () => { await initialize(); },
  * }
  * ```
@@ -255,6 +256,13 @@ export interface Plugin {
 
     /** Optional hook executed when the stream finishes (successful completion) */
     onStreamFinish?: (result: any) => Promise<void>;
+
+    /**
+     * Optional hook executed when a tool fails after all retries.
+     * This is called after the tool execution fails and has exhausted all retry attempts.
+     * Plugins can use this to trigger error analysis tasks (e.g., ReflexionPlugin).
+     */
+    onError?: (error: Error) => void | Promise<void>;
 
     // REMOVED: beforeModel - use prepareStep instead (AI SDK built-in)
     // REMOVED: onStepFinish - use ToolLoopAgent.onStepFinish (AI SDK built-in)

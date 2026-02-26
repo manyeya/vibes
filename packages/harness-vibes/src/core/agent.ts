@@ -380,6 +380,16 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                             }
                         }
                     }
+
+                    // Notify plugins of final failure after all retries exhausted
+                    for (const plugin of this.plugins) {
+                        try {
+                            await plugin.onError?.(lastError!);
+                        } catch (hookError) {
+                            console.error(`[VibeAgent] Plugin onError hook error:`, hookError);
+                        }
+                    }
+
                     throw lastError;
                 } : undefined
             };
