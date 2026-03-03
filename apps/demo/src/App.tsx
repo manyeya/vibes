@@ -11,24 +11,16 @@ import {
   Plus,
   MessageSquare,
   History,
-  Activity,
-  Database,
-  Lightbulb,
-  Network,
-  Settings2,
-  Zap,
-  FileText,
   RefreshCw,
   TreePine,
   ClipboardList,
   CheckCircle2,
   ChevronDown,
   X,
-  Brain,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from './lib/utils';
-import { DataPartRenderer, isDataPart, reasoningConfig, ReasoningModePart } from './components/data-parts';
+import { DataPartRenderer, isDataPart } from './components/data-parts';
 import { TextPart, ReasoningPart, ToolResultPart } from './components/message-parts';
 
 // Import new Vercel-style UI components
@@ -61,266 +53,6 @@ interface Task {
   status: 'pending' | 'in_progress' | 'blocked' | 'completed' | 'failed';
   priority?: 'low' | 'medium' | 'high' | 'critical';
 }
-
-interface AgentStatus {
-  reasoningMode: 'react' | 'tot' | 'plan-execute';
-  isProcessing: boolean;
-  tokenCount: number;
-  tasks: Task[];
-  lessonsLearned: number;
-  factsStored: number;
-  patternsCount: number;
-}
-
-// ============ AGENT STATUS PANEL ============
-interface AgentStatusPanelProps {
-  status: AgentStatus;
-  isOpen: boolean;
-  onToggle: () => void;
-}
-
-const AgentStatusPanel = ({ status, isOpen, onToggle }: AgentStatusPanelProps) => {
-  const getModeIcon = (mode: string) => {
-    switch (mode) {
-      case 'tot': return <TreePine className="w-4 h-4 text-violet-400" />;
-      case 'plan-execute': return <ClipboardList className="w-4 h-4 text-amber-400" />;
-      case 'react': return <RefreshCw className="w-4 h-4 text-cyan-400" />;
-      default: return <RefreshCw className="w-4 h-4 text-cyan-400" />;
-    }
-  };
-
-  const getModeLabel = (mode: string) => {
-    switch (mode) {
-      case 'tot': return 'Tree-of-Thoughts';
-      case 'plan-execute': return 'Plan-Execute';
-      case 'react': return 'ReAct';
-      default: return 'ReAct';
-    }
-  };
-
-  const getModeBadgeVariant = (mode: string): 'cyan' | 'violet' | 'amber' => {
-    switch (mode) {
-      case 'tot': return 'violet';
-      case 'plan-execute': return 'amber';
-      case 'react': return 'cyan';
-      default: return 'cyan';
-    }
-  };
-
-  const getStatusIcon = (taskStatus: string) => {
-    switch (taskStatus) {
-      case 'in_progress': return '●';
-      case 'completed': return '✓';
-      case 'blocked': return '⊘';
-      case 'failed': return '✗';
-      case 'pending':
-      default: return '○';
-    }
-  };
-
-  const getStatusBadgeVariant = (taskStatus: string): 'zinc' | 'amber' | 'emerald' | 'red' => {
-    switch (taskStatus) {
-      case 'in_progress': return 'amber';
-      case 'completed': return 'emerald';
-      case 'blocked': return 'red';
-      case 'failed': return 'red';
-      case 'pending':
-      default: return 'zinc';
-    }
-  };
-
-  const getPriorityBadgeVariant = (priority?: string): 'red' | 'amber' | 'emerald' | 'zinc' => {
-    switch (priority) {
-      case 'critical': return 'red';
-      case 'high': return 'amber';
-      case 'medium': return 'amber';
-      case 'low': return 'emerald';
-      default: return 'zinc';
-    }
-  };
-
-  const getPriorityColor = (priority?: string): string => {
-    switch (priority) {
-      case 'critical': return 'bg-red-500';
-      case 'high': return 'bg-orange-500';
-      case 'medium': return 'bg-yellow-500';
-      case 'low': return 'bg-emerald-500';
-      default: return 'bg-zinc-500';
-    }
-  };
-
-  const activeTasks = status.tasks.filter(t => t.status !== 'completed' && t.status !== 'failed');
-  const completedTasks = status.tasks.filter(t => t.status === 'completed');
-
-  return (
-    <div className="w-80 border-l border-zinc-800 bg-zinc-900/50 flex flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-        <div className="flex items-center gap-2">
-          <Activity className="w-4 h-4 text-cyan-400" />
-          <span className="text-sm font-medium text-zinc-200">Agent Status</span>
-        </div>
-        <IconButton
-          icon={<Settings2 className={cn("w-4 h-4 transition-transform", isOpen && "rotate-90")} />}
-          label="Toggle panel"
-          onClick={onToggle}
-        />
-      </div>
-
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="flex-1 overflow-y-auto"
-          >
-            <div className="p-4 space-y-4">
-              {/* Reasoning Mode */}
-              <Card gradient hover>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs text-zinc-500">Reasoning Mode</span>
-                  {status.isProcessing && (
-                    <Badge variant="cyan" size="sm">
-                      <span className="w-1 h-1 bg-cyan-400 rounded-full animate-pulse mr-1" />
-                      Processing
-                    </Badge>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-lg">{getModeIcon(status.reasoningMode)}</span>
-                  <Badge variant={getModeBadgeVariant(status.reasoningMode)} size="md">
-                    {getModeLabel(status.reasoningMode)}
-                  </Badge>
-                </div>
-              </Card>
-
-              {/* Memory Systems */}
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <Database className="w-3.5 h-3.5 text-violet-400" />
-                  <span className="text-xs font-medium text-zinc-400">Memory Systems</span>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <Card hover className="p-2 text-center">
-                    <Lightbulb className="w-3.5 h-3.5 text-amber-400 mx-auto mb-1" />
-                    <div className="text-lg font-semibold text-white">{status.lessonsLearned}</div>
-                    <div className="text-[9px] text-zinc-500">Lessons</div>
-                  </Card>
-                  <Card hover className="p-2 text-center">
-                    <FileText className="w-3.5 h-3.5 text-blue-400 mx-auto mb-1" />
-                    <div className="text-lg font-semibold text-white">{status.factsStored}</div>
-                    <div className="text-[9px] text-zinc-500">Facts</div>
-                  </Card>
-                  <Card hover className="p-2 text-center">
-                    <Network className="w-3.5 h-3.5 text-emerald-400 mx-auto mb-1" />
-                    <div className="text-lg font-semibold text-white">{status.patternsCount}</div>
-                    <div className="text-[9px] text-zinc-500">Patterns</div>
-                  </Card>
-                </div>
-              </div>
-
-              {/* Active Tasks */}
-              {activeTasks.length > 0 && (
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <Zap className="w-3.5 h-3.5 text-yellow-400" />
-                    <span className="text-xs font-medium text-zinc-400">
-                      Active Tasks
-                    </span>
-                    <Badge variant="amber" size="sm">{activeTasks.length}</Badge>
-                  </div>
-                  <div className="space-y-1.5">
-                    {activeTasks.slice(0, 5).map((task) => (
-                      <Card key={task.id} hover className="p-2">
-                        <div className="flex items-center gap-2">
-                          <Badge variant={getStatusBadgeVariant(task.status)} size="sm">
-                            {getStatusIcon(task.status)}
-                          </Badge>
-                          <span className={cn("text-xs truncate flex-1",
-                            task.status === 'pending' ? 'text-zinc-500' : 'text-zinc-300'
-                          )}>
-                            {task.title.length > 28 ? task.title.slice(0, 28) + '...' : task.title}
-                          </span>
-                          {task.priority && (
-                            <span className={cn("w-1.5 h-1.5 rounded-full", getPriorityColor(task.priority))} />
-                          )}
-                        </div>
-                      </Card>
-                    ))}
-                    {activeTasks.length > 5 && (
-                      <div className="text-[10px] text-zinc-600 text-center">
-                        +{activeTasks.length - 5} more
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Completed Tasks */}
-              {completedTasks.length > 0 && (
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                    <span className="text-xs font-medium text-zinc-400">
-                      Completed
-                    </span>
-                    <Badge variant="emerald" size="sm">{completedTasks.length}</Badge>
-                  </div>
-                  <div className="space-y-1">
-                    {completedTasks.slice(-3).map((task) => (
-                      <Card key={task.id} hover className="p-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-emerald-400 text-xs">✓</span>
-                          <span className="text-xs text-zinc-500 truncate">
-                            {task.title.length > 30 ? task.title.slice(0, 30) + '...' : task.title}
-                          </span>
-                        </div>
-                      </Card>
-                    ))}
-                    {completedTasks.length > 3 && (
-                      <div className="text-[10px] text-zinc-600 text-center">
-                        +{completedTasks.length - 3} more
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Capabilities */}
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <Brain className="w-3.5 h-3.5 text-cyan-400" />
-                  <span className="text-xs font-medium text-zinc-400">Capabilities</span>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {['Planning', 'Tree-of-Thoughts', 'Semantic Memory', 'Reflexion', 'Procedural', 'Swarm'].map((cap) => (
-                    <Badge key={cap} variant="cyan" size="sm">
-                      {cap}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-
-              {/* Token Usage */}
-              {status.tokenCount > 0 && (
-                <>
-                  <Divider />
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-zinc-500">Total Tokens</span>
-                    <span className="text-zinc-300 font-mono">
-                      {status.tokenCount.toLocaleString()}
-                    </span>
-                  </div>
-                </>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-};
 
 // ============ APPROVAL CARD ============
 interface ApprovalCardProps {
@@ -358,20 +90,20 @@ const ApprovalCard = ({ toolName, args, approvalId, onApprove, onDeny }: Approva
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -10 }}
-      className="border border-amber-500/30 rounded-xl overflow-hidden bg-gradient-to-r from-amber-950/20 to-orange-950/10"
+      className="border border-amber-300 dark:border-amber-900/50 rounded-lg overflow-hidden bg-amber-50 dark:bg-amber-950/20"
     >
       <div
-        className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-amber-500/5 transition-colors"
+        className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-amber-100 dark:hover:bg-amber-950/30 transition-colors"
         onClick={() => setIsExpanded(!isExpanded)}
       >
         <div className="flex items-center gap-3">
-          <Shield className="w-4 h-4 text-amber-400" />
+          <Shield className="w-4 h-4 text-amber-600 dark:text-amber-400" />
           <div>
-            <span className="text-sm font-medium text-white">Permission Required</span>
+            <span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">Permission Required</span>
             <Badge variant="amber" size="sm" className="ml-2">{toolName}</Badge>
           </div>
         </div>
-        <ChevronDown className={cn("w-4 h-4 text-zinc-500 transition-transform", isExpanded && "rotate-180")} />
+        <ChevronDown className={cn("w-4 h-4 text-zinc-500 dark:text-zinc-500 transition-transform", isExpanded && "rotate-180")} />
       </div>
 
       <AnimatePresence>
@@ -383,7 +115,7 @@ const ApprovalCard = ({ toolName, args, approvalId, onApprove, onDeny }: Approva
             className="overflow-hidden"
           >
             <div className="p-4 space-y-3">
-              <pre className="text-xs text-zinc-400 bg-zinc-900/50 p-3 rounded-lg overflow-auto max-h-48 font-mono">
+              <pre className="text-xs text-zinc-700 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-900/50 p-3 rounded-md overflow-auto max-h-48 font-mono">
                 {formatJson(args)}
               </pre>
               <div className="flex gap-2">
@@ -433,11 +165,11 @@ const SessionSidebar = ({
   return (
     <>
       <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={onClose} />
-      <aside className="fixed top-0 left-0 bottom-0 w-72 bg-zinc-900 border-r border-zinc-800 z-50 lg:static lg:z-0 flex flex-col">
-        <div className="flex items-center justify-between p-4 border-b border-zinc-800">
+      <aside className="fixed top-0 left-0 bottom-0 w-72 bg-white dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-800 z-50 lg:static lg:z-0 flex flex-col">
+        <div className="flex items-center justify-between p-4 border-b border-zinc-200 dark:border-zinc-800">
           <div className="flex items-center gap-2">
-            <History className="w-4 h-4 text-zinc-400" />
-            <h2 className="text-sm font-medium text-zinc-200">Sessions</h2>
+            <History className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />
+            <h2 className="text-sm font-medium text-zinc-900 dark:text-zinc-200">Sessions</h2>
           </div>
           <IconButton
             icon={<Plus className="w-4 h-4" />}
@@ -449,11 +181,11 @@ const SessionSidebar = ({
         <div className="flex-1 overflow-y-auto p-3">
           {isLoading ? (
             <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-5 h-5 text-zinc-600 animate-spin" />
+              <Loader2 className="w-5 h-5 text-zinc-400 dark:text-zinc-600 animate-spin" />
             </div>
           ) : sessions.length === 0 ? (
             <div className="text-center py-8">
-              <p className="text-xs text-zinc-600">No sessions yet</p>
+              <p className="text-xs text-zinc-500 dark:text-zinc-600">No sessions yet</p>
             </div>
           ) : (
             <div className="space-y-1">
@@ -590,11 +322,9 @@ const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
 interface ChatAreaProps {
   sessionId: string;
   onSessionUpdate: () => void;
-  onAgentStatusChange: (status: AgentStatus) => void;
-  agentStatus: AgentStatus;
 }
 
-const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus }: ChatAreaProps) => {
+const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
   const [input, setInput] = useState('');
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [dataParts, setDataParts] = useState<Array<{ id: string; type: string; data: unknown }>>([]);
@@ -610,60 +340,16 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
     onData: (dataPart: any) => {
       const id = `${dataPart.type}-${Date.now()}`;
       const { type, data } = dataPart;
-      console.log("dataPart no fucking data:",dataPart);
+      console.log("dataPart:", dataPart);
       switch (type) {
-
-        // Reasoning mode updates - update agent status
+        // All data parts go to the chat display
         case 'data-reasoning_mode':
-          onAgentStatusChange({ ...agentStatus, reasoningMode: data.mode });
-          setDataParts(prev => [...prev, { id, type, data }]);
-          break;
-
-        // Reasoning/thought process
         case 'data-reasoning':
-          setDataParts(prev => [...prev, { id, type, data }]);
-          break;
-
-        // Status updates - also track memory counts
         case 'data-status':
-          const msg = data.message;
-          if (msg.includes('Lesson saved')) {
-            onAgentStatusChange({ ...agentStatus, lessonsLearned: agentStatus.lessonsLearned + 1 });
-          }
-          if (msg.includes('Fact remembered')) {
-            onAgentStatusChange({ ...agentStatus, factsStored: agentStatus.factsStored + 1 });
-          }
-          if (msg.includes('Pattern saved')) {
-            onAgentStatusChange({ ...agentStatus, patternsCount: agentStatus.patternsCount + 1 });
-          }
-          setDataParts(prev => [...prev, { id, type, data }]);
-          break;
-
-        // Task updates - sync with agent status
         case 'data-task_update':
-          onAgentStatusChange({
-            ...agentStatus,
-            tasks: agentStatus.tasks.some(t => t.id === data.id)
-              ? agentStatus.tasks.map(t => t.id === data.id ? { ...t, ...data } : t)
-              : [...agentStatus.tasks, { id: data.id, title: data.title || data.id, ...data }],
-          });
-          setDataParts(prev => [...prev, { id, type, data }]);
-          break;
-
-        // Task graph visualization
         case 'data-task_graph':
-          setDataParts(prev => [...prev, { id, type, data }]);
-          break;
-
-        // Todo updates
         case 'data-todo_update':
-          setDataParts(prev => [...prev, { id, type, data }]);
-          break;
-
-        // Context summarization
         case 'data-summarization':
-          setDataParts(prev => [...prev, { id, type, data }]);
-          break;
 
         // Tool execution progress
         case 'data-tool_progress':
@@ -677,15 +363,6 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
 
         // Memory system updates
         case 'data-memory_update':
-          if (data.type === 'lesson' && data.action === 'saved') {
-            onAgentStatusChange({ ...agentStatus, lessonsLearned: agentStatus.lessonsLearned + 1 });
-          }
-          if (data.type === 'fact' && data.action === 'saved') {
-            onAgentStatusChange({ ...agentStatus, factsStored: agentStatus.factsStored + 1 });
-          }
-          if (data.type === 'pattern' && data.action === 'saved') {
-            onAgentStatusChange({ ...agentStatus, patternsCount: agentStatus.patternsCount + 1 });
-          }
           setDataParts(prev => [...prev, { id, type, data }]);
           break;
 
@@ -740,26 +417,6 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
     }
   }, [messages, status, isLoadingHistory, onSessionUpdate]);
 
-  // Update processing state
-  useEffect(() => {
-    if (agentStatus.isProcessing !== (status === 'streaming')) {
-      onAgentStatusChange({ ...agentStatus, isProcessing: status === 'streaming' });
-    }
-  }, [status, agentStatus.isProcessing, onAgentStatusChange]);
-
-  // Calculate token count from messages (only done once when messages change)
-  useEffect(() => {
-    const tokenCount = messages.reduce((acc: number, msg: any) => {
-      const usage = (msg as any).usage;
-      if (usage) acc += usage.promptTokens + usage.completionTokens;
-      return acc;
-    }, 0);
-
-    if (tokenCount !== agentStatus.tokenCount) {
-      onAgentStatusChange({ ...agentStatus, tokenCount });
-    }
-  }, [messages, agentStatus.tokenCount, onAgentStatusChange]);
-
   const isLoading = status === 'streaming' || status === 'submitted' || isLoadingHistory;
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -778,14 +435,14 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
         <div className="max-w-3xl mx-auto px-4 py-6">
           {isLoadingHistory ? (
             <div className="flex items-center justify-center py-20">
-              <Loader2 className="w-5 h-5 text-zinc-600 animate-spin mr-2" />
-              <span className="text-sm text-zinc-500">Loading...</span>
+              <Loader2 className="w-5 h-5 text-zinc-400 dark:text-zinc-600 animate-spin mr-2" />
+              <span className="text-sm text-zinc-600 dark:text-zinc-500">Loading...</span>
             </div>
           ) : messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-center">
               <Avatar type="bot" size="lg" className="mb-4" />
-              <h2 className="text-lg font-medium text-white mb-1">Vibes</h2>
-              <p className="text-sm text-zinc-500">Your Deep Agent assistant</p>
+              <h2 className="text-lg font-medium text-zinc-900 dark:text-zinc-100 mb-1">Vibes</h2>
+              <p className="text-sm text-zinc-600 dark:text-zinc-500">Your Deep Agent assistant</p>
               <div className="mt-4 flex flex-wrap justify-center gap-2">
                 {['Planning', 'Tree-of-Thoughts', 'Memory', 'Reflexion', 'Swarm'].map((cap) => (
                   <Badge key={cap} variant="zinc" size="sm">
@@ -898,19 +555,19 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
 
           {/* Error */}
           {error && (
-            <Card className="mb-4 border-red-500/20 bg-red-500/5">
-              <p className="text-sm text-red-400">{error.message || 'An error occurred'}</p>
+            <Card className="mb-4 border-red-300 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20">
+              <p className="text-sm text-red-700 dark:text-red-400">{error.message || 'An error occurred'}</p>
             </Card>
           )}
         </div>
       </div>
 
       {/* Input area */}
-      <div className="shrink-0 border-t border-zinc-800 bg-zinc-950/50 p-4">
+      <div className="shrink-0 border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/50 p-4">
         <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
           <div className={cn(
-            "flex items-end gap-2 bg-zinc-900 rounded-xl border p-2 transition-colors",
-            document.activeElement?.tagName === 'TEXTAREA' ? "border-cyan-500/50" : "border-zinc-800"
+            "flex items-end gap-2 bg-white dark:bg-zinc-900 rounded-lg border p-2 transition-colors",
+            document.activeElement?.tagName === 'TEXTAREA' ? "border-zinc-400 dark:border-zinc-600" : "border-zinc-300 dark:border-zinc-700"
           )}>
             <Textarea
               value={input}
@@ -934,16 +591,11 @@ const ChatArea = ({ sessionId, onSessionUpdate, onAgentStatusChange, agentStatus
               className={cn(
                 "shrink-0",
                 !isLoading && !input.trim() && "opacity-50 cursor-not-allowed",
-                isLoading && "text-red-400 hover:bg-red-500/20",
-                !isLoading && input.trim() && "text-cyan-400 hover:bg-cyan-500/20"
+                isLoading && "text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-950/30",
+                !isLoading && input.trim() && "text-zinc-900 dark:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800"
               )}
             />
           </div>
-          {agentStatus.tokenCount > 0 && (
-            <div className="text-[10px] text-zinc-600 text-center mt-2">
-              {agentStatus.tokenCount.toLocaleString()} tokens used
-            </div>
-          )}
         </form>
       </div>
     </div>
@@ -958,16 +610,6 @@ export default function App() {
   });
   const [isSessionSidebarOpen, setIsSessionSidebarOpen] = useState(false);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
-  const [isAgentPanelOpen, setIsAgentPanelOpen] = useState(true);
-  const [agentStatus, setAgentStatus] = useState<AgentStatus>({
-    reasoningMode: 'react',
-    isProcessing: false,
-    tokenCount: 0,
-    tasks: [],
-    lessonsLearned: 0,
-    factsStored: 0,
-    patternsCount: 0,
-  });
 
   const fetchSessions = useCallback(async () => {
     setIsLoadingSessions(true);
@@ -1022,23 +664,10 @@ export default function App() {
     fetchSessions();
   }, [fetchSessions]);
 
-  // Reset agent status when session changes
-  useEffect(() => {
-    setAgentStatus({
-      reasoningMode: 'react',
-      isProcessing: false,
-      tokenCount: 0,
-      tasks: [],
-      lessonsLearned: 0,
-      factsStored: 0,
-      patternsCount: 0,
-    });
-  }, [currentSessionId]);
-
   const currentSession = sessions.find(s => s.id === currentSessionId);
 
   return (
-    <div className="flex h-screen bg-[#09090b] text-zinc-100">
+    <div className="flex h-screen bg-white dark:bg-[#0a0a0a] text-zinc-900 dark:text-zinc-100">
       {/* Session Sidebar */}
       <AnimatePresence>
         {(isSessionSidebarOpen || window.innerWidth >= 1024) && (
@@ -1060,20 +689,20 @@ export default function App() {
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <header className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 bg-zinc-950/50">
+        <header className="flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/50">
           <div className="flex items-center gap-3">
             <IconButton
-              icon={<History className="w-5 h-5 text-zinc-400" />}
+              icon={<History className="w-5 h-5 text-zinc-500 dark:text-zinc-400" />}
               label="Toggle sessions"
               onClick={() => setIsSessionSidebarOpen(!isSessionSidebarOpen)}
               className="lg:hidden"
             />
 
             <div className="flex items-center gap-2">
-              <Avatar type="custom" size="md" icon={<Bot className="w-4 h-4 text-white" />} className="bg-gradient-to-br from-cyan-500 to-violet-500 border-0" />
+              <Avatar type="custom" size="md" icon={<Bot className="w-4 h-4 text-zinc-700 dark:text-zinc-300" />} className="bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700" />
               <div>
-                <h1 className="text-sm font-semibold text-white">Vibes</h1>
-                <p className="text-[10px] text-zinc-500 truncate max-w-[120px]">
+                <h1 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Vibes</h1>
+                <p className="text-[10px] text-zinc-500 dark:text-zinc-500 truncate max-w-[120px]">
                   {currentSession?.metadata?.title || currentSessionId}
                 </p>
               </div>
@@ -1081,17 +710,6 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Reasoning Mode Indicator */}
-            <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-zinc-800/50">
-              {reasoningConfig[agentStatus.reasoningMode]?.icon}
-              <span className="text-[10px] text-zinc-500 capitalize">
-                {reasoningConfig[agentStatus.reasoningMode]?.label || 'ReAct'}
-              </span>
-              {agentStatus.isProcessing && (
-                <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse" />
-              )}
-            </div>
-
             {sessions.length > 1 && (
               <Badge variant="zinc" size="sm">{sessions.length} sessions</Badge>
             )}
@@ -1103,17 +721,8 @@ export default function App() {
           key={currentSessionId}
           sessionId={currentSessionId}
           onSessionUpdate={fetchSessions}
-          onAgentStatusChange={setAgentStatus}
-          agentStatus={agentStatus}
         />
       </div>
-
-      {/* Agent Status Panel */}
-      <AgentStatusPanel
-        status={agentStatus}
-        isOpen={isAgentPanelOpen}
-        onToggle={() => setIsAgentPanelOpen(!isAgentPanelOpen)}
-      />
     </div>
   );
 }

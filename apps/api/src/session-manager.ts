@@ -126,7 +126,7 @@ class APISessionManager {
                 model,
                 systemPrompt: mimoCodePrompt,
                 maxSteps: 60,
-                maxContextMessages: 30,
+                maxContextMessages: 3,
                 sessionId,
                 workspaceDir,
                 tools: {

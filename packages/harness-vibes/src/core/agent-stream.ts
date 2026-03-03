@@ -12,12 +12,15 @@ import type { VibeAgent } from './agent';
 import type { ModelMessage } from 'ai';
 import type { VibesUIMessage } from './streaming';
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai';
+import type { AgentState } from './types';
+import SqliteBackend from '../backend/sqlitebackend';
 
 interface AgentStreamOptions {
     agent: VibeAgent;
     uiMessages?: ModelMessage[];
     abortSignal?: AbortSignal;
     originalMessages?: ModelMessage[];
+    backend?: SqliteBackend;
 }
 
 /**
@@ -27,6 +30,7 @@ interface AgentStreamOptions {
  * 1. Creates a UI message stream with execute function that receives writer
  * 2. Calls agent.stream() with the writer (triggers plugin onStreamReady hooks)
  * 3. Uses writer.merge(result.toUIMessageStream()) to properly forward the agent's response
+ * 4. Saves messages to backend after streaming completes
  *
  * The toUIMessageStream() method handles proper conversion of the agent's stream
  * to UI message chunks, including text deltas, tool calls, and tool results.
@@ -34,7 +38,7 @@ interface AgentStreamOptions {
 export async function createDeepAgentStreamResponse(
     options: AgentStreamOptions
 ): Promise<Response> {
-    const { agent, uiMessages = [], abortSignal, originalMessages } = options;
+    const { agent, uiMessages = [], abortSignal, originalMessages, backend } = options;
 
     // Create a UI message stream with an execute function that has writer access
     const stream = createUIMessageStream<VibesUIMessage>({
@@ -52,7 +56,15 @@ export async function createDeepAgentStreamResponse(
             writer.merge(result.toUIMessageStream());
 
             // Wait for the response promise to complete (handles final message state)
-            await result.response;
+            const response = await result.response;
+
+            // Save messages to backend after streaming completes
+            if (backend && response.messages) {
+                const state: Partial<AgentState> = {
+                    messages: response.messages as any,
+                };
+                backend.setState(state);
+            }
         },
         originalMessages: originalMessages as VibesUIMessage[] | undefined,
     });

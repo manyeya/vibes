@@ -18,11 +18,11 @@ export const MemoryUpdatePart: React.FC<{ data: MemoryUpdateData }> = ({ data })
   return (
     <motion.div
       {...animationProps}
-      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs"
-      style={{
-        backgroundColor: typeConfig.bg.replace('bg-', '').replace('/10', ''), // Simplified for demo
-        borderColor: typeConfig.color.replace('text-', '').replace('/10', ''),
-      }}
+      className={cn(
+        'inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-xs',
+        typeConfig.bg,
+        'border-transparent'
+      )}
     >
       <Icon className={cn('w-3 h-3', typeConfig.color)} />
       <span className={typeConfig.color}>

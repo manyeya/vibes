@@ -13,12 +13,12 @@ export const IconButton: React.FC<IconButtonProps> = ({ icon, label, variant = '
       type="button"
       aria-label={label}
       className={cn(
-        'p-2 rounded-lg transition-all duration-150',
-        'focus:outline-none focus:ring-2 focus:ring-cyan-500/50',
+        'p-2 rounded-md transition-colors duration-150',
+        'focus:outline-none focus:ring-1 focus:ring-zinc-300 focus:ring-offset-1 focus:ring-offset-white dark:focus:ring-zinc-600 dark:focus:ring-offset-zinc-950',
         'disabled:opacity-50 disabled:cursor-not-allowed',
         {
-          'hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-100': variant === 'ghost',
-          'bg-zinc-800 text-zinc-100 hover:bg-zinc-700': variant === 'secondary',
+          'hover:bg-zinc-100 text-zinc-500 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100': variant === 'ghost',
+          'bg-zinc-200 text-zinc-900 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-600': variant === 'secondary',
         },
         className
       )}

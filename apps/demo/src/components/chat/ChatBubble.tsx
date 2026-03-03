@@ -15,12 +15,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ role, children, classNam
       <Avatar type={isUser ? 'user' : 'bot'} size="md" />
       <div
         className={cn(
-          'px-4 py-3 rounded-2xl',
+          'px-4 py-2.5 rounded-lg',
           // Allow content to expand, but constrain width for user messages
           isUser ? 'max-w-[85%]' : 'max-w-[100%] flex-1',
           {
-            'bg-gradient-to-r from-cyan-600 to-violet-600 text-white rounded-tr-sm': isUser,
-            'bg-zinc-800/50 text-zinc-100 border border-zinc-700/50 rounded-tl-sm': !isUser,
+            // Professional flat styling - Claude/ChatGPT style
+            'bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 rounded-tr-sm': isUser,
+            'bg-transparent text-zinc-800 dark:text-zinc-200': !isUser,
           },
           className
         )}

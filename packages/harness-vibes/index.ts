@@ -34,8 +34,6 @@ import MemoryPlugin from './src/plugins/memory';
 import SqliteBackend from './src/backend/sqlitebackend';
 import {
     AgentState,
-    AgentDataParts,
-    AgentUIMessage,
     VibeAgentConfig,
     SubAgent,
     TaskItem,
@@ -48,6 +46,14 @@ import {
 } from './src/core/types';
 import { VibeAgent } from './src/core/agent';
 export { createDeepAgentStreamResponse } from './src/core/agent-stream';
+export {
+    HarnessSessionManager as SessionManager,
+    defaultSessionManager,
+    type SessionConfig,
+    type SessionInstance,
+    type SessionAgentConfig,
+    type CleanupOptions,
+} from './src/core/session-manager';
 
 /**
  * Configuration for initializing a DeepAgent instance.
@@ -272,8 +278,6 @@ function createDeepAgent(config: DeepAgentConfig = {}): DeepAgent {
 export {
     type AgentState,
     type DeepAgentConfig,
-    type AgentDataParts,
-    type AgentUIMessage,
     type TaskItem,
     type TaskTemplate,
     TaskType,
@@ -307,6 +311,5 @@ export {
     SqliteBackend,
     type VibeAgentConfig,
     type SubAgent,
-    VibeAgent, // Old implementation (to be deprecated)
     VibeAgent as VibesAgent, // Alias for backwards compatibility with tests
 };

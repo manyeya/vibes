@@ -742,6 +742,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             const tools = await this.getAllTools();
             modelMessages = await convertToModelMessages(messages as UIMessage[], {
                 tools: tools as ToolSet,
+                ignoreIncompleteToolCalls: true, // Filter out incomplete tool calls from interrupted streams
             });
         } else {
             modelMessages = messages as ModelMessage[];

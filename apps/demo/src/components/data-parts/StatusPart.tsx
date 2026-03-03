@@ -10,12 +10,12 @@ export const StatusPart: React.FC<{ data: StatusData }> = ({ data }) => {
   return (
     <motion.div
       {...animationProps}
-      className="inline-flex items-center gap-2 px-3 py-1.5 bg-zinc-800/50 rounded-lg text-xs text-zinc-400"
+      className="inline-flex items-center gap-2 px-3 py-1.5 bg-zinc-100 dark:bg-zinc-800/50 rounded-md text-xs text-zinc-600 dark:text-zinc-400"
     >
       <Clock className="w-3 h-3" />
       <span>{data.message}</span>
       {showProgress && (
-        <span className="text-zinc-500">
+        <span className="text-zinc-500 dark:text-zinc-500">
           ({data.step}/{data.totalSteps})
         </span>
       )}

@@ -18,14 +18,14 @@ export const ToolProgressPart: React.FC<{ data: ToolProgressData }> = ({ data })
   return (
     <motion.div
       {...animationProps}
-      className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-lg text-xs text-blue-400"
+      className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900/50 rounded-md text-xs text-blue-700 dark:text-blue-400"
     >
       <Icon className={cn('w-3 h-3', config.spin && 'animate-spin')} />
       <span>
         {data.toolName}
         {data.stage && `: ${config.label}`}
         {data.progress !== undefined && (
-          <span className="ml-1 text-blue-300">({data.progress}%)</span>
+          <span className="ml-1 text-blue-600 dark:text-blue-300">({data.progress}%)</span>
         )}
       </span>
     </motion.div>

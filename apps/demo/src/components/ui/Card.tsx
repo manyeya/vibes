@@ -12,11 +12,12 @@ export const Card: React.FC<CardProps> = ({ children, className, hover = false, 
   return (
     <div
       className={cn(
-        'rounded-xl border transition-all duration-200',
+        'rounded-lg border transition-colors duration-150',
         {
-          'bg-zinc-900/50 border-zinc-800/50': !gradient,
-          'bg-gradient-to-br from-cyan-500/10 to-violet-500/10 border-cyan-500/20': gradient,
-          'hover:border-zinc-700 hover:bg-zinc-900/70': hover,
+          // Flat, professional card styling
+          'bg-zinc-50 border-zinc-200 dark:bg-zinc-900/50 dark:border-zinc-800': !gradient,
+          'bg-zinc-100 border-zinc-300 dark:bg-zinc-800/50 dark:border-zinc-700': gradient,
+          'hover:bg-zinc-100 hover:border-zinc-300 dark:hover:bg-zinc-800/70 dark:hover:border-zinc-700': hover,
         },
         className
       )}

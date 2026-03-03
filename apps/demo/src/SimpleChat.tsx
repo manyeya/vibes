@@ -57,16 +57,16 @@ export default function SimpleChat() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100">
+    <div className="flex flex-col h-screen bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
       {/* Header */}
-      <header className="shrink-0 px-6 py-4 border-b border-zinc-800/50 bg-zinc-900/30 backdrop-blur-sm">
+      <header className="shrink-0 px-6 py-4 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/30">
         <div className="flex items-center gap-3 max-w-2xl mx-auto">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-violet-500 flex items-center justify-center shadow-lg shadow-cyan-500/20">
-            <Bot className="w-5 h-5 text-white" />
+          <div className="w-9 h-9 rounded-md bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 flex items-center justify-center">
+            <Bot className="w-5 h-5 text-zinc-700 dark:text-zinc-300" />
           </div>
           <div>
-            <h1 className="text-sm font-semibold text-white">Simple Chat</h1>
-            <p className="text-xs text-zinc-500">
+            <h1 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Simple Chat</h1>
+            <p className="text-xs text-zinc-500 dark:text-zinc-500">
               {dataReceived.length > 0 ? `${dataReceived.length} data parts received` : 'Start a conversation'}
             </p>
           </div>
@@ -78,11 +78,11 @@ export default function SimpleChat() {
         <div className="max-w-2xl mx-auto px-4 py-8">
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-32 text-center">
-              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border border-cyan-500/20 flex items-center justify-center mb-6">
-                <Bot className="w-8 h-8 text-cyan-400" />
+              <div className="w-16 h-16 rounded-lg bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 flex items-center justify-center mb-6">
+                <Bot className="w-8 h-8 text-zinc-700 dark:text-zinc-300" />
               </div>
-              <h2 className="text-xl font-semibold text-white mb-2">Simple Chat</h2>
-              <p className="text-sm text-zinc-500 max-w-md">
+              <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100 mb-2">Simple Chat</h2>
+              <p className="text-sm text-zinc-600 dark:text-zinc-500 max-w-md">
                 Send a message to start chatting with the AI assistant
               </p>
             </div>
@@ -97,10 +97,10 @@ export default function SimpleChat() {
                     <Avatar type={message.role === 'user' ? 'user' : 'bot'} size="md" />
                     <div
                       className={cn(
-                        'px-4 py-3 rounded-2xl max-w-[80%]',
+                        'px-4 py-2.5 rounded-lg max-w-[80%]',
                         message.role === 'user'
-                          ? 'bg-gradient-to-r from-cyan-600 to-violet-600 text-white rounded-tr-sm'
-                          : 'bg-zinc-800/50 text-zinc-100 border border-zinc-700/50 rounded-tl-sm'
+                          ? 'bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 rounded-tr-sm'
+                          : 'bg-transparent text-zinc-800 dark:text-zinc-200'
                       )}
                     >
                       <Streamdown>{content || (message.role === 'user' ? input : '...')}</Streamdown>
@@ -118,19 +118,19 @@ export default function SimpleChat() {
 
           {/* Error */}
           {error && (
-            <Card className="p-4 my-4 border border-red-500/20 bg-red-500/5">
-              <p className="text-sm text-red-400">{error.message || 'An error occurred'}</p>
+            <Card className="p-4 my-4 border-red-300 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20">
+              <p className="text-sm text-red-700 dark:text-red-400">{error.message || 'An error occurred'}</p>
             </Card>
           )}
         </div>
       </div>
 
       {/* Input */}
-      <div className="shrink-0 border-t border-zinc-800/50 bg-zinc-900/30 backdrop-blur-sm p-4">
+      <div className="shrink-0 border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/30 p-4">
         <form onSubmit={handleSubmit} className="max-w-2xl mx-auto">
           <div className={cn(
-            "flex items-end gap-2 bg-zinc-900 rounded-2xl border p-2 transition-all duration-200",
-            document.activeElement?.tagName === 'TEXTAREA' ? "border-cyan-500/50 shadow-lg shadow-cyan-500/5" : "border-zinc-800"
+            "flex items-end gap-2 bg-white dark:bg-zinc-900 rounded-lg border p-2 transition-colors",
+            document.activeElement?.tagName === 'TEXTAREA' ? "border-zinc-400 dark:border-zinc-600" : "border-zinc-300 dark:border-zinc-700"
           )}>
             <Textarea
               value={input}

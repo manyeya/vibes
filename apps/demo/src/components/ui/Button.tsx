@@ -14,21 +14,21 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         ref={ref}
         disabled={disabled || isLoading}
         className={cn(
-          'inline-flex items-center justify-center gap-2 font-medium transition-all duration-150',
-          'focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:ring-offset-2 focus:ring-offset-zinc-950',
+          'inline-flex items-center justify-center gap-2 font-medium transition-colors duration-150',
+          'focus:outline-none focus:ring-1 focus:ring-zinc-400 focus:ring-offset-1 focus:ring-offset-zinc-950',
           'disabled:opacity-50 disabled:cursor-not-allowed',
           {
-            // Variants
-            'bg-gradient-to-r from-cyan-500 to-violet-500 text-white hover:from-cyan-400 hover:to-violet-400 shadow-lg shadow-cyan-500/20': variant === 'primary',
-            'bg-zinc-800 text-zinc-100 hover:bg-zinc-700 border border-zinc-700': variant === 'secondary',
-            'bg-transparent text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50': variant === 'ghost',
-            'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20': variant === 'danger',
+            // Variants - flat, professional design
+            'bg-zinc-100 text-zinc-900 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700': variant === 'primary',
+            'bg-zinc-100 text-zinc-900 hover:bg-zinc-200 border border-zinc-200 dark:bg-zinc-800 dark:text-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-700': variant === 'secondary',
+            'bg-transparent text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-zinc-100 dark:hover:bg-zinc-800': variant === 'ghost',
+            'bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-900/50 dark:hover:bg-red-950/50': variant === 'danger',
           },
           {
-            // Sizes
+            // Sizes - more restrained rounding
             'px-3 py-1.5 text-sm rounded-md': size === 'sm',
-            'px-4 py-2 text-sm rounded-lg': size === 'md',
-            'px-6 py-3 text-base rounded-xl': size === 'lg',
+            'px-3 py-2 text-sm rounded-md': size === 'md',
+            'px-4 py-2.5 text-sm rounded-md': size === 'lg',
           },
           className
         )}

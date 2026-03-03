@@ -12,12 +12,12 @@ export const Avatar: React.FC<AvatarProps> = ({ type = 'bot', size = 'md', icon,
   return (
     <div
       className={cn(
-        'rounded-lg flex items-center justify-center shrink-0',
+        'rounded-md flex items-center justify-center shrink-0',
         {
           // User styling
-          'bg-zinc-800': type === 'user',
-          // Bot styling
-          'bg-gradient-to-br from-cyan-500/20 to-violet-500/20 border border-cyan-500/20': type === 'bot',
+          'bg-zinc-200 dark:bg-zinc-800': type === 'user',
+          // Bot styling - flat, professional
+          'bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700': type === 'bot',
           // Custom styling
           'bg-zinc-700': type === 'custom',
         },
@@ -30,7 +30,7 @@ export const Avatar: React.FC<AvatarProps> = ({ type = 'bot', size = 'md', icon,
         className
       )}
     >
-      {icon || (type === 'user' ? <User className="w-3.5 h-3.5 text-zinc-400" /> : <Bot className="w-4 h-4 text-cyan-400" />)}
+      {icon || (type === 'user' ? <User className="w-3.5 h-3.5 text-zinc-600 dark:text-zinc-400" /> : <Bot className="w-4 h-4 text-zinc-700 dark:text-zinc-300" />)}
     </div>
   );
 };

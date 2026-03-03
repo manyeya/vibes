@@ -26,21 +26,21 @@ export type DelegationData = VibesDataParts['delegation'];
 export const notificationConfig = {
   info: {
     icon: 'Info',
-    color: 'text-blue-400',
-    bg: 'bg-blue-500/10',
-    border: 'border-blue-500/20',
+    color: 'text-blue-600 dark:text-blue-400',
+    bg: 'bg-blue-50 dark:bg-blue-950/30',
+    border: 'border-blue-200 dark:border-blue-900/50',
   },
   warning: {
     icon: 'AlertTriangle',
-    color: 'text-amber-400',
-    bg: 'bg-amber-500/10',
-    border: 'border-amber-500/20',
+    color: 'text-amber-600 dark:text-amber-400',
+    bg: 'bg-amber-50 dark:bg-amber-950/30',
+    border: 'border-amber-200 dark:border-amber-900/50',
   },
   error: {
     icon: 'AlertCircle',
-    color: 'text-red-400',
-    bg: 'bg-red-500/10',
-    border: 'border-red-500/20',
+    color: 'text-red-600 dark:text-red-400',
+    bg: 'bg-red-50 dark:bg-red-950/30',
+    border: 'border-red-200 dark:border-red-900/50',
   },
 } as const;
 
@@ -48,40 +48,40 @@ export const reasoningConfig = {
   react: {
     icon: 'RefreshCw',
     label: 'ReAct',
-    color: 'text-cyan-400',
-    bg: 'bg-cyan-500/10',
-    border: 'border-cyan-500/20',
+    color: 'text-blue-600 dark:text-blue-400',
+    bg: 'bg-blue-50 dark:bg-blue-950/30',
+    border: 'border-blue-200 dark:border-blue-900/50',
   },
   tot: {
     icon: 'TreePine',
     label: 'Tree-of-Thoughts',
-    color: 'text-violet-400',
-    bg: 'bg-violet-500/10',
-    border: 'border-violet-500/20',
+    color: 'text-purple-600 dark:text-purple-400',
+    bg: 'bg-purple-50 dark:bg-purple-950/30',
+    border: 'border-purple-200 dark:border-purple-900/50',
   },
   'plan-execute': {
     icon: 'ClipboardList',
     label: 'Plan-Execute',
-    color: 'text-amber-400',
-    bg: 'bg-amber-500/10',
-    border: 'border-amber-500/20',
+    color: 'text-amber-600 dark:text-amber-400',
+    bg: 'bg-amber-50 dark:bg-amber-950/30',
+    border: 'border-amber-200 dark:border-amber-900/50',
   },
 } as const;
 
 export const todoStatusConfig = {
   pending: {
     icon: 'Clock',
-    color: 'text-zinc-400',
+    color: 'text-zinc-500 dark:text-zinc-400',
     spin: false,
   },
   in_progress: {
     icon: 'Loader2',
-    color: 'text-yellow-400',
+    color: 'text-amber-600 dark:text-amber-400',
     spin: true,
   },
   completed: {
     icon: 'CheckCircle2',
-    color: 'text-emerald-400',
+    color: 'text-emerald-600 dark:text-emerald-400',
     spin: false,
   },
 } as const;
@@ -89,46 +89,46 @@ export const todoStatusConfig = {
 export const taskStatusConfig = {
   pending: {
     icon: 'Clock',
-    bg: 'bg-zinc-800/50',
-    border: 'border-zinc-700',
-    text: 'text-zinc-400',
+    bg: 'bg-zinc-100 dark:bg-zinc-800/50',
+    border: 'border-zinc-300 dark:border-zinc-700',
+    text: 'text-zinc-600 dark:text-zinc-400',
     spin: false,
   },
   blocked: {
     icon: 'X',
-    bg: 'bg-red-500/10',
-    border: 'border-red-500/20',
-    text: 'text-red-400',
+    bg: 'bg-red-50 dark:bg-red-950/30',
+    border: 'border-red-200 dark:border-red-900/50',
+    text: 'text-red-600 dark:text-red-400',
     spin: false,
   },
   in_progress: {
     icon: 'Loader2',
-    bg: 'bg-yellow-500/10',
-    border: 'border-yellow-500/20',
-    text: 'text-yellow-400',
+    bg: 'bg-amber-50 dark:bg-amber-950/30',
+    border: 'border-amber-200 dark:border-amber-900/50',
+    text: 'text-amber-600 dark:text-amber-400',
     spin: true,
   },
   completed: {
     icon: 'CheckCircle2',
-    bg: 'bg-emerald-500/10',
-    border: 'border-emerald-500/20',
-    text: 'text-emerald-400',
+    bg: 'bg-emerald-50 dark:bg-emerald-950/30',
+    border: 'border-emerald-200 dark:border-emerald-900/50',
+    text: 'text-emerald-600 dark:text-emerald-400',
     spin: false,
   },
   failed: {
     icon: 'AlertCircle',
-    bg: 'bg-red-500/10',
-    border: 'border-red-500/20',
-    text: 'text-red-400',
+    bg: 'bg-red-50 dark:bg-red-950/30',
+    border: 'border-red-200 dark:border-red-900/50',
+    text: 'text-red-600 dark:text-red-400',
     spin: false,
   },
 } as const;
 
 export const priorityConfig = {
-  low: { bg: 'bg-emerald-500', text: 'text-emerald-400' },
-  medium: { bg: 'bg-yellow-500', text: 'text-yellow-400' },
-  high: { bg: 'bg-orange-500', text: 'text-orange-400' },
-  critical: { bg: 'bg-red-500', text: 'text-red-400' },
+  low: { bg: 'bg-emerald-500 dark:bg-emerald-600', text: 'text-white' },
+  medium: { bg: 'bg-amber-500 dark:bg-amber-600', text: 'text-white' },
+  high: { bg: 'bg-orange-500 dark:bg-orange-600', text: 'text-white' },
+  critical: { bg: 'bg-red-500 dark:bg-red-600', text: 'text-white' },
 } as const;
 
 export const summarizationConfig = {
@@ -146,20 +146,20 @@ export const toolStageConfig = {
 } as const;
 
 export const memoryTypeConfig = {
-  lesson: { icon: 'Lightbulb', color: 'text-amber-400', bg: 'bg-amber-500/10' },
-  fact: { icon: 'FileText', color: 'text-blue-400', bg: 'bg-blue-500/10' },
-  pattern: { icon: 'Network', color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+  lesson: { icon: 'Lightbulb', color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-950/30' },
+  fact: { icon: 'FileText', color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-950/30' },
+  pattern: { icon: 'Network', color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-950/30' },
 } as const;
 
 export const memoryActionConfig = {
-  saved: { label: 'saved', color: 'text-emerald-400' },
-  updated: { label: 'updated', color: 'text-blue-400' },
-  deleted: { label: 'deleted', color: 'text-red-400' },
+  saved: { label: 'saved', color: 'text-emerald-600 dark:text-emerald-400' },
+  updated: { label: 'updated', color: 'text-blue-600 dark:text-blue-400' },
+  deleted: { label: 'deleted', color: 'text-red-600 dark:text-red-400' },
 } as const;
 
 export const delegationConfig = {
-  starting: { icon: 'Activity', bg: 'bg-blue-500/10', border: 'border-blue-500/20', text: 'text-blue-400', spin: false },
-  in_progress: { icon: 'Loader2', bg: 'bg-yellow-500/10', border: 'border-yellow-500/20', text: 'text-yellow-400', spin: true },
-  complete: { icon: 'CheckCircle2', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', text: 'text-emerald-400', spin: false },
-  failed: { icon: 'AlertCircle', bg: 'bg-red-500/10', border: 'border-red-500/20', text: 'text-red-400', spin: false },
+  starting: { icon: 'Activity', bg: 'bg-blue-50 dark:bg-blue-950/30', border: 'border-blue-200 dark:border-blue-900/50', text: 'text-blue-600 dark:text-blue-400', spin: false },
+  in_progress: { icon: 'Loader2', bg: 'bg-amber-50 dark:bg-amber-950/30', border: 'border-amber-200 dark:border-amber-900/50', text: 'text-amber-600 dark:text-amber-400', spin: true },
+  complete: { icon: 'CheckCircle2', bg: 'bg-emerald-50 dark:bg-emerald-950/30', border: 'border-emerald-200 dark:border-emerald-900/50', text: 'text-emerald-600 dark:text-emerald-400', spin: false },
+  failed: { icon: 'AlertCircle', bg: 'bg-red-50 dark:bg-red-950/30', border: 'border-red-200 dark:border-red-900/50', text: 'text-red-600 dark:text-red-400', spin: false },
 } as const;

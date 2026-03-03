@@ -10,6 +10,7 @@ import {
     VibesUIMessage,
     Plugin,
     TaskItem,
+    TaskType,
     createDataStreamWriter,
     type DataStreamWriter,
 } from '../core/types';
@@ -75,6 +76,7 @@ export default class TasksPlugin implements Plugin {
 
                         const newTask: TaskItem = {
                             id,
+                            type: TaskType.SubTask,
                             title: taskDef.title,
                             description: taskDef.description,
                             status: taskDef.status || 'pending',
@@ -198,6 +200,7 @@ Output ONLY valid JSON, no markdown:
 
                         const newTask: TaskItem = {
                             id,
+                            type: TaskType.SubTask,
                             title: taskDef.title,
                             description: taskDef.description,
                             status: i === 0 ? 'pending' : 'blocked',
