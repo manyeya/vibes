@@ -1,176 +1,209 @@
 # Vibes
 
-A powerful AI coding agent orchestrator with a beautiful TUI interface.
+Vibes is a Bun monorepo for building and running a multi-agent coding assistant.
+It includes:
 
-## Features
+- a Hono API server with streaming responses
+- a React web chat demo
+- a shared `harness-vibes` package that implements the DeepAgent/plugin framework
 
-- 🤖 Multi-agent orchestration using DeepAgents
-- 🧠 Specialized subagents (Oracle, Librarian, Explore, etc.)
-- 📚 Skills system for specialized workflows
-- 🎨 Claude Code-like TUI interface
-- 💬 Real-time streaming responses
-- 📝 Code block highlighting
-- ⌨️ Multi-line input support
-- 🔄 Message history
-- 🚀 Fast and responsive UI
+## Monorepo Layout
 
-## Quick Start
-
-### Start Backend API
-
-```bash
-bun run dev
-```
-
-The API will start on `http://localhost:3000`
-
-### Start TUI
-
-In a new terminal:
-
-```bash
-bun run tui:dev
-```
-
-## Project Structure
-
-```
+```text
 vibes/
-├── src/
-│   ├── index.ts           # Backend API entry point
-│   ├── logger.ts          # Logger configuration
-│   ├── routers/
-│   │   └── agent.ts      # Agent API routes (streaming support)
-│   └── vibes/
-│       ├── index.ts        # DeepAgents configuration
-│       ├── subagents/
-│       ├── tools/
-│       └── middleware/
-├── skills/              # Skills directory
-│   └── example-skill/
-│       └── SKILL.md
-├── tui/                 # TUI package (separate)
-│   └── src/
-│       ├── components/
-│       │   ├── App.tsx
-│       │   ├── Message.tsx
-│       │   ├── MessageList.tsx
-│       │   ├── Input.tsx
-│       │   └── Header.tsx
-│       └── lib/
-│           └── formatter.ts
+├── apps/
+│   ├── api/                  # Hono backend + session manager + prompts
+│   ├── demo/                 # React/Vite chat UI (uses AI SDK useChat)
+│   ├── docs/                 # Deep-agent design notes and plans
+│   └── tui/                  # TUI artifacts (dist + deps, source currently empty)
+├── packages/
+│   └── harness-vibes/        # Core agent framework, plugins, SQLite backend
+├── architecture_overview.md
+├── CLAUDE.md
 └── package.json
 ```
 
-## Technology Stack
+## Architecture (Current)
 
-### Backend
-- **Hono** - Fast web framework
-- **DeepAgents** - Multi-agent orchestration
-- **LangChain** - AI agent framework
-- **AI SDK** - Streaming protocol with langchain adapter
-- **Bun** - JavaScript runtime
+1. `apps/demo` sends chat messages to `/api/mimo-code/stream`.
+2. `apps/api` routes requests, resolves `session_id`, and gets/creates a session agent.
+3. `DeepAgent` (from `harness-vibes`) runs tool-loop generation with plugins.
+4. Streaming chunks and custom data parts are pushed to the UI.
+5. Session messages and metadata are persisted in `workspace/vibes.db`.
 
-### TUI
-- **Ink** - React for CLIs
-- **React** - UI library
-- **AI SDK** - `useChat` hook for streaming
-- **TypeScript** - Type safety
+Core runtime files:
+
+- API entry: `apps/api/src/index.ts`
+- API routes: `apps/api/src/routers/mimo-code.ts`
+- API session management: `apps/api/src/session-manager.ts`
+- Agent core: `packages/harness-vibes/src/core/agent.ts`
+- Stream response helper: `packages/harness-vibes/src/core/agent-stream.ts`
+- SQLite state backend: `packages/harness-vibes/src/backend/sqlitebackend.ts`
+
+## Prerequisites
+
+- Bun `>= 1.3`
+- A model API key (`ZHIPU_API_KEY` is used by current API/session setup)
+
+Install dependencies:
+
+```bash
+bun install
+```
 
 ## Environment Variables
 
-Create a `.env` file in the root directory:
+Create `.env` in repo root:
 
 ```env
-OPENROUTER_API_KEY=your_api_key_here
-# or
-OPENAI_API_KEY=your_api_key_here
+# model/provider keys
+ZHIPU_API_KEY=your_key_here
+OPENAI_API_KEY=your_key_here
+OPENROUTER_API_KEY=your_key_here
 
+# server
 PORT=3000
- NODE_ENV=development
-SKILLS_DIR=./skills
+HOST=0.0.0.0
+NODE_ENV=development
+
+# optional debugging
+DEBUG_VIBES=1
 ```
+
+Notes:
+
+- `apps/api/src/session-manager.ts` and `apps/api/src/simple.ts` load `.env` via `dotenv-mono`.
+- In production, API boot requires `OPENAI_API_KEY` (see `apps/api/src/index.ts`).
+
+## Running Locally
+
+Start API:
+
+```bash
+bun run dev:api
+```
+
+Start web demo in another terminal:
+
+```bash
+bun run dev:demo
+```
+
+Open:
+
+- `http://localhost:5173` (full session UI)
+- `http://localhost:5173/?simple` (minimal chat UI)
+
+The demo proxies `/api/*` to `http://localhost:3000`.
+
+## Scripts
+
+Root scripts in `package.json`:
+
+- `bun run dev:api` - run API in watch mode
+- `bun run dev:demo` - run Vite demo
+- `bun run build` - build packages then apps
+- `bun run test` - run package tests (currently no test files are present)
+
+Current caveats:
+
+- `bun run dev` is defined but currently points to a non-package filter and fails.
+- `bun run dev:tui` is defined, but there is no `@vibes/tui` package manifest in this repo state.
 
 ## API Endpoints
 
-### `/api/vibes/stream` (POST)
+Base URL: `http://localhost:3000/api`
 
-Streaming chat endpoint that integrates with DeepAgents orchestration.
+Health and info:
 
-Request:
+- `GET /health`
+- `GET /`
+
+Session management:
+
+- `GET /sessions` - list sessions
+- `POST /sessions` - create session
+- `GET /sessions/:id` - get session info
+- `PATCH /sessions/:id` - update title/summary/metadata
+- `DELETE /sessions/:id` - delete session
+- `GET /sessions/:id/messages` - load chat history
+- `GET /sessions/:id/files` - current persisted message state for session
+
+Agent endpoints:
+
+- `POST /mimo-code` - non-streaming generation
+- `POST /mimo-code/stream` - streaming generation (main UI path)
+- `POST /simple/stream` - streaming with the simplified agent config
+
+Common request shape:
+
 ```json
 {
-  "messages": [
-    { "role": "user", "content": "Hello" }
-  ]
+  "messages": [{ "role": "user", "content": "Hello" }],
+  "session_id": "optional-session-id"
 }
 ```
 
-Response: Server-Sent Events (SSE) streaming format
+## Persistence and Session Isolation
 
-## Skills System
+Vibes stores runtime data under `workspace/` (gitignored):
 
-Vibes supports the Anthropic Skills standard for modular, discoverable agent capabilities.
+- SQLite DB: `workspace/vibes.db`
+- session directories: `workspace/sessions/<sessionId>/`
 
-### Skill Structure
+Per-session files may include:
 
-Following the [Anthropic Skills specification](https://github.com/anthropics/skills):
+- `facts.json`
+- `patterns.json`
+- `lessons.json`
+- `plan.md`
+- `tasks.json`
+- `swarm-state.json`
+- `subagent_results/`
 
+## Plugin System (`harness-vibes`)
+
+`DeepAgent` composes capabilities via plugins. Included plugins cover:
+
+- planning/task management
+- reasoning modes (`react`, `tot`, `plan-execute`)
+- reflexion/lessons
+- semantic memory and procedural memory
+- swarm coordination
+- sub-agent delegation
+- filesystem and bash tooling
+- skill activation
+
+Plugin exports are in `packages/harness-vibes/src/plugins/index.ts`.
+
+## Skills
+
+The `SkillsPlugin` scans for skills at:
+
+```text
+skills/*/SKILL.md
 ```
-skills/
-└── skill-name/
-    ├── SKILL.md          # Required - Main skill file
-    ├── scripts/           # Optional - Executable scripts
-    ├── references/         # Optional - Documentation
-    └── assets/            # Optional - Templates, images
-```
 
-### SKILL.md Format
+from the process working directory.
 
-Skills use YAML frontmatter for metadata:
+This repository currently contains example skills under `apps/api/skills/`, not root `skills/`.
+If you want runtime discovery with `activate_skill`, place skills in root `skills/` (or symlink that path).
 
-```markdown
----
-name: skill-name
-description: What the skill does and when to use it
----
+## Build and Validation Status
 
-# Skill Title
+Observed in this repo state:
 
-Instructions for the agent when this skill is active.
-```
+- `bun run dev:api` works
+- `bun run dev:demo` works
+- `bun run build` works
+- `bun run test` exits because no tests are present
 
-**Required fields:**
-- `name` - Skill identifier (must match folder name)
-- `description` - What skill does and when to use it (for auto-discovery)
+## Additional Docs
 
-**Best practices:**
-- Keep SKILL.md concise (under 500 lines)
-- Move detailed info to `references/` directory
-- Store reusable scripts in `scripts/` directory
-- Use progressive disclosure - load only what's needed
-
-### Example Skill
-
-See `skills/example-skill/SKILL.md` for a complete example following the Anthropic format.
-
-### Using Skills
-
-The agent discovers skills automatically through their `description` field. Use `activate_skill(name)` to activate a skill when needed (e.g., "activate frontend" or "use frontend skill").
-
-
-
-
-
-
-## Keyboard Shortcuts (TUI)
-
-- `Ctrl+D` - Submit message
-- `Ctrl+C` - Exit TUI
-- `Ctrl+A` - Move to start of line
-- `Ctrl+E` - Move to end of line
-- `←` / `→` - Move cursor left/right
-- `Backspace` / `Delete` - Delete character
+- `architecture_overview.md` - high-level architecture diagram
+- `apps/docs/streaming-ui.md` - frontend streaming data-part integration
+- `apps/docs/DEEP_AGENT_PLAN.md` - deep-agent enhancement roadmap
+- `CLAUDE.md` - contributor notes and architecture conventions
 
 ## License
 
