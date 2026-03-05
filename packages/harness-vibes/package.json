@@ -3,27 +3,30 @@
   "version": "1.0.0",
   "description": "DeepAgents framework - A powerful AI agent orchestrator with multi-step reasoning, memory, and collaboration",
   "type": "module",
-  "main": "./index.ts",
-  "types": "./index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./index.ts",
-      "types": "./index.ts"
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
     },
     "./backend": {
-      "import": "./src/backend/sqlitebackend.ts",
-      "types": "./src/backend/sqlitebackend.ts"
+      "import": "./dist/src/backend/sqlitebackend.js",
+      "types": "./dist/src/backend/sqlitebackend.d.ts"
     }
   },
   "files": [
-    "index.ts",
-    "src"
+    "dist"
   ],
   "scripts": {
-    "build": "bun build index.ts --outdir dist --target bun && tsc --emitDeclarationOnly",
+    "build": "bun build index.ts --outdir dist --target bun --sourcemap=external && tsc --emitDeclarationOnly --outDir dist",
     "dev": "bun run --watch index.ts",
+    "prepublishOnly": "bun run build",
     "test": "bun test",
     "type-check": "tsc --noEmit"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
   },
   "dependencies": {
     "@ai-sdk/langchain": "^2.0.42",
@@ -49,6 +52,7 @@
     "agent",
     "multi-agent",
     "orchestrator",
+    "bun",
     "langchain",
     "ai-sdk"
   ],

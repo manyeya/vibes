@@ -613,11 +613,8 @@ Use \`get_swarm_status()\` to see overall swarm state.
         if (!this.config.persistState) return;
 
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.config.statePath);
-
-            await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
+            const fullPath = require('path').resolve(process.cwd(), this.config.statePath);
+            Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
 
             const stateToSave = {
                 sharedState: Array.from(this.sharedState.entries()),
@@ -625,7 +622,7 @@ Use \`get_swarm_status()\` to see overall swarm state.
                 timestamp: new Date().toISOString(),
             };
 
-            await fs.writeFile(fullPath, JSON.stringify(stateToSave, null, 2));
+            await Bun.write(fullPath, JSON.stringify(stateToSave, null, 2));
         } catch (e) {
             console.error('Failed to persist swarm state:', e);
         }
@@ -636,11 +633,8 @@ Use \`get_swarm_status()\` to see overall swarm state.
      */
     private async loadState(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.config.statePath);
-
-            const content = await fs.readFile(fullPath, 'utf-8');
+            const fullPath = require('path').resolve(process.cwd(), this.config.statePath);
+            const content = await Bun.file(fullPath).text();
             const loaded = JSON.parse(content);
 
             // Restore shared state

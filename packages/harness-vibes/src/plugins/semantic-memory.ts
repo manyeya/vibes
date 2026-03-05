@@ -595,11 +595,8 @@ The AI will identify the most important facts and store them.`,
      */
     private async persistFacts(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.config.factsPath);
-
-            await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
+            const fullPath = require('path').resolve(process.cwd(), this.config.factsPath);
+            Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
 
             // Don't store embeddings in JSON (they're large and can be regenerated)
             const factsToStore = this.vectorStore.getAll().map(f => ({
@@ -607,7 +604,7 @@ The AI will identify the most important facts and store them.`,
                 embedding: undefined, // Exclude embeddings from storage
             }));
 
-            await fs.writeFile(fullPath, JSON.stringify(factsToStore, null, 2));
+            await Bun.write(fullPath, JSON.stringify(factsToStore, null, 2));
         } catch (e) {
             console.error('Failed to persist facts:', e);
         }
@@ -618,11 +615,8 @@ The AI will identify the most important facts and store them.`,
      */
     private async loadFacts(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.config.factsPath);
-
-            const content = await fs.readFile(fullPath, 'utf-8');
+            const fullPath = require('path').resolve(process.cwd(), this.config.factsPath);
+            const content = await Bun.file(fullPath).text();
             const loaded = JSON.parse(content) as Fact[];
 
             for (const fact of loaded) {
