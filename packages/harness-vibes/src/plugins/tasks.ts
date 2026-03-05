@@ -373,12 +373,9 @@ Output ONLY valid JSON, no markdown:
 
     private async persistTasks(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.tasksPath);
-
-            await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
-            await fs.writeFile(fullPath, JSON.stringify(this.tasks, null, 2));
+            const fullPath = require('path').resolve(process.cwd(), this.tasksPath);
+            Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
+            await Bun.write(fullPath, JSON.stringify(this.tasks, null, 2));
         } catch (e) {
             console.error('Failed to persist tasks:', e);
         }
@@ -386,11 +383,8 @@ Output ONLY valid JSON, no markdown:
 
     private async loadTasks(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.tasksPath);
-
-            const content = await fs.readFile(fullPath, 'utf-8');
+            const fullPath = require('path').resolve(process.cwd(), this.tasksPath);
+            const content = await Bun.file(fullPath).text();
             this.tasks = JSON.parse(content);
         } catch (e) {
             this.tasks = [];

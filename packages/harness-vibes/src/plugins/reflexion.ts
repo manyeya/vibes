@@ -589,12 +589,9 @@ Automatically extracts lessons from the session experience.`,
      */
     private async persistLessons(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.config.lessonsPath);
-
-            await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
-            await fs.writeFile(fullPath, JSON.stringify(this.lessons, null, 2));
+            const fullPath = require('path').resolve(process.cwd(), this.config.lessonsPath);
+            Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
+            await Bun.write(fullPath, JSON.stringify(this.lessons, null, 2));
         } catch (e) {
             // Non-fatal: log but don't fail
             console.error('Failed to persist lessons:', e);
@@ -606,11 +603,8 @@ Automatically extracts lessons from the session experience.`,
      */
     private async loadLessons(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.config.lessonsPath);
-
-            const content = await fs.readFile(fullPath, 'utf-8');
+            const fullPath = require('path').resolve(process.cwd(), this.config.lessonsPath);
+            const content = await Bun.file(fullPath).text();
             const loaded = JSON.parse(content) as Lesson[];
             this.lessons = loaded;
         } catch (e) {

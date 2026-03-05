@@ -82,12 +82,9 @@ export default class FilesystemPlugin implements Plugin {
 
     private async persistTrackedFiles(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.trackedFilesPath);
-
-            await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
-            await fs.writeFile(fullPath, JSON.stringify(Array.from(this.trackedFiles), null, 2));
+            const fullPath = require('path').resolve(process.cwd(), this.trackedFilesPath);
+            Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
+            await Bun.write(fullPath, JSON.stringify(Array.from(this.trackedFiles), null, 2));
         } catch (e) {
             console.error('[FilesystemPlugin] Failed to persist tracked files:', e);
         }
@@ -95,11 +92,8 @@ export default class FilesystemPlugin implements Plugin {
 
     private async loadTrackedFiles(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.trackedFilesPath);
-
-            const content = await fs.readFile(fullPath, 'utf-8');
+            const fullPath = require('path').resolve(process.cwd(), this.trackedFilesPath);
+            const content = await Bun.file(fullPath).text();
             const files = JSON.parse(content) as string[];
             this.trackedFiles = new Set(files);
         } catch (e) {

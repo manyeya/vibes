@@ -305,12 +305,9 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
         const savePath = path || this.planPath;
         const content = this.formatPlanAsMarkdown(plan);
 
-        const fs = await import('fs/promises');
-        const pathModule = await import('path');
-        const fullPath = pathModule.resolve(process.cwd(), savePath);
-
-        await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
-        await fs.writeFile(fullPath, content);
+        const fullPath = require('path').resolve(process.cwd(), savePath);
+        Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
+        await Bun.write(fullPath, content);
     }
 
     /**
@@ -318,12 +315,10 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
      */
     private async loadPlanFromFile(path?: string): Promise<Plan | null> {
         const loadPath = path || this.planPath;
-        const fs = await import('fs/promises');
-        const pathModule = await import('path');
-        const fullPath = pathModule.resolve(process.cwd(), loadPath);
+        const fullPath = require('path').resolve(process.cwd(), loadPath);
 
         try {
-            const content = await fs.readFile(fullPath, 'utf-8');
+            const content = await Bun.file(fullPath).text();
             return this.parsePlanFromMarkdown(content);
         } catch {
             return null;
@@ -748,12 +743,9 @@ The planReference field should be a clear path to the plan section so you can tr
                         }
                     }
 
-                    const fs = await import('fs/promises');
-                    const pathModule = await import('path');
-                    const fullPath = pathModule.resolve(process.cwd(), savePath);
-
-                    await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
-                    await fs.writeFile(fullPath, content);
+                    const fullPath = require('path').resolve(process.cwd(), savePath);
+                    Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
+                    await Bun.write(fullPath, content);
 
                     this.writer?.write({
                         type: 'data-status',
@@ -772,12 +764,9 @@ The planReference field should be a clear path to the plan section so you can tr
                 }),
                 execute: async ({ path, clearExisting }) => {
                     const loadPath = path || this.planPath;
-                    const fs = await import('fs/promises');
-                    const pathModule = await import('path');
-                    const fullPath = pathModule.resolve(process.cwd(), loadPath);
-
+                    const fullPath = require('path').resolve(process.cwd(), loadPath);
                     try {
-                        const content = await fs.readFile(fullPath, 'utf-8');
+                        const content = await Bun.file(fullPath).text();
                         this.writer?.write({
                             type: 'data-status',
                             data: { message: `Plan loaded from ${loadPath}` },

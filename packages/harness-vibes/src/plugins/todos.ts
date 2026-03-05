@@ -171,12 +171,9 @@ This ensures visible, incremental progress to the user.`;
 
     private async persistTodos(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.todosPath);
-
-            await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
-            await fs.writeFile(fullPath, JSON.stringify(this.todos, null, 2));
+            const fullPath = require('path').resolve(process.cwd(), this.todosPath);
+            Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
+            await Bun.write(fullPath, JSON.stringify(this.todos, null, 2));
         } catch (e) {
             console.error('Failed to persist todos:', e);
         }
@@ -184,11 +181,8 @@ This ensures visible, incremental progress to the user.`;
 
     private async loadTodos(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.todosPath);
-
-            const content = await fs.readFile(fullPath, 'utf-8');
+            const fullPath = require('path').resolve(process.cwd(), this.todosPath);
+            const content = await Bun.file(fullPath).text();
             this.todos = JSON.parse(content);
         } catch (e) {
             this.todos = [];

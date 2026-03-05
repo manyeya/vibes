@@ -484,8 +484,8 @@ ${context ? `Context: ${context}` : ''}`,
                         let data: any;
                         try {
                             const jsonMatch = text.match(/```json\s*(\{[\s\S]*\})\s*```/) ||
-                                            text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
-                                            text.match(/(\{[\s\S]*\})/);
+                                text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
+                                text.match(/(\{[\s\S]*\})/);
                             if (!jsonMatch) {
                                 throw new Error('No JSON found in response');
                             }
@@ -567,12 +567,9 @@ ${context ? `Context: ${context}` : ''}`,
      */
     private async persistPatterns(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.config.patternsPath);
-
-            await fs.mkdir(pathModule.dirname(fullPath), { recursive: true });
-            await fs.writeFile(fullPath, JSON.stringify(Array.from(this.patterns.values()), null, 2));
+            const fullPath = require('path').resolve(process.cwd(), this.config.patternsPath);
+            Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
+            await Bun.write(fullPath, JSON.stringify(Array.from(this.patterns.values()), null, 2));
         } catch (e) {
             console.error('Failed to persist patterns:', e);
         }
@@ -583,11 +580,8 @@ ${context ? `Context: ${context}` : ''}`,
      */
     private async loadPatterns(): Promise<void> {
         try {
-            const fs = await import('fs/promises');
-            const pathModule = await import('path');
-            const fullPath = pathModule.resolve(process.cwd(), this.config.patternsPath);
-
-            const content = await fs.readFile(fullPath, 'utf-8');
+            const fullPath = require('path').resolve(process.cwd(), this.config.patternsPath);
+            const content = await Bun.file(fullPath).text();
             const loaded = JSON.parse(content) as Pattern[];
 
             for (const pattern of loaded) {
