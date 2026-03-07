@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "devtools": "npx @ai-sdk/devtools"
   },
   "dependencies": {
     "@ai-sdk/devtools": "^0.0.8",

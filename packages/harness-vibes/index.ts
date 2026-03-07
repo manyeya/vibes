@@ -1,6 +1,7 @@
 // Bun types are only available in Bun runtime
 // This file doesn't use Bun-specific APIs directly, so no reference needed
 
+import { type LanguageModel } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import {
     SkillsPlugin,
@@ -36,6 +37,7 @@ import {
     AgentState,
     VibeAgentConfig,
     SubAgent,
+    Plugin,
     TaskItem,
     TaskTemplate,
     TaskType,
@@ -43,6 +45,7 @@ import {
     VibesUIMessage,
     createDataStreamWriter,
     DataStreamWriter,
+    ToolsRequiringApprovalConfig,
 } from './src/core/types';
 import { VibeAgent } from './src/core/agent';
 export { createDeepAgentStreamResponse } from './src/core/agent-stream';
@@ -75,17 +78,75 @@ interface DeepAgentConfig extends Partial<Omit<VibeAgentConfig, 'instructions'>>
     swarmId?: string;
 }
 
+interface DefaultPluginFactoryOptions {
+    model: LanguageModel;
+    workspaceDir: string;
+    sessionId?: string;
+    swarmId?: string;
+}
+
+export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugin[] {
+    return [
+        new PlanningPlugin(config.model, {
+            planPath: `${config.workspaceDir}/plan.md`,
+            maxRecitationTasks: 10,
+        }),
+        new ReasoningPlugin(config.model, {
+            initialMode: 'tot',
+            maxBranches: 5,
+            autoExplore: true,
+            complexityThreshold: 5,
+        }),
+        new ReflexionPlugin(config.model, {
+            maxLessons: 100,
+            lessonsPath: `${config.workspaceDir}/lessons.json`,
+            autoAnalyzeErrors: true,
+            analysisThreshold: 2,
+            autoSuggestLessons: true,
+        }),
+        new SemanticMemoryPlugin(undefined, {
+            maxFacts: 200,
+            factsPath: `${config.workspaceDir}/facts.json`,
+            similarityThreshold: 0.3,
+            autoExtract: true,
+        }),
+        new ProceduralMemoryPlugin(config.model, {
+            maxPatterns: 50,
+            patternsPath: `${config.workspaceDir}/patterns.json`,
+            autoSuggest: true,
+        }),
+        new SwarmPlugin(
+            config.swarmId || config.sessionId || 'default',
+            {
+                maxStateEntries: 100,
+                maxSignalHistory: 50,
+                statePath: `${config.workspaceDir}/swarm-state.json`,
+                persistState: true,
+            }
+        ),
+        new SkillsPlugin(),
+        new FilesystemPlugin({ baseDir: config.workspaceDir }),
+        new BashPlugin(config.workspaceDir),
+        new MemoryPlugin(),
+    ];
+}
+
 /**
  * DeepAgent is a sophisticated AI agent framework built on Vercel AI SDK v6.
  * It supports multi-step reasoning, persistent state with task dependencies,
  * real filesystem access, modular skills, and sub-agent delegation.
  */
 export class DeepAgent extends VibeAgent {
+    private readonly deepAgentConfig: DeepAgentConfig;
+    private readonly parentCustomTools: Record<string, any>;
+    private readonly parentApprovalConfig: ToolsRequiringApprovalConfig;
+
     /**
      * Initializes a new DeepAgent instance.
      * @param config Optional configuration to customize model, prompt, and plugins.
      */
     constructor(config: DeepAgentConfig = {}) {
+        const normalizedConfig = { ...config };
         const baseInstructions = `<identity>
     You are DeepAgent, a sophisticated autonomous AI agent built on the Vibes framework. You specialize in systematic planning, deep reasoning, and high-fidelity execution across complex software projects.
 </identity>
@@ -132,7 +193,7 @@ export class DeepAgent extends VibeAgent {
 
     <capability name="Multi-Agent Collaboration">
         - \`swarm\`: Share state and signal other agents via \`swarm_set_state\`, \`swarm_send_signal\`, and \`swarm_propose_task\`.
-        - \`delegate_task\` / \`delegate_parallel\`: Spawn specialized sub-agents for parallel or complex work.
+        - \`delegate\` / \`parallel_delegate\`: Spawn specialized sub-agents for parallel or complex work.
     </capability>
 </extensible_capabilities>
 
@@ -151,19 +212,23 @@ export class DeepAgent extends VibeAgent {
 <rules>
     - **Specific Tasks**: Tasks MUST include file paths. BAD: "fix bug". GOOD: "Update validation() in src/auth.ts".
     - **Read Before Write**: Always read a file before modifying it to ensure context is accurate.
-    - **Sub-Agent Results**: Results are saved to \`subagent_results/\`. ALWAYS read them to understand delegated work.
+    - **Sub-Agent Results**: Use the structured delegation result first. Read the artifact in \`subagent_results/\` only when the summary is insufficient or you need audit/debug detail.
     - **Minimalism**: Make direct, necessary changes. Avoid over-engineering or unnecessary refactors.
     - **Learning from Error**: If a tool fails twice with the same error, you MUST stop and use \`reflexion_analyze_errors\`.
 </rules>`;
 
         super({
-            model: config.model || openai('gpt-4o'),
+            model: normalizedConfig.model || openai('gpt-4o'),
             instructions: baseInstructions,
-            ...config,
+            ...normalizedConfig,
         });
 
+        this.deepAgentConfig = normalizedConfig;
+        this.parentCustomTools = { ...(normalizedConfig.tools ?? {}) };
+        this.parentApprovalConfig = normalizedConfig.toolsRequiringApproval ?? [];
+
         // Initialize built-in plugins
-        this.initializePlugins(config);
+        this.initializePlugins(normalizedConfig);
     }
 
     private initializePlugins(config: DeepAgentConfig): void {
@@ -171,76 +236,12 @@ export class DeepAgent extends VibeAgent {
         const workspaceDir = config.workspaceDir || 'workspace';
 
         if (!skipDefaults) {
-            this.addPlugin([
-                // PlanningPlugin extends TasksPlugin with deep agent features:
-                // - Task recitation (always-in-view current plan)
-                // - Plan save/load from filesystem
-                // - Hierarchical task support
-                new PlanningPlugin(this.model, {
-                    planPath: `${workspaceDir}/plan.md`,
-                    maxRecitationTasks: 10,
-                }),
-                // ReasoningPlugin provides multiple reasoning patterns:
-                // - ReAct: Think-act loop (default)
-                // - ToT: Tree-of-Thoughts for parallel exploration
-                // - Plan-Execute: Separate planning and execution phases
-                new ReasoningPlugin(this.model, {
-                    initialMode: 'tot',
-                    maxBranches: 5,
-                    autoExplore: true,
-                    complexityThreshold: 5,
-                }),
-                // ReflexionPlugin adds self-improvement capabilities:
-                // - Automatic error analysis and lesson extraction
-                // - Structured lesson storage with metadata
-                // - Contextual lesson retrieval and suggestion
-                new ReflexionPlugin(this.model, {
-                    maxLessons: 100,
-                    lessonsPath: `${workspaceDir}/lessons.json`,
-                    autoAnalyzeErrors: true,
-                    analysisThreshold: 2,
-                    autoSuggestLessons: true,
-                }),
-                // SemanticMemoryPlugin provides vector-based fact storage:
-                // - Store facts with optional embeddings for semantic search
-                // - Retrieve relevant facts by meaning (RAG-style memory)
-                // - Keyword-based fallback when embeddings unavailable
-                // - Persistent storage to workspace/facts.json
-                new SemanticMemoryPlugin(undefined, {
-                    maxFacts: 200,
-                    factsPath: `${workspaceDir}/facts.json`,
-                    similarityThreshold: 0.3,
-                    autoExtract: true,
-                }),
-                // ProceduralMemoryPlugin stores reusable patterns and workflows:
-                // - Store successful approaches as reusable patterns
-                // - Retrieve relevant patterns by context
-                // - Track pattern success rates over time
-                // - Persistent storage to workspace/patterns.json
-                new ProceduralMemoryPlugin(this.model, {
-                    maxPatterns: 50,
-                    patternsPath: `${workspaceDir}/patterns.json`,
-                    autoSuggest: true,
-                }),
-                // SwarmPlugin enables decentralized multi-agent collaboration:
-                // - Shared state between agents
-                // - Signaling between agents
-                // - Task proposal and claiming for swarm coordination
-                // - Persistent swarm state
-                new SwarmPlugin(
-                    config.swarmId || config.sessionId || 'default',
-                    {
-                        maxStateEntries: 100,
-                        maxSignalHistory: 50,
-                        statePath: `${workspaceDir}/swarm-state.json`,
-                        persistState: true,
-                    }
-                ),
-                new SkillsPlugin(),
-                new FilesystemPlugin({ baseDir: workspaceDir }),
-                new BashPlugin(workspaceDir),
-                new MemoryPlugin()
-            ])
+            this.addPlugin(createDefaultPlugins({
+                model: this.model,
+                workspaceDir,
+                sessionId: config.sessionId,
+                swarmId: config.swarmId,
+            }));
         }
 
         // SubAgent plugin
@@ -255,8 +256,14 @@ export class DeepAgent extends VibeAgent {
         this.addPlugin(new SubAgentPlugin(
             subAgentMap,
             this.model,
-            () => this.getAllTools(),
-            () => this.plugins,
+            ({ model, workspaceDir: subAgentWorkspaceDir }) => createDefaultPlugins({
+                model: model || this.model,
+                workspaceDir: subAgentWorkspaceDir || workspaceDir,
+                sessionId: this.deepAgentConfig.sessionId,
+                swarmId: this.deepAgentConfig.swarmId,
+            }),
+            () => ({ ...this.parentCustomTools }),
+            this.parentApprovalConfig,
             workspaceDir
         ))
 
