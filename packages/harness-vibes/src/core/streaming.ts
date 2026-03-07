@@ -107,10 +107,13 @@ export interface VibesDataParts extends Record<string, unknown> {
 
     /** Sub-agent delegation updates */
     delegation: {
+        delegationId: string;
         agentName: string;
         task: string;
         status: 'starting' | 'in_progress' | 'complete' | 'failed';
-        result?: unknown;
+        artifactPath?: string;
+        summary?: string;
+        error?: string;
     };
 }
 
@@ -298,15 +301,20 @@ export class DataStreamWriter {
 
     /** Write delegation update */
     writeDelegation(
+        delegationId: string,
         agentName: string,
         task: string,
         status: 'starting' | 'in_progress' | 'complete' | 'failed',
-        result?: unknown
+        options: {
+            artifactPath?: string;
+            summary?: string;
+            error?: string;
+        } = {}
     ): void {
         if (!this.writer) return;
         this.writer.write({
             type: 'data-delegation',
-            data: { agentName, task, status, result },
+            data: { delegationId, agentName, task, status, ...options },
         } as const);
     }
 

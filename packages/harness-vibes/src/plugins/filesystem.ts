@@ -168,7 +168,7 @@ You have direct access to your designated workspace via FilesystemMiddleware.
 - Your workspace root is: ${this.baseDir}
 - Use readFile() and writeFile() to manage files in your workspace.
 - Use list_files() to explore your workspace structure.
-- **Sub-agent results** are saved to \`subagent_results/\` within your workspace. Always read them to understand sub-agent work.
+- **Sub-agent results** are saved to \`subagent_results/\` within your workspace. Use the structured delegation result first; read the artifact only when the summary is insufficient or you need audit/debug detail.
 - Treat this workspace as your primary repository for manuscripts, code, and findings.`;
     }
 }

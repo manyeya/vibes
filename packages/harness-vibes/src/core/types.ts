@@ -1,6 +1,7 @@
 import {
     type LanguageModel,
     type ModelMessage,
+    type StopCondition,
     type Tool,
     type UIMessageStreamWriter,
     type StreamTextResult,
@@ -11,6 +12,18 @@ import {
 
 // Re-export ModelMessage for plugin use
 export type { ModelMessage };
+
+/**
+ * Tool approval policy - either boolean or predicate function.
+ */
+export type ToolApprovalPolicy = boolean | ((args: unknown) => boolean | Promise<boolean>);
+
+/**
+ * Tool approval configuration.
+ */
+export type ToolsRequiringApprovalConfig =
+    | string[]
+    | Record<string, ToolApprovalPolicy>;
 
 // Import streaming types
 import type { VibesUIMessage, VibesDataParts } from './streaming.js';
@@ -161,6 +174,8 @@ export interface SubAgent {
     description: string;
     /** The core persona and operating rules for the sub-agent */
     systemPrompt: string;
+    /** Execution model for the sub-agent */
+    mode?: 'custom' | 'general-purpose';
     /** Custom tool definitions (object) or explicit tool names to include (deprecated, use allowedTools) */
     tools?: string[] | Record<string, Tool<any, any>>;
     /** Whitelist of inherited tool names to allow (undefined = all inherited tools allowed) */
@@ -169,8 +184,20 @@ export interface SubAgent {
     blockedTools?: string[];
     /** Optional specific model to use for this sub-agent */
     model?: LanguageModel;
-    /** Optional existing plugin instances to share with this sub-agent */
+    /** Whether this sub-agent may delegate further work */
+    allowSubdelegation?: boolean;
+    /** Whether to persist sub-agent artifacts for audit/debugging */
+    artifactMode?: 'always' | 'errors-only' | 'never';
+    /** Optional approval policy for custom sub-agent tools */
+    toolsRequiringApproval?: ToolsRequiringApprovalConfig;
+    /**
+     * Optional plugin instances for a custom sub-agent.
+     */
     plugins?: Plugin[];
+    /**
+     * @deprecated Use mode: 'general-purpose' instead.
+     */
+    inheritPlugins?: boolean;
     /** @deprecated Use plugins instead - kept for backward compatibility */
     middleware?: Plugin[];
 }
@@ -321,6 +348,8 @@ export interface VibeAgentConfig {
     tools?: Record<string, Tool<any, any>>;
     /** Maximum number of reasoning steps per invocation (default: 20) */
     maxSteps?: number;
+    /** Optional custom stop condition(s) for the tool loop */
+    stopWhen?: StopCondition<ToolSet> | Array<StopCondition<ToolSet>>;
     /** Maximum messages before context compression kicks in (default: 30) */
     maxContextMessages?: number;
     /** Model temperature for controlling randomness */
@@ -336,7 +365,7 @@ export interface VibeAgentConfig {
     /** The base directory for filesystem operations (e.g., 'workspace') */
     workspaceDir?: string;
     /** List of tool names that require explicit user approval before execution */
-    toolsRequiringApproval?: string[] | Record<string, boolean | ((args: any) => boolean | Promise<boolean>)>;
+    toolsRequiringApproval?: ToolsRequiringApprovalConfig;
     /** Optional whitelist of tool names allowed for this agent instance */
     allowedTools?: string[];
     /** Optional blacklist of tool names to block (takes precedence over allowedTools) */

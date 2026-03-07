@@ -1,6 +1,7 @@
 import {
     ToolLoopAgent,
     convertToModelMessages,
+    stepCountIs,
     type LanguageModel,
     type ModelMessage,
     type ToolSet,
@@ -15,22 +16,14 @@ import {
     VibeAgentStreamResult,
     Plugin,
     ErrorEntry,
+    ToolsRequiringApprovalConfig,
+    ToolApprovalPolicy,
 } from './types';
 
 // Re-export ErrorEntry for convenience
 export type { ErrorEntry };
 
 // ============ TYPE DEFINITIONS ============
-
-/**
- * Tool approval policy - either boolean or predicate function
- */
-type ToolApprovalPolicy = boolean | ((args: unknown) => boolean | Promise<boolean>);
-
-/**
- * Tool approval configuration
- */
-type ToolsRequiringApprovalConfig = string[] | Record<string, ToolApprovalPolicy>;
 
 /**
  * Tool call arguments with known properties
@@ -98,6 +91,17 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     protected toolCache: Record<string, unknown> = {};
     protected pluginsVersion: number = 0;
 
+    protected static resolveStopWhen(config: VibeAgentConfig) {
+        const maxStepCondition = stepCountIs(config.maxSteps ?? 20);
+        if (!config.stopWhen) {
+            return maxStepCondition;
+        }
+
+        return Array.isArray(config.stopWhen)
+            ? [...config.stopWhen, maxStepCondition]
+            : [config.stopWhen, maxStepCondition];
+    }
+
     constructor(config: VibeAgentConfig) {
         // Initialize ToolLoopAgent with base configuration and prepareCall hook
         const settings: ToolLoopAgentSettings<never, ToolSet, never> = {
@@ -106,6 +110,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             tools: config.tools || {},
             temperature: config.temperature,
             onStepFinish: config.onStepFinish,
+            stopWhen: VibeAgent.resolveStopWhen(config),
             // The prepareCall hook is called before each generate/stream
             // This is where we inject our custom logic
             prepareCall: async (baseOptions) => {
@@ -177,6 +182,21 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         // Setup plugin dependencies before any plugin operations
         this.setupPluginDependencies();
         this.toolCache = await this.getAllTools();
+    }
+
+    protected resolveAllowedToolSet(allowedTools?: string[]): Set<string> | undefined {
+        const effectiveAllowedTools = allowedTools ?? this.allowedTools;
+        return effectiveAllowedTools ? new Set(effectiveAllowedTools) : undefined;
+    }
+
+    protected getConfiguredCustomTools(): Record<string, unknown> {
+        return { ...this.customTools };
+    }
+
+    protected getToolsRequiringApprovalConfig(): ToolsRequiringApprovalConfig {
+        return Array.isArray(this.toolsRequiringApproval)
+            ? [...this.toolsRequiringApproval]
+            : { ...this.toolsRequiringApproval };
     }
 
     // ============ PREPARE CALL OVERRIDE ============
@@ -402,13 +422,17 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             }
         }
 
-        // Apply allowedTools filter if specified
-        if (allowedTools) {
+        const allowedToolSet = this.resolveAllowedToolSet(allowedTools);
+        if (allowedToolSet) {
             const filtered: Record<string, unknown> = {};
-            for (const name of allowedTools) {
+            for (const name of allowedToolSet) {
                 if (resolvedTools[name]) {
                     filtered[name] = resolvedTools[name];
                 }
+            }
+            if (!allowedTools) {
+                this.toolCache = filtered;
+                this.pluginsVersion = this.plugins.length;
             }
             return filtered;
         }

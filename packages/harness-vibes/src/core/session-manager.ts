@@ -21,7 +21,7 @@
 
 import * as path from 'path';
 import { VibeAgent } from './agent';
-import type { VibeAgentConfig, Plugin } from './types';
+import type { VibeAgentConfig } from './types';
 import SqliteBackend from '../backend/sqlitebackend';
 import type { SessionInfo } from '../backend/sqlitebackend';
 import type { UIMessageStreamWriter } from 'ai';

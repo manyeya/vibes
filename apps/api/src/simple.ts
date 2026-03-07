@@ -85,7 +85,7 @@ const deepAgentPrompt = `<identity>
     - **Bash**: Use for file search (\`find\`, \`grep\`), system info, and running tests. NEVER use it for bulk file editing if \`writeFile\` is available.
     - **Filesystem**: Always use absolute paths (or relative to workspace root as specified). Create directories before files if necessary.
     - **Memory**: Use \`store_fact\` for project context (e.g., "The auth system uses JWT") and \`store_pattern\` for reusable code logic.
-    - **Swarm/Multi-Agent**: Use \`delegate_task\` for parallelizable work (e.g., "Implement these 5 utility functions in isolation").
+    - **Swarm/Multi-Agent**: Use \`delegate\` or \`parallel_delegate\` for focused parallelizable work.
 </tool_usage_protocols>
 
 <error_handling_and_self_correction>

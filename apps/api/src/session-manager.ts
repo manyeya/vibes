@@ -39,37 +39,55 @@ const defaultSubAgents = [
         description: 'Specialized in high-level task breakdown, recursive execution, and progress tracking.',
         systemPrompt: `You are Planner, the strategic logical core of the team.
         Your role is to break complex requests into exhaustive, actionable todo lists.`,
-        allowedTools: ["writeFile", "readFile"]
+        mode: 'general-purpose' as const,
+        allowedTools: ['create_plan', 'generate_tasks', 'update_task', 'get_next_tasks', 'list_tasks', 'readFile'],
+        allowSubdelegation: false,
+        artifactMode: 'always' as const,
     },
     {
         name: 'Librarian',
         description: 'Focused on codebase documentation, design patterns, and systemic context.',
         systemPrompt: `You are Librarian. Your role is to maintain the "Source of Truth" for the project.`,
-        allowedTools: ["writeFile", "readFile"]
+        mode: 'general-purpose' as const,
+        allowedTools: ['readFile', 'list_files'],
+        allowSubdelegation: false,
+        artifactMode: 'always' as const,
     },
     {
         name: 'Explorer',
         description: 'Specialized in navigating large codebases and finding relevant files/logic.',
         systemPrompt: `You are Explorer. Your role is to map out the codebase and find exactly what is needed.`,
-        allowedTools: ["writeFile", "readFile", "bash"]
+        mode: 'general-purpose' as const,
+        allowedTools: ['readFile', 'list_files', 'bash'],
+        allowSubdelegation: false,
+        artifactMode: 'always' as const,
     },
     {
         name: 'Oracle',
         description: 'RAG-based knowledge retrieval and expert Q&A for the codebase.',
         systemPrompt: `You are Oracle. Your role is to answer complex questions about the system logic and architecture.`,
-        allowedTools: ["writeFile", "readFile"]
+        mode: 'general-purpose' as const,
+        allowedTools: ['readFile', 'list_files', 'webSearch'],
+        allowSubdelegation: false,
+        artifactMode: 'always' as const,
     },
     {
         name: 'SuperCoder',
         description: 'Elite Front End UI/UX Engineer and Creative Technologist.',
         systemPrompt: `You are SuperCoder, the master of implementation. Focus on stunning visuals, fluid interactions, and flawless performance.`,
-        allowedTools: ["writeFile", "readFile", "bash", "activate_skill"],
+        mode: 'general-purpose' as const,
+        allowedTools: ['readFile', 'writeFile', 'list_files', 'bash', 'activate_skill'],
+        allowSubdelegation: false,
+        artifactMode: 'always' as const,
     },
     {
         name: 'BrowserAgent',
         description: 'Browser Automation with agent-browser for research and testing.',
         systemPrompt: `You are BrowserAgent. Your role is to interact with the web and verify the UI.`,
-        allowedTools: ["writeFile", "readFile", "bash", "activate_skill"]
+        mode: 'general-purpose' as const,
+        allowedTools: ['bash', 'activate_skill', 'readFile', 'writeFile'],
+        allowSubdelegation: false,
+        artifactMode: 'always' as const,
     }
 ];
 
