@@ -6,9 +6,11 @@ import z from 'zod';
 import {
     VibesUIMessage,
     Plugin,
+    PluginStreamContext,
     SubAgent,
     ToolsRequiringApprovalConfig,
     VibeAgentConfig,
+    createScopedUIMessageStreamWriter,
     createDataStreamWriter,
     type DataStreamWriter,
 } from '../core/types';
@@ -116,7 +118,8 @@ interface CompletionTracker {
 }
 
 interface ExecutionResult {
-    rawResult: Awaited<ReturnType<VibeAgent['generate']>>;
+    rawText: string;
+    steps: Array<{ content?: Array<{ type: string; text?: string; toolName?: string }> }>;
     completionPayload: CompletionPayload | null;
 }
 
@@ -277,7 +280,7 @@ function buildErrorArtifactContent(options: {
     return `# ${options.agentName} Task Failure\n\n## Task\n${options.request.task}\n\n## Error Code\n${options.errorCode}\n\n## Summary\n${options.summary}\n\n## Error\n${options.error}\n\n## Raw Output\n${options.rawText?.trim() ? options.rawText : 'None'}`;
 }
 
-function hasPostCompletionActivity(rawResult: ExecutionResult['rawResult']): boolean {
+function hasPostCompletionActivity(rawResult: ExecutionResult): boolean {
     let completionSeen = false;
 
     for (const step of rawResult.steps ?? []) {
@@ -296,7 +299,7 @@ function hasPostCompletionActivity(rawResult: ExecutionResult['rawResult']): boo
             }
 
             if (part.type === 'text' || part.type === 'reasoning') {
-                if (part.text.trim().length > 0) {
+                if (typeof part.text === 'string' && part.text.trim().length > 0) {
                     return true;
                 }
                 continue;
@@ -312,6 +315,7 @@ function hasPostCompletionActivity(rawResult: ExecutionResult['rawResult']): boo
 export default class SubAgentPlugin implements Plugin {
     name = 'SubAgentPlugin';
     private writer?: DataStreamWriter;
+    private streamContext?: PluginStreamContext;
     private readonly registry: DelegationRegistry;
     private readonly normalizedSubAgents: Map<string, NormalizedSubAgent>;
     private readonly generalPurposeToolNames: Set<string>;
@@ -341,8 +345,14 @@ export default class SubAgentPlugin implements Plugin {
         return new Map(this.normalizedSubAgents);
     }
 
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = createDataStreamWriter(writer);
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     private normalizeSubAgents(subAgents: Map<string, SubAgent>): Map<string, NormalizedSubAgent> {
@@ -555,15 +565,26 @@ export default class SubAgentPlugin implements Plugin {
         };
     }
 
-    private async executeSubAgent(subAgent: NormalizedSubAgent, request: DelegationInput): Promise<ExecutionResult> {
+    private async executeSubAgent(
+        subAgent: NormalizedSubAgent,
+        request: DelegationInput,
+        writer?: UIMessageStreamWriter<VibesUIMessage>
+    ): Promise<ExecutionResult> {
         const tracker: CompletionTracker = { callCount: 0, payload: null };
         const agent = this.createAgent(this.buildAgentConfig(subAgent, this.buildCompletionTool(tracker)));
-        const rawResult = await agent.generate({
+        const rawResult = await agent.stream({
             messages: [{ role: 'user', content: buildDelegationMessage(request) }],
+            ...(writer ? { writer } : {}),
         });
+        const [rawText, steps] = await Promise.all([
+            rawResult.text,
+            rawResult.steps,
+            rawResult.response,
+        ]).then(([text, resolvedSteps]) => [text, resolvedSteps] as const);
 
         return {
-            rawResult,
+            rawText,
+            steps,
             completionPayload: tracker.payload,
         };
     }
@@ -627,7 +648,16 @@ export default class SubAgentPlugin implements Plugin {
 
     private async runDelegationTask(subAgent: NormalizedSubAgent, request: DelegationInput): Promise<DelegationSuccessResult | DelegationErrorResult> {
         const delegationId = `${sanitizeFileComponent(subAgent.name)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const delegationOperation = this.streamContext?.createOperation({
+            name: `delegation-${subAgent.name}`,
+            toolName: 'delegate',
+            plugin: this.name,
+            delegationId,
+            agentName: subAgent.name,
+            heartbeatMessage: `${subAgent.name} is still working on the delegated task`,
+        });
         this.writer?.writeDelegation(delegationId, subAgent.name, truncateTask(request.task), 'starting');
+        delegationOperation?.milestone(`Starting delegated task for ${subAgent.name}`, { phase: 'start' });
 
         const cachedEntry = this.registry.get(subAgent.name, request, this.cacheTTL);
         if (cachedEntry) {
@@ -637,6 +667,9 @@ export default class SubAgentPlugin implements Plugin {
                 this.writer?.writeDelegation(delegationId, subAgent.name, truncateTask(request.task), 'complete', {
                     artifactPath: cachedEntry.artifactPath,
                     summary: cachedEntry.summary,
+                });
+                delegationOperation?.complete(`Used cached delegation result from ${subAgent.name}`, {
+                    phase: 'cache',
                 });
                 return {
                     status: 'completed',
@@ -651,9 +684,44 @@ export default class SubAgentPlugin implements Plugin {
         }
 
         this.writer?.writeDelegation(delegationId, subAgent.name, truncateTask(request.task), 'in_progress');
+        delegationOperation?.milestone(`Streaming delegated work from ${subAgent.name}`, { phase: 'stream' });
 
         try {
-            const execution = await this.executeSubAgent(subAgent, request);
+            const scopedWriter = this.streamContext
+                ? createScopedUIMessageStreamWriter(this.streamContext.rawWriter, {
+                    defaults: {
+                        agentName: subAgent.name,
+                        delegationId,
+                        parentOperationId: delegationOperation?.operationId,
+                    },
+                    idPrefix: `${delegationId}:`,
+                })
+                : undefined;
+            const childStreamWriter = scopedWriter
+                ? createDataStreamWriter(scopedWriter).withDefaults({
+                    plugin: this.name,
+                    agentName: subAgent.name,
+                    delegationId,
+                    parentOperationId: delegationOperation?.operationId,
+                })
+                : undefined;
+            const childStreamOperation = childStreamWriter?.createOperation({
+                name: `delegated-${subAgent.name}`,
+                toolName: 'subagent',
+                plugin: this.name,
+                agentName: subAgent.name,
+                delegationId,
+                parentOperationId: delegationOperation?.operationId,
+                heartbeatMessage: `${subAgent.name} is analyzing and executing the delegated task`,
+            });
+            childStreamOperation?.progress('starting', {
+                phase: 'start',
+                message: `${subAgent.name} started delegated work`,
+            });
+            childStreamOperation?.milestone(`Delegated work is active in ${subAgent.name}`, {
+                phase: 'stream',
+            });
+            const execution = await this.executeSubAgent(subAgent, request, scopedWriter);
 
             if (!execution.completionPayload) {
                 const failure = await this.createErrorResult({
@@ -663,17 +731,27 @@ export default class SubAgentPlugin implements Plugin {
                     errorCode: 'missing_completion',
                     summary: `${subAgent.name} did not call ${COMPLETION_TOOL_NAME}.`,
                     error: `Delegated task completed without a structured ${COMPLETION_TOOL_NAME} signal.`,
-                    rawText: execution.rawResult.text,
+                    rawText: execution.rawText,
                 });
                 this.writer?.writeDelegation(delegationId, subAgent.name, truncateTask(request.task), 'failed', {
                     artifactPath: failure.savedTo,
                     summary: failure.summary,
                     error: failure.error,
                 });
+                delegationOperation?.fail(failure.error, {
+                    toolName: 'delegate',
+                    phase: 'failed',
+                    context: failure.errorCode,
+                });
+                childStreamOperation?.fail(failure.error, {
+                    toolName: 'subagent',
+                    phase: 'failed',
+                    context: failure.errorCode,
+                });
                 return failure;
             }
 
-            if (hasPostCompletionActivity(execution.rawResult)) {
+            if (hasPostCompletionActivity(execution)) {
                 const failure = await this.createErrorResult({
                     delegationId,
                     subAgent,
@@ -681,12 +759,22 @@ export default class SubAgentPlugin implements Plugin {
                     errorCode: 'post_completion_activity',
                     summary: `${subAgent.name} continued working after calling ${COMPLETION_TOOL_NAME}.`,
                     error: `Delegated task kept producing output after completion was reported.`,
-                    rawText: execution.rawResult.text,
+                    rawText: execution.rawText,
                 });
                 this.writer?.writeDelegation(delegationId, subAgent.name, truncateTask(request.task), 'failed', {
                     artifactPath: failure.savedTo,
                     summary: failure.summary,
                     error: failure.error,
+                });
+                delegationOperation?.fail(failure.error, {
+                    toolName: 'delegate',
+                    phase: 'failed',
+                    context: failure.errorCode,
+                });
+                childStreamOperation?.fail(failure.error, {
+                    toolName: 'subagent',
+                    phase: 'failed',
+                    context: failure.errorCode,
                 });
                 return failure;
             }
@@ -725,6 +813,12 @@ export default class SubAgentPlugin implements Plugin {
                 artifactPath: success.savedTo,
                 summary: success.summary,
             });
+            delegationOperation?.complete(`Delegation completed: ${success.summary}`, {
+                phase: 'complete',
+            });
+            childStreamOperation?.complete(`Delegated work completed in ${subAgent.name}`, {
+                phase: 'complete',
+            });
             return success;
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -741,6 +835,39 @@ export default class SubAgentPlugin implements Plugin {
                 artifactPath: failure.savedTo,
                 summary: failure.summary,
                 error: failure.error,
+            });
+            delegationOperation?.fail(failure.error, {
+                toolName: 'delegate',
+                phase: 'failed',
+                context: failure.errorCode,
+            });
+            const scopedWriter = this.streamContext
+                ? createScopedUIMessageStreamWriter(this.streamContext.rawWriter, {
+                    defaults: {
+                        agentName: subAgent.name,
+                        delegationId,
+                        parentOperationId: delegationOperation?.operationId,
+                    },
+                    idPrefix: `${delegationId}:`,
+                })
+                : undefined;
+            scopedWriter && createDataStreamWriter(scopedWriter).withDefaults({
+                plugin: this.name,
+                agentName: subAgent.name,
+                delegationId,
+                parentOperationId: delegationOperation?.operationId,
+            }).createOperation({
+                name: `delegated-${subAgent.name}-failure`,
+                toolName: 'subagent',
+                plugin: this.name,
+                agentName: subAgent.name,
+                delegationId,
+                parentOperationId: delegationOperation?.operationId,
+                heartbeatEnabled: false,
+            }).fail(failure.error, {
+                toolName: 'subagent',
+                phase: 'failed',
+                context: failure.errorCode,
             });
             return failure;
         }

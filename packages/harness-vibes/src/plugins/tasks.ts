@@ -9,6 +9,7 @@ import { z } from 'zod';
 import {
     VibesUIMessage,
     Plugin,
+    PluginStreamContext,
     TaskItem,
     TaskType,
     createDataStreamWriter,
@@ -22,6 +23,7 @@ import {
 export default class TasksPlugin implements Plugin {
     name = 'TasksPlugin';
     protected writer?: DataStreamWriter;
+    protected streamContext?: PluginStreamContext;
     private tasks: TaskItem[] = [];
     private tasksPath: string;
 
@@ -32,8 +34,50 @@ export default class TasksPlugin implements Plugin {
         this.tasksPath = config.tasksPath || 'workspace/tasks.json';
     }
 
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = createDataStreamWriter(writer);
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
+    }
+
+    protected createOperation(name: string, toolName: string) {
+        return this.streamContext?.createOperation({
+            name,
+            toolName,
+            plugin: this.name,
+            heartbeatMessage: `${toolName} is still working`,
+        });
+    }
+
+    protected emitTaskGraph(): void {
+        this.writer?.writeTaskGraph(
+            this.tasks.map(task => ({
+                id: task.id,
+                title: task.title,
+                status: task.status,
+                priority: task.priority,
+            })),
+            this.tasks.flatMap(task => [
+                ...task.blockedBy.map(depId => ({
+                    from: depId,
+                    to: task.id,
+                    type: 'blocks' as const,
+                })),
+                ...task.taskReferences.map(refId => ({
+                    from: task.id,
+                    to: refId,
+                    type: 'related' as const,
+                })),
+            ])
+        );
+    }
+
+    streamTaskGraph(): void {
+        this.emitTaskGraph();
     }
 
     get tools() {
@@ -52,9 +96,14 @@ export default class TasksPlugin implements Plugin {
                     })),
                 }),
                 execute: async ({ tasks }) => {
+                    const operation = this.createOperation('create-tasks', 'create_tasks');
                     const now = new Date().toISOString();
                     const createdTasks: TaskItem[] = [];
                     const taskIds = new Map<string, string>();
+
+                    operation?.milestone(`Creating ${tasks.length} task${tasks.length === 1 ? '' : 's'}`, {
+                        phase: 'prepare',
+                    });
 
                     // Generate task IDs
                     tasks.forEach((_task, index) => {
@@ -105,7 +154,15 @@ export default class TasksPlugin implements Plugin {
 
                         this.writer?.writeTaskUpdate(newTask.id, newTask.status, newTask.title);
                     }
+
+                    operation?.milestone(`Persisting ${createdTasks.length} task${createdTasks.length === 1 ? '' : 's'}`, {
+                        phase: 'persist',
+                    });
                     await this.persistTasks();
+                    this.emitTaskGraph();
+                    operation?.complete(`Created ${createdTasks.length} task${createdTasks.length === 1 ? '' : 's'}`, {
+                        phase: 'complete',
+                    });
 
                     return {
                         success: true,
@@ -128,13 +185,21 @@ The LLM will analyze the request and create specific tasks tied to actual files/
                 }),
                 execute: async ({ request }) => {
                     if (!this.model) {
+                        this.writer?.writeError('No model available for task generation', {
+                            toolName: 'generate_tasks',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: 'No model available for task generation',
                         };
                     }
 
+                    const operation = this.createOperation('generate-tasks', 'generate_tasks');
+                    operation?.milestone('Generating task breakdown', { phase: 'prepare' });
+
                     // Use LLM to generate specific, actionable tasks
+                    operation?.milestone('Calling language model for task breakdown', { phase: 'model' });
                     const { text } = await generateText({
                         model: this.model,
                         system: `You are a task planner. Break down requests into specific, actionable tasks.
@@ -181,6 +246,11 @@ Output ONLY valid JSON, no markdown:
                         }
                         tasksData = JSON.parse(jsonMatch[1]);
                     } catch (e) {
+                        this.writer?.writeError(`Failed to parse task generation: ${e}`, {
+                            toolName: 'generate_tasks',
+                            recoverable: true,
+                            context: text.slice(0, 200),
+                        });
                         return {
                             success: false,
                             error: `Failed to parse task generation: ${e}. Response was: ${text.slice(0, 200)}`,
@@ -190,6 +260,9 @@ Output ONLY valid JSON, no markdown:
                     // Create the tasks using create_tasks logic
                     const now = new Date().toISOString();
                     const createdTasks: TaskItem[] = [];
+                    operation?.milestone(`Parsed ${tasksData.tasks.length} generated task${tasksData.tasks.length === 1 ? '' : 's'}`, {
+                        phase: 'parse',
+                    });
 
                     for (let i = 0; i < tasksData.tasks.length; i++) {
                         const taskDef = tasksData.tasks[i];
@@ -226,7 +299,15 @@ Output ONLY valid JSON, no markdown:
 
                         this.writer?.writeTaskUpdate(newTask.id, newTask.status, newTask.title);
                     }
+
+                    operation?.milestone(`Persisting ${createdTasks.length} generated task${createdTasks.length === 1 ? '' : 's'}`, {
+                        phase: 'persist',
+                    });
                     await this.persistTasks();
+                    this.emitTaskGraph();
+                    operation?.complete(`Generated ${createdTasks.length} task${createdTasks.length === 1 ? '' : 's'}`, {
+                        phase: 'complete',
+                    });
 
                     return {
                         success: true,
@@ -247,10 +328,17 @@ Output ONLY valid JSON, no markdown:
                     addFileReferences: z.array(z.string()).optional(),
                 }),
                 execute: async (input) => {
+                    const operation = this.createOperation('update-task', 'update_task');
                     const current = this.tasks.find(t => t.id === input.id);
                     if (!current) {
+                        this.writer?.writeError(`Task not found: ${input.id}`, {
+                            toolName: 'update_task',
+                            recoverable: true,
+                        });
                         return { success: false, error: 'Task not found' };
                     }
+
+                    operation?.milestone(`Updating task ${current.title}`, { phase: 'update' });
 
                     const updates: Partial<TaskItem> = {};
                     if (input.status !== undefined) updates.status = input.status;
@@ -269,6 +357,8 @@ Output ONLY valid JSON, no markdown:
                         input.status || current.status,
                         current.title
                     );
+                    this.emitTaskGraph();
+                    operation?.complete(`Updated task ${current.title}`, { phase: 'complete' });
 
                     return { success: true, message: `Task ${input.id} updated` };
                 },
@@ -305,11 +395,19 @@ Output ONLY valid JSON, no markdown:
                     confirm: z.boolean(),
                 }),
                 execute: async ({ confirm }) => {
+                    const operation = this.createOperation('clear-tasks', 'clear_tasks');
                     if (!confirm) {
+                        this.writer?.writeError('Must set confirm=true before clearing tasks', {
+                            toolName: 'clear_tasks',
+                            recoverable: true,
+                        });
                         return { success: false, error: 'Must set confirm=true' };
                     }
+                    operation?.milestone('Clearing all tasks', { phase: 'clear' });
                     this.tasks = [];
                     await this.persistTasks();
+                    this.emitTaskGraph();
+                    operation?.complete('Cleared all tasks', { phase: 'complete' });
                     return { success: true, message: 'All tasks cleared' };
                 },
             }),

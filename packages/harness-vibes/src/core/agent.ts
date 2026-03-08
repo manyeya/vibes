@@ -14,10 +14,12 @@ import {
     VibeAgentConfig,
     VibeAgentGenerateResult,
     VibeAgentStreamResult,
+    PluginStreamContext,
     Plugin,
     ErrorEntry,
     ToolsRequiringApprovalConfig,
     ToolApprovalPolicy,
+    createPluginStreamContext,
 } from './types';
 
 // Re-export ErrorEntry for convenience
@@ -90,6 +92,8 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     // Tool cache - initialize with empty object so tools getter always has a value
     protected toolCache: Record<string, unknown> = {};
     protected pluginsVersion: number = 0;
+    protected toolOwners: Record<string, string> = {};
+    protected activeStreamContext?: PluginStreamContext;
 
     protected static resolveStopWhen(config: VibeAgentConfig) {
         const maxStepCondition = stepCountIs(config.maxSteps ?? 20);
@@ -263,11 +267,16 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                 ? await this.convertMessages(prompt as any)
                 : undefined;
 
-        // Trigger plugin onStreamReady hooks
-        if (writer) {
+        const streamContext = writer ? createPluginStreamContext(writer) : undefined;
+        this.activeStreamContext = streamContext;
+
+        // Trigger plugin stream hooks
+        if (streamContext) {
             for (const plugin of this.plugins) {
-                if (plugin.onStreamReady) {
-                    plugin.onStreamReady(writer);
+                if (plugin.onStreamContextReady) {
+                    plugin.onStreamContextReady(streamContext);
+                } else if (plugin.onStreamReady) {
+                    plugin.onStreamReady(streamContext.rawWriter);
                 }
             }
         }
@@ -286,8 +295,14 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                     await plugin.onStreamFinish(finishResult);
                 }
             }
+            if (this.activeStreamContext === streamContext) {
+                this.activeStreamContext = undefined;
+            }
         }).catch((error: Error) => {
             console.error('[VibeAgent] Stream completion error:', error);
+            if (this.activeStreamContext === streamContext) {
+                this.activeStreamContext = undefined;
+            }
         });
 
         return result;
@@ -340,6 +355,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         }
 
         const allTools: Record<string, unknown> = {};
+        const toolOwners: Record<string, string> = {};
 
         // Wait for all plugins to be ready
         for (const plugin of this.plugins) {
@@ -351,19 +367,27 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         // Collect tools from all plugins
         for (const plugin of this.plugins) {
             if (plugin.tools) {
-                Object.assign(allTools, plugin.tools);
+                for (const [toolName, toolDef] of Object.entries(plugin.tools)) {
+                    allTools[toolName] = toolDef;
+                    toolOwners[toolName] = plugin.name;
+                }
             }
         }
 
         // Merge custom tools from config
-        Object.assign(allTools, this.customTools);
+        for (const [toolName, toolDef] of Object.entries(this.customTools)) {
+            allTools[toolName] = toolDef;
+            toolOwners[toolName] ??= 'custom';
+        }
 
         const approvalConfig = this.toolsRequiringApproval;
         const resolvedTools: Record<string, unknown> = {};
+        this.toolOwners = toolOwners;
 
         for (const [toolName, toolDef] of Object.entries(allTools)) {
             const toolDefRecord = toolDef as Record<string, unknown>;
             const originalExecute = toolDefRecord.execute as ((args: unknown, options: unknown) => Promise<unknown>) | undefined;
+            const ownerName = this.toolOwners[toolName] ?? 'custom';
 
             // Determine if this tool needs approval
             let needsApproval = false;
@@ -381,16 +405,41 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                 ...(toolDef as Record<string, unknown>),
                 needsApproval: needsApproval || (toolDefRecord.needsApproval as boolean | undefined),
                 execute: originalExecute ? async (args: unknown, options: unknown) => {
+                    const operation = this.activeStreamContext?.createOperation({
+                        name: toolName,
+                        toolName,
+                        plugin: ownerName,
+                    });
+                    operation?.progress('starting', {
+                        phase: 'starting',
+                        message: `Starting ${toolName}`,
+                        attempt: 1,
+                    });
+
                     // Trigger lifecycle hooks
                     for (const plugin of this.plugins) {
-                        plugin.onInputAvailable?.(args);
+                        plugin.onInputStart?.({ toolName, args });
+                        plugin.onInputAvailable?.({ toolName, args });
                     }
 
                     // Retry logic for tool execution
                     let lastError: Error | undefined;
                     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
                         try {
-                            return await originalExecute(args, options);
+                            operation?.progress('in_progress', {
+                                phase: attempt === 0 ? 'running' : 'retry',
+                                message: attempt === 0
+                                    ? `Running ${toolName}`
+                                    : `Retrying ${toolName} (${attempt + 1}/${this.maxRetries + 1})`,
+                                attempt: attempt + 1,
+                            });
+
+                            const result = await originalExecute(args, options);
+                            operation?.complete(`${toolName} complete`, {
+                                phase: 'complete',
+                                attempt: attempt + 1,
+                            });
+                            return result;
                         } catch (error) {
                             lastError = error instanceof Error ? error : new Error(String(error));
                             if (attempt < this.maxRetries) {
@@ -400,6 +449,15 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                             }
                         }
                     }
+
+                    this.logError(toolName, lastError!.message, `Plugin: ${ownerName}`);
+                    operation?.fail(lastError!.message, {
+                        toolName,
+                        phase: 'failed',
+                        attempt: this.maxRetries + 1,
+                        context: `Plugin: ${ownerName}`,
+                        message: `${toolName} failed`,
+                    });
 
                     // Notify plugins of final failure after all retries exhausted
                     for (const plugin of this.plugins) {

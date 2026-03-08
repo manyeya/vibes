@@ -1,4 +1,4 @@
-import { DeepAgent } from "harness-vibes";
+import { DeepAgent } from "../../../packages/harness-vibes/index";
 import { dotenvLoad } from "dotenv-mono";
 import { wrapLanguageModel } from "ai";
 import { createZhipu } from "zhipu-ai-provider";

@@ -3,6 +3,7 @@ import SubAgentPlugin from '../src/plugins/subagent';
 import type { Plugin, VibeAgentConfig } from '../src/core/types';
 import {
   completionSteps,
+  createStreamResult,
   createTempWorkspace,
   createTool,
   recordCompletion,
@@ -43,7 +44,7 @@ function createParallelPlugin(options: {
     60 * 60 * 1000,
     options.maxConcurrentAgents,
     (config) => ({
-      generate: (call: { messages?: any[] }) => options.generate(config, call),
+      stream: (call: { messages?: any[] }) => options.generate(config, call),
     } as any)
   );
 }
@@ -64,10 +65,7 @@ describe('SubAgentPlugin parallel delegation', () => {
           await Bun.sleep(20);
           await recordCompletion(config, 'done');
           active -= 1;
-          return {
-            text: 'done',
-            steps: completionSteps('done'),
-          };
+          return createStreamResult('done', completionSteps('done'));
         },
       });
 
@@ -100,16 +98,10 @@ describe('SubAgentPlugin parallel delegation', () => {
           calls += 1;
           const taskText = String(call.messages?.[0]?.content ?? '');
           if (taskText.includes('Task 1')) {
-            return {
-              text: 'failed before completion',
-              steps: [],
-            };
+            return createStreamResult('failed before completion', []);
           }
           await recordCompletion(config, 'done');
-          return {
-            text: 'done',
-            steps: completionSteps('done'),
-          };
+          return createStreamResult('done', completionSteps('done'));
         },
       });
 
@@ -143,16 +135,10 @@ describe('SubAgentPlugin parallel delegation', () => {
           calls += 1;
           const taskText = String(call.messages?.[0]?.content ?? '');
           if (taskText.includes('Task 2')) {
-            return {
-              text: 'failed before completion',
-              steps: [],
-            };
+            return createStreamResult('failed before completion', []);
           }
           await recordCompletion(config, 'done');
-          return {
-            text: 'done',
-            steps: completionSteps('done'),
-          };
+          return createStreamResult('done', completionSteps('done'));
         },
       });
 

@@ -1,4 +1,11 @@
-import { Plugin } from '../core/types';
+import {
+    Plugin,
+    PluginStreamContext,
+    VibesUIMessage,
+    createDataStreamWriter,
+    type DataStreamWriter,
+} from '../core/types';
+import type { UIMessageStreamWriter } from 'ai';
 
 /**
  * MCP client types from @ai-sdk/mcp
@@ -29,11 +36,23 @@ interface MCPClient {
 export class McpPlugin implements Plugin {
     name = 'McpPlugin';
     tools: Record<string, any> = {};
+    private writer?: DataStreamWriter;
+    private streamContext?: PluginStreamContext;
 
     /**
      * @param clients Pre-configured MCP clients (created via createMCPClient from @ai-sdk/mcp)
      */
     constructor(private clients: Array<{ name: string; client: MCPClient }>) {}
+
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
+    }
 
     async waitReady() {
         // Initialize tools from each MCP client
@@ -45,7 +64,16 @@ export class McpPlugin implements Plugin {
                         description: tool.description,
                         inputSchema: tool.inputSchema,
                         execute: async (args: Record<string, unknown>) => {
-                            return await client.callTool(tool.description, args);
+                            const operation = this.streamContext?.createOperation({
+                                name: `mcp-${name}-${tool.description}`,
+                                toolName: `${name}_${tool.description}`,
+                                plugin: this.name,
+                                heartbeatEnabled: false,
+                            });
+                            operation?.milestone(`Calling MCP server "${name}"`, { phase: 'remote' });
+                            const result = await client.callTool(tool.description, args);
+                            operation?.complete(`MCP tool completed: ${tool.description}`, { phase: 'complete' });
+                            return result;
                         },
                     };
                 }

@@ -1,5 +1,11 @@
 import { tool, type UIMessageStreamWriter } from "ai";
-import { VibesUIMessage, Plugin } from "../core/types";
+import {
+    VibesUIMessage,
+    Plugin,
+    PluginStreamContext,
+    createDataStreamWriter,
+    type DataStreamWriter,
+} from "../core/types";
 import z from "zod";
 import { $ } from "bun";
 import * as path from "path";
@@ -48,7 +54,8 @@ function getFileType(filePath: string): string {
  */
 export default class FilesystemPlugin implements Plugin {
     name = 'FilesystemPlugin';
-    private writer?: UIMessageStreamWriter<VibesUIMessage>;
+    private writer?: DataStreamWriter;
+    private streamContext?: PluginStreamContext;
     private baseDir: string;
     private trackedFilesPath: string;
     private trackedFiles: Set<string> = new Set();
@@ -62,8 +69,14 @@ export default class FilesystemPlugin implements Plugin {
         await this.loadTrackedFiles();
     }
 
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = writer;
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     private resolvePath(relativePath: string): string {
@@ -110,12 +123,22 @@ export default class FilesystemPlugin implements Plugin {
                     path: z.string().describe('Relative path to the file from the workspace root'),
                 }),
                 execute: async ({ path: relativePath }) => {
+                    const operation = this.streamContext?.createOperation({
+                        name: 'read-file',
+                        toolName: 'readFile',
+                        plugin: this.name,
+                        heartbeatEnabled: false,
+                    });
+                    operation?.milestone(`Resolving ${relativePath}`, { phase: 'resolve' });
                     const fullPath = this.resolvePath(relativePath);
                     const file = Bun.file(fullPath);
                     if (!await file.exists()) {
                         throw new Error(`File not found: ${relativePath} in workspace`);
                     }
-                    return { content: await file.text() };
+                    operation?.milestone(`Reading ${relativePath}`, { phase: 'read' });
+                    const content = await file.text();
+                    operation?.complete(`Read ${relativePath}`, { phase: 'complete' });
+                    return { content };
                 },
             }),
 
@@ -126,16 +149,26 @@ export default class FilesystemPlugin implements Plugin {
                     content: z.string().describe('Content to write'),
                 }),
                 execute: async ({ path: relativePath, content }) => {
+                    const operation = this.streamContext?.createOperation({
+                        name: 'write-file',
+                        toolName: 'writeFile',
+                        plugin: this.name,
+                        heartbeatEnabled: false,
+                    });
                     const fullPath = this.resolvePath(relativePath);
 
                     // Ensure parent directory exists
                     const parentDir = path.dirname(fullPath);
+                    operation?.milestone(`Ensuring directory exists for ${relativePath}`, { phase: 'mkdir' });
                     await $`mkdir -p ${parentDir}`.quiet();
 
+                    operation?.milestone(`Writing ${relativePath}`, { phase: 'write' });
                     const bytes = await Bun.write(fullPath, content);
 
                     // Track the file in the current session
+                    operation?.milestone(`Tracking ${relativePath}`, { phase: 'track' });
                     await this.trackFile(relativePath);
+                    operation?.complete(`Wrote ${relativePath}`, { phase: 'complete' });
 
                     return { success: true, bytesWritten: bytes, savedTo: relativePath };
                 },
@@ -148,12 +181,22 @@ export default class FilesystemPlugin implements Plugin {
                     recursive: z.boolean().optional().default(false).describe('Whether to list recursively'),
                 }),
                 execute: async ({ directory, recursive }) => {
+                    const operation = this.streamContext?.createOperation({
+                        name: 'list-files',
+                        toolName: 'list_files',
+                        plugin: this.name,
+                        heartbeatEnabled: false,
+                    });
+                    operation?.milestone(`Scanning ${directory}${recursive ? ' recursively' : ''}`, { phase: 'scan' });
                     const globPattern = recursive ? `${directory}/**/*` : `${directory}/*`;
                     const glob = new Bun.Glob(globPattern);
                     const files = [];
                     for await (const file of glob.scan(this.baseDir)) {
                         files.push(file);
                     }
+                    operation?.complete(`Found ${files.length} file${files.length === 1 ? '' : 's'}`, {
+                        phase: 'complete',
+                    });
                     return { files };
                 },
             }),

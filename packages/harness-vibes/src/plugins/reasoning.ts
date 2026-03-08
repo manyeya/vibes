@@ -5,7 +5,13 @@ import {
     type LanguageModel,
 } from 'ai';
 import { z } from 'zod';
-import { VibesUIMessage, Plugin } from '../core/types';
+import {
+    VibesUIMessage,
+    Plugin,
+    PluginStreamContext,
+    createDataStreamWriter,
+    type DataStreamWriter,
+} from '../core/types';
 
 /**
  * Reasoning modes supported by the plugin
@@ -103,7 +109,8 @@ export interface ReasoningConfig {
 export class ReasoningPlugin implements Plugin {
     name = 'ReasoningPlugin';
 
-    private writer?: UIMessageStreamWriter<VibesUIMessage>;
+    private writer?: DataStreamWriter;
+    private streamContext?: PluginStreamContext;
     private model?: LanguageModel;
     private config: Required<ReasoningConfig>;
 
@@ -132,8 +139,23 @@ export class ReasoningPlugin implements Plugin {
     /**
      * Initialize the writer for streaming data to the UI
      */
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = writer;
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
+    }
+
+    private createOperation(name: string, toolName: string) {
+        return this.streamContext?.createOperation({
+            name,
+            toolName,
+            plugin: this.name,
+            heartbeatEnabled: false,
+        });
     }
 
     /**
@@ -168,6 +190,7 @@ Use 'plan-execute' for well-defined, multi-step processes.`,
                     mode: z.enum(['react', 'tot', 'plan-execute']).describe('The reasoning mode to switch to'),
                 }),
                 execute: async ({ mode }) => {
+                    const operation = this.createOperation('set-reasoning-mode', 'set_reasoning_mode');
                     const previousMode = this.state.mode;
                     this.state.mode = mode;
 
@@ -176,7 +199,9 @@ Use 'plan-execute' for well-defined, multi-step processes.`,
                     this.state.evaluations = [];
                     this.state.cycleCount = 0;
 
+                    this.writer?.writeReasoningMode(mode);
                     this.notifyStatus(`Switched reasoning mode: ${previousMode} → ${mode}`);
+                    operation?.complete(`Reasoning mode set to ${mode}`, { phase: 'complete' });
 
                     return {
                         success: true,
@@ -202,16 +227,25 @@ Creates N thought branches, each with a proposed approach and expected outcome.`
                 }),
                 execute: async ({ problem, count, context }) => {
                     if (!this.model) {
+                        this.writer?.writeError('No model available for thought generation', {
+                            toolName: 'explore_thoughts',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: 'No model available for thought generation',
                         };
                     }
 
+                    const operation = this.createOperation('explore-thoughts', 'explore_thoughts');
+                    operation?.milestone('Preparing thought exploration', { phase: 'prepare' });
 
                     const actualCount = Math.min(count, this.config.maxBranches);
 
                     try {
+                        operation?.milestone(`Calling language model for ${actualCount} thought branch${actualCount === 1 ? '' : 'es'}`, {
+                            phase: 'model',
+                        });
                         const { text } = await generateText({
                             model: this.model,
                             system: `You are an expert at exploring multiple approaches to complex problems.
@@ -256,6 +290,10 @@ ${context ? `\nContext:\n${context}` : ''}`,
                             data = JSON.parse(jsonMatch[1]);
 
                         } catch (e) {
+                            this.writer?.writeError(`Failed to parse thoughts: ${e}`, {
+                                toolName: 'explore_thoughts',
+                                recoverable: true,
+                            });
                             return {
                                 success: false,
                                 error: `Failed to parse thoughts: ${e}`,
@@ -280,7 +318,13 @@ ${context ? `\nContext:\n${context}` : ''}`,
                         this.state.branches = branches;
                         this.state.cycleCount++;
 
+                        operation?.milestone(`Parsed ${branches.length} thought branch${branches.length === 1 ? '' : 'es'}`, {
+                            phase: 'parse',
+                        });
                         this.notifyThoughts(branches);
+                        operation?.complete(`Generated ${branches.length} thought branch${branches.length === 1 ? '' : 'es'}`, {
+                            phase: 'complete',
+                        });
 
                         return {
                             success: true,
@@ -289,6 +333,10 @@ ${context ? `\nContext:\n${context}` : ''}`,
                             message: `Generated ${branches.length} thought branches. Use evaluate_thoughts() to score them.`,
                         };
                     } catch (e) {
+                        this.writer?.writeError(`Thought generation failed: ${e}`, {
+                            toolName: 'explore_thoughts',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: `Thought generation failed: ${e}`,
@@ -307,6 +355,10 @@ Use after explore_thoughts() to decide which approach to pursue.`,
                 }),
                 execute: async ({ criteria, context }) => {
                     if (this.state.branches.length === 0) {
+                        this.writer?.writeError('No thought branches to evaluate. Use explore_thoughts() first.', {
+                            toolName: 'evaluate_thoughts',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: 'No thought branches to evaluate. Use explore_thoughts() first.',
@@ -314,11 +366,20 @@ Use after explore_thoughts() to decide which approach to pursue.`,
                     }
 
                     if (!this.model) {
+                        this.writer?.writeError('No model available for evaluation', {
+                            toolName: 'evaluate_thoughts',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: 'No model available for evaluation',
                         };
                     }
+
+                    const operation = this.createOperation('evaluate-thoughts', 'evaluate_thoughts');
+                    operation?.milestone(`Evaluating ${this.state.branches.length} thought branch${this.state.branches.length === 1 ? '' : 'es'}`, {
+                        phase: 'model',
+                    });
 
                     // Format thoughts for evaluation
                     const thoughtsText = this.state.branches.map((b, i) =>
@@ -368,6 +429,10 @@ ${context ? `\nContext:\n${context}` : ''}`,
                             }
                             data = JSON.parse(jsonMatch[1]);
                         } catch (e) {
+                            this.writer?.writeError(`Failed to parse evaluations: ${e}`, {
+                                toolName: 'evaluate_thoughts',
+                                recoverable: true,
+                            });
                             return {
                                 success: false,
                                 error: `Failed to parse evaluations: ${e}`,
@@ -393,6 +458,9 @@ ${context ? `\nContext:\n${context}` : ''}`,
 
                         this.state.evaluations = evaluations;
 
+                        operation?.milestone(`Parsed ${evaluations.length} evaluation result${evaluations.length === 1 ? '' : 's'}`, {
+                            phase: 'parse',
+                        });
                         this.notifyEvaluations(evaluations);
 
                         // Find best thought
@@ -408,6 +476,10 @@ ${context ? `\nContext:\n${context}` : ''}`,
                             message: `Evaluated ${evaluations.length} thoughts. Best: ${best.thoughtId} (score: ${best.overallScore}/10)`,
                         };
                     } catch (e) {
+                        this.writer?.writeError(`Evaluation failed: ${e}`, {
+                            toolName: 'evaluate_thoughts',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: `Evaluation failed: ${e}`,
@@ -426,6 +498,10 @@ Use after evaluate_thoughts().`,
                 }),
                 execute: async ({ thoughtId, autoDiscard }) => {
                     if (this.state.evaluations.length === 0) {
+                        this.writer?.writeError('No evaluations available. Use evaluate_thoughts() first.', {
+                            toolName: 'select_best_thought',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: 'No evaluations available. Use evaluate_thoughts() first.',
@@ -462,6 +538,10 @@ Use after evaluate_thoughts().`,
                     const selectedBranch = this.state.branches.find(b => b.id === selected.thoughtId);
 
                     this.notifyStatus(`Selected thought: ${selectedBranch?.thought.slice(0, 50)}... (score: ${selected.overallScore}/10)`);
+                    this.createOperation('select-best-thought', 'select_best_thought')
+                        ?.complete(`Selected thought with score ${selected.overallScore}/10`, {
+                            phase: 'complete',
+                        });
 
                     return {
                         success: true,
@@ -501,6 +581,7 @@ Use this in plan-execute mode to break down work into a structured plan before e
                     })).describe('The steps in the execution plan'),
                 }),
                 execute: async ({ goal, steps }) => {
+                    const operation = this.createOperation('create-execution-plan', 'create_execution_plan');
                     const plan = {
                         id: `plan_${Date.now()}`,
                         goal,
@@ -515,6 +596,9 @@ Use this in plan-execute mode to break down work into a structured plan before e
                     this.state.cycleCount++;
 
                     this.notifyStatus(`Created execution plan with ${steps.length} steps`);
+                    operation?.complete(`Created execution plan with ${steps.length} steps`, {
+                        phase: 'complete',
+                    });
 
                     return {
                         success: true,
@@ -612,23 +696,22 @@ ${modeInstructions[this.state.mode]}
      * Notify UI of status changes
      */
     private notifyStatus(message: string) {
-        this.writer?.write({
-            type: 'data-status',
-            data: { message },
-        });
+        this.writer?.writeStatus(message, undefined, undefined, { phase: 'status' });
     }
 
     /**
      * Notify UI of new thought branches
      */
     private notifyThoughts(branches: ThoughtBranch[]) {
-        this.writer?.write({
-            type: 'data-status',
-            data: {
-                message: `Explored ${branches.length} thought branches`,
-                step: this.state.cycleCount,
-            },
-        });
+        this.writer?.writeStatus(
+            `Explored ${branches.length} thought branches`,
+            this.state.cycleCount,
+            undefined,
+            {
+                id: `status:reasoning-thoughts-${this.state.cycleCount}`,
+                phase: 'thoughts',
+            }
+        );
     }
 
     /**
@@ -638,13 +721,12 @@ ${modeInstructions[this.state.mode]}
         const best = evaluations.reduce((a, b) =>
             a.overallScore > b.overallScore ? a : b
         );
-        this.writer?.write({
-            type: 'data-status',
-            data: {
-                message: `Evaluated ${evaluations.length} thoughts. Best score: ${best.overallScore}/10`,
-                step: this.state.cycleCount,
-            },
-        });
+        this.writer?.writeStatus(
+            `Evaluated ${evaluations.length} thoughts. Best score: ${best.overallScore}/10`,
+            this.state.cycleCount,
+            undefined,
+            { phase: 'evaluation' }
+        );
     }
 
     /**

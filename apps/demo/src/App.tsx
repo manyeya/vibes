@@ -54,6 +54,12 @@ interface Task {
   priority?: 'low' | 'medium' | 'high' | 'critical';
 }
 
+interface LiveDataPart {
+  key: string;
+  type: string;
+  data: unknown;
+}
+
 // ============ APPROVAL CARD ============
 interface ApprovalCardProps {
   toolName: string;
@@ -327,7 +333,7 @@ interface ChatAreaProps {
 const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
   const [input, setInput] = useState('');
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
-  const [dataParts, setDataParts] = useState<Array<{ id: string; type: string; data: unknown }>>([]);
+  const [dataParts, setDataParts] = useState<LiveDataPart[]>([]);
 
   const { messages, sendMessage, status, addToolApprovalResponse, error, stop, setMessages } = useChat({
     transport: new DefaultChatTransport({
@@ -338,51 +344,66 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
 
     onData: (dataPart: any) => {
-      const id = `${dataPart.type}-${Date.now()}`;
       const { type, data } = dataPart;
-      console.log("dataPart:", dataPart);
+
+      const updateLiveDataParts = (mode: 'replace' | 'append' = 'replace') => {
+        const stableId = typeof dataPart.id === 'string' && dataPart.id.length > 0
+          ? `${type}:${dataPart.id}`
+          : undefined;
+
+        setDataParts(prev => {
+          if (!stableId || mode === 'append') {
+            return [
+              ...prev,
+              {
+                key: stableId
+                  ? `${stableId}:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+                  : `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                type,
+                data,
+              },
+            ];
+          }
+
+          const nextPart: LiveDataPart = { key: stableId, type, data };
+          const existingIndex = prev.findIndex(part => part.key === stableId);
+          if (existingIndex === -1) {
+            return [...prev, nextPart];
+          }
+
+          const next = [...prev];
+          next[existingIndex] = nextPart;
+          return next;
+        });
+      };
+
       switch (type) {
         // All data parts go to the chat display
         case 'data-reasoning_mode':
         case 'data-reasoning':
-        case 'data-status':
         case 'data-task_update':
         case 'data-task_graph':
         case 'data-todo_update':
         case 'data-summarization':
-
-        // Tool execution progress
         case 'data-tool_progress':
-          setDataParts(prev => [...prev, { id, type, data }]);
-          break;
-
-        // Error notifications
         case 'data-error':
-          setDataParts(prev => [...prev, { id, type, data }]);
-          break;
-
-        // Memory system updates
         case 'data-memory_update':
-          setDataParts(prev => [...prev, { id, type, data }]);
-          break;
-
-        // Swarm coordination signals
         case 'data-swarm_signal':
-          setDataParts(prev => [...prev, { id, type, data }]);
-          break;
-
-        // Sub-agent delegation updates
         case 'data-delegation':
-          setDataParts(prev => [...prev, { id, type, data }]);
+        case 'data-notification':
+          updateLiveDataParts();
           break;
 
-        // General notifications
-        case 'data-notification':
-          setDataParts(prev => [...prev, { id, type, data }]);
+        case 'data-status': {
+          const phase = typeof data === 'object' && data && 'phase' in data
+            ? (data as { phase?: string }).phase
+            : undefined;
+          updateLiveDataParts(phase === 'heartbeat' ? 'replace' : 'append');
           break;
+        }
 
         default:
-          console.log('Unhandled data part:', type, data);
+          break;
       }
     },
   });
@@ -416,6 +437,18 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
       onSessionUpdate();
     }
   }, [messages, status, isLoadingHistory, onSessionUpdate]);
+
+  useEffect(() => {
+    if (!isLoadingHistory && status !== 'streaming' && status !== 'submitted') {
+      const timeoutId = window.setTimeout(() => {
+        setDataParts([]);
+      }, 2000);
+
+      return () => {
+        window.clearTimeout(timeoutId);
+      };
+    }
+  }, [status, isLoadingHistory]);
 
   const isLoading = status === 'streaming' || status === 'submitted' || isLoadingHistory;
 
@@ -539,7 +572,7 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
                 <AnimatePresence mode="popLayout">
                   {dataParts.map((part) => (
                     <motion.div
-                      key={part.id}
+                      key={part.key}
                       initial={{ opacity: 0, y: 8 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -8 }}

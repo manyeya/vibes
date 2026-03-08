@@ -5,6 +5,13 @@ import { cn } from '../../lib/utils';
 import { animationProps, type ErrorData } from './types';
 
 export const ErrorPart: React.FC<{ data: ErrorData }> = ({ data }) => {
+  const metadata = [
+    data.toolName ? `tool ${data.toolName}` : null,
+    data.plugin,
+    data.agentName,
+    data.attempt !== undefined ? `attempt ${data.attempt}` : null,
+  ].filter(Boolean).join(' · ');
+
   return (
     <motion.div
       {...animationProps}
@@ -30,8 +37,8 @@ export const ErrorPart: React.FC<{ data: ErrorData }> = ({ data }) => {
         >
           {data.error}
         </p>
-        {data.toolName && (
-          <p className="text-xs text-zinc-600 dark:text-zinc-500 mt-1">Tool: {data.toolName}</p>
+        {metadata && (
+          <p className="text-xs text-zinc-600 dark:text-zinc-500 mt-1">{metadata}</p>
         )}
         {data.context && (
           <p className="text-xs text-zinc-500 dark:text-zinc-600 mt-1 truncate">{data.context}</p>

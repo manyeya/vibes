@@ -4,7 +4,14 @@ import {
 } from 'ai';
 import { z } from 'zod';
 
-import { VibesUIMessage, Plugin, TodoItem } from '../core/types';
+import {
+    VibesUIMessage,
+    Plugin,
+    PluginStreamContext,
+    TodoItem,
+    createDataStreamWriter,
+    type DataStreamWriter,
+} from '../core/types';
 
 /**
  * Plugin that provides a structured Todo List capability,
@@ -12,7 +19,8 @@ import { VibesUIMessage, Plugin, TodoItem } from '../core/types';
  */
 export default class TodoListPlugin implements Plugin {
     name = 'TodoListPlugin';
-    private writer?: UIMessageStreamWriter<VibesUIMessage>;
+    private writer?: DataStreamWriter;
+    private streamContext?: PluginStreamContext;
     private todos: TodoItem[] = [];
     private todosPath: string;
 
@@ -20,8 +28,14 @@ export default class TodoListPlugin implements Plugin {
         this.todosPath = config.todosPath || 'workspace/todos.json';
     }
 
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = writer;
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     get tools() {
@@ -53,7 +67,16 @@ Workflow:
                     })).optional(),
                 }),
                 execute: async ({ action, todos }) => {
+                    const operation = this.streamContext?.createOperation({
+                        name: 'write-todos',
+                        toolName: 'write_todos',
+                        plugin: this.name,
+                        heartbeatEnabled: false,
+                    });
                     if (action === 'create' && todos) {
+                        operation?.milestone(`Creating ${todos.length} todo item${todos.length === 1 ? '' : 's'}`, {
+                            phase: 'create',
+                        });
                         for (const todo of todos) {
                             const newTodo: TodoItem = {
                                 id: `todo_${Date.now()}_${Math.random()}`,
@@ -65,16 +88,20 @@ Workflow:
                             this.todos.push(newTodo);
 
                             // Stream update with full info including title
-                            this.writer?.write({
-                                type: 'data-todo_update',
-                                data: { id: newTodo.id, status: newTodo.status, title: newTodo.title },
-                            });
+                            this.writer?.writeTodoUpdate(newTodo.id, newTodo.status, newTodo.title);
                         }
+                        operation?.milestone('Persisting todo list', { phase: 'persist' });
                         await this.persistTodos();
+                        operation?.complete(`Created ${todos.length} todo item${todos.length === 1 ? '' : 's'}`, {
+                            phase: 'complete',
+                        });
                         return { success: true, message: `Created ${todos.length} todos` };
                     }
 
                     if (action === 'update' && todos) {
+                        operation?.milestone(`Updating ${todos.length} todo item${todos.length === 1 ? '' : 's'}`, {
+                            phase: 'update',
+                        });
                         for (const todo of todos) {
                             if (todo.id) {
                                 const index = this.todos.findIndex(t => t.id === todo.id);
@@ -87,22 +114,26 @@ Workflow:
                                     };
 
                                     // Stream update with title
-                                    this.writer?.write({
-                                        type: 'data-todo_update',
-                                        data: {
-                                            id: todo.id,
-                                            status: todo.status || 'updated',
-                                            title: existingTodo.title,
-                                        },
-                                    });
+                                    this.writer?.writeTodoUpdate(
+                                        todo.id,
+                                        (todo.status || existingTodo.status) as TodoItem['status'],
+                                        existingTodo.title,
+                                    );
                                 }
                             }
                         }
+                        operation?.milestone('Persisting todo list', { phase: 'persist' });
                         await this.persistTodos();
+                        operation?.complete(`Updated ${todos.length} todo item${todos.length === 1 ? '' : 's'}`, {
+                            phase: 'complete',
+                        });
                         return { success: true, message: `Updated ${todos.length} todos` };
                     }
 
                     if (action === 'read') {
+                        operation?.complete(`Loaded ${this.todos.length} todo item${this.todos.length === 1 ? '' : 's'}`, {
+                            phase: 'complete',
+                        });
                         return { todos: this.todos };
                     }
 

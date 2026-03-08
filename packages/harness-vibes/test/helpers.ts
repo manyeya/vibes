@@ -1,8 +1,9 @@
 import { mkdtemp, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { tool, type Tool } from 'ai';
+import { tool, type Tool, type UIMessageStreamWriter } from 'ai';
 import z from 'zod';
+import type { VibesUIMessage } from '../src/core/types';
 
 export function createTool(name: string): Tool<any, any> {
   return tool({
@@ -10,6 +11,14 @@ export function createTool(name: string): Tool<any, any> {
     inputSchema: z.object({}),
     execute: async () => ({ name }),
   });
+}
+
+export function createCapturingWriter(parts: any[]): UIMessageStreamWriter<VibesUIMessage> {
+  return {
+    write: (part: any) => {
+      parts.push(part);
+    },
+  } as UIMessageStreamWriter<VibesUIMessage>;
 }
 
 export async function createTempWorkspace(prefix: string): Promise<string> {
@@ -75,4 +84,12 @@ export function completionThenTextSteps(summary = 'done', files: string[] = ['sr
       ],
     },
   ];
+}
+
+export function createStreamResult(text: string, steps: any[]) {
+  return {
+    text: Promise.resolve(text),
+    steps: Promise.resolve(steps),
+    response: Promise.resolve({}),
+  };
 }

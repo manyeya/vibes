@@ -5,7 +5,13 @@ import {
     generateText,
 } from 'ai';
 import { z } from 'zod';
-import { VibesUIMessage, Plugin } from '../core/types';
+import {
+    VibesUIMessage,
+    Plugin,
+    PluginStreamContext,
+    createDataStreamWriter,
+    type DataStreamWriter,
+} from '../core/types';
 
 /**
  * A stored procedural pattern - reusable approach to solving problems.
@@ -85,7 +91,8 @@ export interface ProceduralMemoryConfig {
 export class ProceduralMemoryPlugin implements Plugin {
     name = 'ProceduralMemoryPlugin';
 
-    private writer?: UIMessageStreamWriter<VibesUIMessage>;
+    private writer?: DataStreamWriter;
+    private streamContext?: PluginStreamContext;
     private model?: LanguageModel;
     private config: Required<ProceduralMemoryConfig>;
     private patterns: Map<string, Pattern> = new Map();
@@ -102,8 +109,23 @@ export class ProceduralMemoryPlugin implements Plugin {
         };
     }
 
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = writer;
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
+    }
+
+    private createOperation(name: string, toolName: string) {
+        return this.streamContext?.createOperation({
+            name,
+            toolName,
+            plugin: this.name,
+            heartbeatEnabled: false,
+        });
     }
 
     /**
@@ -181,6 +203,7 @@ Use this when you discover an effective way to solve a problem that could be reu
                     urlReferences: z.array(z.string()).optional().describe('Related documentation URLs'),
                 }),
                 execute: async ({ name, description, whenToUse, steps, example, category, tags, fileReferences, urlReferences }) => {
+                    const operation = this.createOperation('save-pattern', 'save_pattern');
                     const now = new Date().toISOString();
                     const newPattern: Pattern = {
                         id: `pattern_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
@@ -212,6 +235,8 @@ Use this when you discover an effective way to solve a problem that could be reu
                     }
 
                     await this.persistPatterns();
+                    this.writer?.writeMemoryUpdate('pattern', 'saved', 1);
+                    operation?.complete(`Pattern saved: ${name}`, { phase: 'complete' });
 
                     this.notifyStatus(`Pattern saved: ${name}`);
 
@@ -265,8 +290,13 @@ Use this after retrieving a pattern to track its usage and success rate.`,
                     success: z.boolean().default(true).describe('Whether applying the pattern was successful'),
                 }),
                 execute: async ({ patternId, notes, success }) => {
+                    const operation = this.createOperation('apply-pattern', 'apply_pattern');
                     const pattern = this.patterns.get(patternId);
                     if (!pattern) {
+                        this.writer?.writeError(`Pattern not found: ${patternId}`, {
+                            toolName: 'apply_pattern',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: `Pattern not found: ${patternId}`,
@@ -291,6 +321,8 @@ Use this after retrieving a pattern to track its usage and success rate.`,
                     }
 
                     await this.persistPatterns();
+                    this.writer?.writeMemoryUpdate('pattern', 'updated', 1);
+                    operation?.complete(`Pattern applied: ${pattern.name}`, { phase: 'complete' });
 
                     this.notifyStatus(`Pattern applied: ${pattern.name} (used ${pattern.applicationCount}x, success rate: ${Math.round((pattern.successRate || 0) * 100)}%)`);
 
@@ -362,8 +394,13 @@ Use this to review all patterns in procedural memory.`,
                     tags: z.array(z.string()).optional(),
                 }),
                 execute: async ({ patternId, name, description, whenToUse, steps, tags }) => {
+                    const operation = this.createOperation('update-pattern', 'update_pattern');
                     const existing = this.patterns.get(patternId);
                     if (!existing) {
+                        this.writer?.writeError(`Pattern not found: ${patternId}`, {
+                            toolName: 'update_pattern',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: `Pattern not found: ${patternId}`,
@@ -381,6 +418,8 @@ Use this to review all patterns in procedural memory.`,
 
                     this.patterns.set(patternId, updated);
                     await this.persistPatterns();
+                    this.writer?.writeMemoryUpdate('pattern', 'updated', 1);
+                    operation?.complete(`Pattern "${updated.name}" updated`, { phase: 'complete' });
 
                     return {
                         success: true,
@@ -397,8 +436,13 @@ Use this when a pattern becomes obsolete or incorrect.`,
                     patternId: z.string().describe('ID of the pattern to delete'),
                 }),
                 execute: async ({ patternId }) => {
+                    const operation = this.createOperation('delete-pattern', 'delete_pattern');
                     const pattern = this.patterns.get(patternId);
                     if (!pattern) {
+                        this.writer?.writeError(`Pattern not found: ${patternId}`, {
+                            toolName: 'delete_pattern',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: `Pattern not found: ${patternId}`,
@@ -407,6 +451,8 @@ Use this when a pattern becomes obsolete or incorrect.`,
 
                     this.patterns.delete(patternId);
                     await this.persistPatterns();
+                    this.writer?.writeMemoryUpdate('pattern', 'deleted', 1);
+                    operation?.complete(`Pattern "${pattern.name}" removed`, { phase: 'complete' });
 
                     this.notifyStatus(`Pattern deleted: ${pattern.name}`);
 
@@ -427,6 +473,7 @@ Use this to identify and store patterns from experience.`,
                     category: z.enum(['code', 'workflow', 'debugging', 'testing', 'documentation']).optional(),
                 }),
                 execute: async ({ taskDescription, approachTaken, context, category }) => {
+                    const operation = this.createOperation('extract-patterns', 'extract_patterns');
                     if (!this.model) {
                         // Simple extraction without AI
                         const newPattern: Pattern = {
@@ -446,6 +493,8 @@ Use this to identify and store patterns from experience.`,
 
                         this.patterns.set(newPattern.id, newPattern);
                         await this.persistPatterns();
+                        this.writer?.writeMemoryUpdate('pattern', 'saved', 1);
+                        operation?.complete('Extracted pattern without model assistance', { phase: 'complete' });
 
                         return {
                             success: true,
@@ -456,6 +505,9 @@ Use this to identify and store patterns from experience.`,
 
                     // Use AI to extract structured pattern
                     try {
+                        operation?.milestone('Calling language model to extract procedural pattern', {
+                            phase: 'model',
+                        });
                         const { text } = await generateText({
                             model: this.model,
                             system: `You are an expert at identifying reusable patterns from successful work.
@@ -491,6 +543,10 @@ ${context ? `Context: ${context}` : ''}`,
                             }
                             data = JSON.parse(jsonMatch[1]);
                         } catch (e) {
+                            this.writer?.writeError(`Failed to parse pattern: ${e}`, {
+                                toolName: 'extract_patterns',
+                                recoverable: true,
+                            });
                             return {
                                 success: false,
                                 error: `Failed to parse pattern: ${e}`,
@@ -511,6 +567,8 @@ ${context ? `Context: ${context}` : ''}`,
 
                         this.patterns.set(newPattern.id, newPattern);
                         await this.persistPatterns();
+                        this.writer?.writeMemoryUpdate('pattern', 'saved', 1);
+                        operation?.complete(`Pattern extracted: ${newPattern.name}`, { phase: 'complete' });
 
                         this.notifyStatus(`Pattern extracted: ${newPattern.name}`);
 
@@ -520,6 +578,10 @@ ${context ? `Context: ${context}` : ''}`,
                             message: `Pattern extracted and stored`,
                         };
                     } catch (e) {
+                        this.writer?.writeError(`Pattern extraction failed: ${e}`, {
+                            toolName: 'extract_patterns',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: `Pattern extraction failed: ${e}`,
@@ -597,10 +659,7 @@ ${context ? `Context: ${context}` : ''}`,
      * Notify UI of status changes
      */
     private notifyStatus(message: string) {
-        this.writer?.write({
-            type: 'data-status',
-            data: { message },
-        });
+        this.writer?.writeStatus(message, undefined, undefined, { phase: 'status' });
     }
 
     /**
