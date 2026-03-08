@@ -3,7 +3,13 @@ import {
     type UIMessageStreamWriter,
 } from 'ai';
 import { z } from 'zod';
-import { VibesUIMessage, Plugin } from '../core/types';
+import {
+    VibesUIMessage,
+    Plugin,
+    PluginStreamContext,
+    createDataStreamWriter,
+    type DataStreamWriter,
+} from '../core/types';
 
 /**
  * A signal sent between agents.
@@ -74,7 +80,8 @@ export interface SwarmConfig {
 export class SwarmPlugin implements Plugin {
     name = 'SwarmPlugin';
 
-    private writer?: UIMessageStreamWriter<VibesUIMessage>;
+    private writer?: DataStreamWriter;
+    private streamContext?: PluginStreamContext;
     private config: Required<SwarmConfig>;
     private agentId: string;
 
@@ -100,8 +107,23 @@ export class SwarmPlugin implements Plugin {
         };
     }
 
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = writer;
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
+    }
+
+    private createOperation(name: string, toolName: string) {
+        return this.streamContext?.createOperation({
+            name,
+            toolName,
+            plugin: this.name,
+            heartbeatEnabled: false,
+        });
     }
 
     /**
@@ -206,10 +228,13 @@ Use this to share information, results, or coordination data with other agents.`
                     ttl: z.number().optional().describe('Time-to-live in milliseconds (optional)'),
                 }),
                 execute: async ({ key, value, ttl }) => {
+                    const operation = this.createOperation('write-shared-state', 'write_shared_state');
                     const previous = this.getSharedState(key);
+                    operation?.milestone(`Writing shared state key "${key}"`, { phase: 'write' });
                     this.setSharedState(key, value, ttl);
 
                     this.notifyStatus(`Shared state updated: ${key} = ${JSON.stringify(value).slice(0, 50)}`);
+                    operation?.complete(`Updated shared state key "${key}"`, { phase: 'complete' });
 
                     return {
                         success: true,
@@ -227,8 +252,12 @@ Use this to get information written by other agents.`,
                     key: z.string().describe('Key to read from shared state'),
                 }),
                 execute: async ({ key }) => {
+                    const operation = this.createOperation('read-shared-state', 'read_shared_state');
                     const value = this.getSharedState(key);
                     const entry = this.sharedState.get(key);
+                    operation?.complete(value !== undefined
+                        ? `Read shared state key "${key}"`
+                        : `Shared state key "${key}" not found`, { phase: 'complete' });
 
                     return {
                         success: true,
@@ -252,11 +281,15 @@ Use this to see what information agents have shared.`,
                     prefix: z.string().optional().describe('Filter by key prefix'),
                 }),
                 execute: async ({ prefix }) => {
+                    const operation = this.createOperation('list-shared-state', 'list_shared_state');
                     let entries = Array.from(this.sharedState.values());
 
                     if (prefix) {
                         entries = entries.filter(e => e.key.startsWith(prefix));
                     }
+                    operation?.complete(`Listed ${entries.length} shared state entr${entries.length === 1 ? 'y' : 'ies'}`, {
+                        phase: 'complete',
+                    });
 
                     return {
                         success: true,
@@ -281,11 +314,15 @@ Use this to clean up old or unused shared data.`,
                     key: z.string().describe('Key to remove from shared state'),
                 }),
                 execute: async ({ key }) => {
+                    const operation = this.createOperation('delete-shared-state', 'delete_shared_state');
                     const existed = this.sharedState.delete(key);
 
                     if (this.config.persistState) {
                         this.persistState();
                     }
+                    operation?.complete(existed
+                        ? `Removed shared state key "${key}"`
+                        : `Shared state key "${key}" did not exist`, { phase: 'complete' });
 
                     return {
                         success: true,
@@ -308,6 +345,7 @@ Signals are messages that agents can send to coordinate their work.`,
                     data: z.record(z.string(), z.any()).optional().describe('Additional data to attach to the signal'),
                 }),
                 execute: async ({ to, message, type, data }) => {
+                    const operation = this.createOperation('signal', 'signal');
                     const signal: AgentSignal = {
                         id: `signal_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
                         from: this.agentId,
@@ -339,6 +377,8 @@ Signals are messages that agents can send to coordinate their work.`,
                     }
 
                     this.notifyStatus(`Signal sent to ${to}: ${message.slice(0, 50)}`);
+                    this.writer?.writeSwarmSignal(this.agentId, message, { to, data });
+                    operation?.complete(`Signal sent to ${to}`, { phase: 'complete' });
 
                     return {
                         success: true,
@@ -356,6 +396,7 @@ Use this to check for signals from other agents.`,
                     markAsProcessed: z.boolean().default(true).describe('Mark retrieved signals as processed'),
                 }),
                 execute: async ({ includeProcessed, markAsProcessed }) => {
+                    const operation = this.createOperation('get-signals', 'get_signals');
                     const signals = this.getSignals(includeProcessed);
 
                     if (markAsProcessed) {
@@ -366,6 +407,9 @@ Use this to check for signals from other agents.`,
 
                     // Clear from pending
                     this.clearPendingSignals();
+                    operation?.complete(`Retrieved ${signals.length} signal${signals.length !== 1 ? 's' : ''}`, {
+                        phase: 'complete',
+                    });
 
                     return {
                         success: true,
@@ -394,6 +438,7 @@ Use this for announcements or shared coordination needs.`,
                     data: z.record(z.string(), z.any()).optional().describe('Additional data'),
                 }),
                 execute: async ({ message, type, data }) => {
+                    const operation = this.createOperation('broadcast', 'send_broadcast');
                     const signal: AgentSignal = {
                         id: `signal_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
                         from: this.agentId,
@@ -408,6 +453,8 @@ Use this for announcements or shared coordination needs.`,
                     this.signalHistory.push(signal);
 
                     this.notifyStatus(`Broadcast: ${message.slice(0, 50)}`);
+                    this.writer?.writeSwarmSignal(this.agentId, message, { to: 'broadcast', data });
+                    operation?.complete('Broadcast sent to all agents', { phase: 'complete' });
 
                     return {
                         success: true,
@@ -428,6 +475,7 @@ Use this to suggest work that multiple agents could contribute to.`,
                     description: z.string().optional().describe('Detailed description of the task'),
                 }),
                 execute: async ({ task, priority, skills, description }) => {
+                    const operation = this.createOperation('propose-task', 'propose_task');
                     const proposalKey = `task_proposal:${Date.now()}`;
                     const proposal = {
                         task,
@@ -456,6 +504,11 @@ Use this to suggest work that multiple agents could contribute to.`,
                     this.signalHistory.push(signal);
 
                     this.notifyStatus(`Task proposal: ${task}`);
+                    this.writer?.writeSwarmSignal(this.agentId, `Task proposal: ${task}`, {
+                        to: 'broadcast',
+                        data: { proposalKey, proposal },
+                    });
+                    operation?.complete(`Proposed task "${task}"`, { phase: 'complete' });
 
                     return {
                         success: true,
@@ -473,8 +526,14 @@ Use this after seeing a task proposal to indicate you will work on it.`,
                     proposalKey: z.string().describe('Key of the proposal to claim'),
                 }),
                 execute: async ({ proposalKey }) => {
+                    const operation = this.createOperation('claim-task', 'claim_task');
                     const proposal = this.getSharedState(proposalKey);
                     if (!proposal || proposal.status !== 'proposed') {
+                        this.writer?.writeError('Task proposal not found or already claimed', {
+                            toolName: 'claim_task',
+                            recoverable: true,
+                            context: proposalKey,
+                        });
                         return {
                             success: false,
                             error: 'Task proposal not found or already claimed',
@@ -502,6 +561,11 @@ Use this after seeing a task proposal to indicate you will work on it.`,
                     this.signalHistory.push(signal);
 
                     this.notifyStatus(`Task claimed: ${proposal.task}`);
+                    this.writer?.writeSwarmSignal(this.agentId, `Task claimed: ${proposal.task}`, {
+                        to: 'broadcast',
+                        data: { proposalKey, claimedBy: this.agentId },
+                    });
+                    operation?.complete(`Claimed task "${proposal.task}"`, { phase: 'complete' });
 
                     return {
                         success: true,
@@ -519,8 +583,14 @@ Use this after finishing work on a claimed task.`,
                     result: z.string().describe('Summary of what was accomplished'),
                 }),
                 execute: async ({ proposalKey, result }) => {
+                    const operation = this.createOperation('complete-task', 'complete_task');
                     const proposal = this.getSharedState(proposalKey);
                     if (!proposal) {
+                        this.writer?.writeError('Task proposal not found', {
+                            toolName: 'complete_task',
+                            recoverable: true,
+                            context: proposalKey,
+                        });
                         return {
                             success: false,
                             error: 'Task proposal not found',
@@ -549,6 +619,11 @@ Use this after finishing work on a claimed task.`,
                     this.signalHistory.push(signal);
 
                     this.notifyStatus(`Task completed: ${proposal.task}`);
+                    this.writer?.writeSwarmSignal(this.agentId, `Task completed: ${proposal.task}`, {
+                        to: 'broadcast',
+                        data: { proposalKey, completedBy: this.agentId, result },
+                    });
+                    operation?.complete(`Completed task "${proposal.task}"`, { phase: 'complete' });
 
                     return {
                         success: true,
@@ -564,8 +639,10 @@ Use this after finishing work on a claimed task.`,
 Shows shared state, pending signals, and active task proposals.`,
                 inputSchema: z.object({}),
                 execute: async () => {
+                    const operation = this.createOperation('get-swarm-status', 'get_swarm_status');
                     const taskProposals = Array.from(this.sharedState.values())
                         .filter(e => e.key.startsWith('task_proposal:') && e.value.status !== 'completed');
+                    operation?.complete('Retrieved swarm status', { phase: 'complete' });
 
                     return {
                         success: true,
@@ -663,10 +740,7 @@ Use \`get_swarm_status()\` to see overall swarm state.
      * Notify UI of status changes
      */
     private notifyStatus(message: string) {
-        this.writer?.write({
-            type: 'data-status',
-            data: { message },
-        });
+        this.writer?.writeStatus(message, undefined, undefined, { phase: 'status' });
     }
 
     /**

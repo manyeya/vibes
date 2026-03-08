@@ -6,12 +6,18 @@ This guide explains how to use `VibesUIMessage` on the frontend to handle type-s
 
 Vibes uses the AI SDK's streaming data protocol to send real-time updates to the UI. All data types are defined in `VibesDataParts` for type safety.
 
+The current streaming contract relies on stable ids for long-running work:
+
+- Persistent parts with the same `type + id` replace each other in `message.parts`
+- The UI should also replace matching live `onData` entries in place instead of appending duplicates forever
+- Heartbeats are transient `data-status` parts and should only keep the live panel warm while work is in flight
+
 ## Available Data Types
 
 | Data Type | Description | Persistent? |
 |-----------|-------------|-------------|
 | `data-notification` | System notifications (info/warning/error) | Transient only |
-| `data-status` | Operation status updates | Persistent |
+| `data-status` | Operation milestones and heartbeats | Persistent for milestones, transient for heartbeats |
 | `data-reasoning_mode` | Current reasoning mode (react/tot/plan-execute) | Persistent |
 | `data-todo_update` | Todo item updates | Persistent |
 | `data-task_update` | Task status updates | Persistent |
@@ -23,7 +29,37 @@ Vibes uses the AI SDK's streaming data protocol to send real-time updates to the
 | `data-swarm_signal` | Swarm coordination signals | Persistent |
 | `data-delegation` | Sub-agent delegation updates | Persistent |
 
-**Note:** Transient data parts (like `data-notification`) are only available via the `onData` callback and will NOT appear in `message.parts`.
+**Note:** Transient data parts, including `data-notification` and heartbeat `data-status` updates, are only available via the `onData` callback and will NOT appear in `message.parts`.
+
+## Stream Context API
+
+Plugins should prefer `onStreamContextReady(context)` over the legacy raw writer hook.
+
+```ts
+const myPlugin: Plugin = {
+  name: 'MyPlugin',
+  onStreamContextReady: ({ writer, createOperation }) => {
+    writer.writeStatus('Ready');
+
+    const operation = createOperation({
+      name: 'index-project',
+      toolName: 'index_project',
+      plugin: 'MyPlugin',
+    });
+
+    operation.milestone('Loading project files', { phase: 'load' });
+    operation.progress('starting', { message: 'Starting index build' });
+  },
+};
+```
+
+Legacy compatibility remains for now:
+
+```ts
+onStreamReady?(writer)
+```
+
+That hook is deprecated and should only be used when migrating old plugins.
 
 ## Basic Setup
 
@@ -93,6 +129,52 @@ const { messages, sendMessage, onData } = useChat<VibesUIMessage>({
   },
 });
 ```
+
+## Live Panel Replacement
+
+For a responsive UI, replace live parts in place when a persistent id is present:
+
+```tsx
+onData: (dataPart) => {
+  const stableKey =
+    typeof dataPart.id === 'string' ? `${dataPart.type}:${dataPart.id}` : null;
+
+  setLiveParts(prev => {
+    if (!stableKey) {
+      return [...prev, { key: crypto.randomUUID(), ...dataPart }];
+    }
+
+    const nextPart = { key: stableKey, ...dataPart };
+    const existingIndex = prev.findIndex(part => part.key === stableKey);
+
+    if (existingIndex === -1) {
+      return [...prev, nextPart];
+    }
+
+    const next = [...prev];
+    next[existingIndex] = nextPart;
+    return next;
+  });
+};
+```
+
+When streaming completes, clear the live panel so the final persistent state is represented by `message.parts`.
+
+## Metadata Fields
+
+`data-status`, `data-tool_progress`, and `data-error` can now include optional metadata:
+
+- `plugin`
+- `agentName`
+- `delegationId`
+- `operationId`
+- `parentOperationId`
+- `phase`
+- `attempt`
+- `elapsedMs`
+- `message`
+
+These fields are intended for richer live status displays and nested sub-agent progress.
 
 ## Rendering Message Parts
 

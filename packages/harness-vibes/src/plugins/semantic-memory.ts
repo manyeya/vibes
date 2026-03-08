@@ -6,7 +6,14 @@ import {
     embed,
 } from 'ai';
 import { z } from 'zod';
-import { VibesUIMessage, Plugin, TaskItem } from '../core/types';
+import {
+    VibesUIMessage,
+    Plugin,
+    PluginStreamContext,
+    TaskItem,
+    createDataStreamWriter,
+    type DataStreamWriter,
+} from '../core/types';
 
 /**
  * A stored fact with its embedding vector.
@@ -211,7 +218,8 @@ class SimpleVectorStore {
 export class SemanticMemoryPlugin implements Plugin {
     name = 'SemanticMemoryPlugin';
 
-    private writer?: UIMessageStreamWriter<VibesUIMessage>;
+    private writer?: DataStreamWriter;
+    private streamContext?: PluginStreamContext;
     private embeddingModel?: EmbeddingModel;
     private config: Omit<Required<SemanticMemoryConfig>, 'embeddingModel'> & { embeddingModel?: EmbeddingModel };
     private vectorStore: SimpleVectorStore;
@@ -232,8 +240,23 @@ export class SemanticMemoryPlugin implements Plugin {
         this.vectorStore = new SimpleVectorStore();
     }
 
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = writer;
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
+    }
+
+    private createOperation(name: string, toolName: string) {
+        return this.streamContext?.createOperation({
+            name,
+            toolName,
+            plugin: this.name,
+            heartbeatEnabled: false,
+        });
     }
 
     /**
@@ -292,10 +315,12 @@ Facts are stored with embeddings for semantic search - you can recall them by me
                     resourceReference: z.string().optional().describe('Related file or resource (e.g., "src/auth.ts")'),
                 }),
                 execute: async ({ fact, importance, category, tags, context, resourceReference }) => {
+                    const operation = this.createOperation('remember-fact', 'remember_fact');
                     const now = new Date().toISOString();
                     const keywords = this.extractKeywords(fact);
 
                     // Generate embedding if model available
+                    operation?.milestone('Generating embedding for new fact', { phase: 'embed' });
                     const embedding = await this.generateEmbedding(fact);
 
                     const newFact: Fact = {
@@ -332,6 +357,8 @@ Facts are stored with embeddings for semantic search - you can recall them by me
                     }
 
                     await this.persistFacts();
+                    this.writer?.writeMemoryUpdate('fact', 'saved', 1);
+                    operation?.complete('Fact stored in semantic memory', { phase: 'complete' });
 
                     this.notifyStatus(`Fact remembered: ${fact.slice(0, 50)}...`);
 
@@ -354,7 +381,9 @@ Use this when starting a task to see what's been learned about the topic.`,
                     minImportance: z.number().min(0).max(1).optional().describe('Minimum importance score'),
                 }),
                 execute: async ({ query, limit, category, minImportance }) => {
+                    const operation = this.createOperation('recall-facts', 'recall_facts');
                     // Generate embedding for query if model available
+                    operation?.milestone('Searching semantic memory', { phase: 'search' });
                     const queryEmbedding = await this.generateEmbedding(query);
 
                     let matches: FactMatch[];
@@ -389,6 +418,9 @@ Use this when starting a task to see what's been learned about the topic.`,
                         match.fact.lastRecalled = now;
                         this.vectorStore.upsert(match.fact);
                     }
+                    operation?.complete(`Found ${results.length} relevant fact${results.length === 1 ? '' : 's'}`, {
+                        phase: 'complete',
+                    });
 
                     return {
                         success: true,
@@ -412,8 +444,13 @@ Use this when a fact becomes obsolete or incorrect.`,
                     factId: z.string().describe('ID of the fact to forget'),
                 }),
                 execute: async ({ factId }) => {
+                    const operation = this.createOperation('forget-fact', 'forget_fact');
                     const fact = this.vectorStore.get(factId);
                     if (!fact) {
+                        this.writer?.writeError(`Fact not found: ${factId}`, {
+                            toolName: 'forget_fact',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: `Fact not found: ${factId}`,
@@ -422,6 +459,8 @@ Use this when a fact becomes obsolete or incorrect.`,
 
                     this.vectorStore.delete(factId);
                     await this.persistFacts();
+                    this.writer?.writeMemoryUpdate('fact', 'deleted', 1);
+                    operation?.complete('Fact removed from memory', { phase: 'complete' });
 
                     this.notifyStatus(`Fact forgotten: ${fact.fact.slice(0, 30)}...`);
 
@@ -483,6 +522,7 @@ The AI will identify the most important facts and store them.`,
                     resourceReference: z.string().optional().describe('Related file or resource'),
                 }),
                 execute: async ({ text, context, category, resourceReference }) => {
+                    const operation = this.createOperation('extract-facts', 'extract_facts');
                     // For now, store the text as a single fact
                     // In a full implementation, we'd use the LLM to extract individual facts
                     const keywords = this.extractKeywords(text);
@@ -502,6 +542,8 @@ The AI will identify the most important facts and store them.`,
 
                     this.vectorStore.upsert(newFact);
                     await this.persistFacts();
+                    this.writer?.writeMemoryUpdate('fact', 'saved', 1);
+                    operation?.complete('Extracted and stored fact', { phase: 'complete' });
 
                     this.notifyStatus(`Extracted and stored fact from: ${context || 'text'}`);
 
@@ -523,8 +565,13 @@ The AI will identify the most important facts and store them.`,
                     tags: z.array(z.string()).optional(),
                 }),
                 execute: async ({ factId, fact, importance, category, tags }) => {
+                    const operation = this.createOperation('update-fact', 'update_fact');
                     const existing = this.vectorStore.get(factId);
                     if (!existing) {
+                        this.writer?.writeError(`Fact not found: ${factId}`, {
+                            toolName: 'update_fact',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: `Fact not found: ${factId}`,
@@ -541,12 +588,15 @@ The AI will identify the most important facts and store them.`,
 
                     // Regenerate embedding if fact changed
                     if (fact) {
+                        operation?.milestone('Regenerating embedding for updated fact', { phase: 'embed' });
                         updated.embedding = await this.generateEmbedding(fact);
                         updated.keywords = this.extractKeywords(fact);
                     }
 
                     this.vectorStore.upsert(updated);
                     await this.persistFacts();
+                    this.writer?.writeMemoryUpdate('fact', 'updated', 1);
+                    operation?.complete('Fact updated', { phase: 'complete' });
 
                     return {
                         success: true,
@@ -632,10 +682,7 @@ The AI will identify the most important facts and store them.`,
      * Notify UI of status changes
      */
     private notifyStatus(message: string) {
-        this.writer?.write({
-            type: 'data-status',
-            data: { message },
-        });
+        this.writer?.writeStatus(message, undefined, undefined, { phase: 'status' });
     }
 
     /**

@@ -26,7 +26,11 @@ export type ToolsRequiringApprovalConfig =
     | Record<string, ToolApprovalPolicy>;
 
 // Import streaming types
-import type { VibesUIMessage, VibesDataParts } from './streaming.js';
+import type {
+    PluginStreamContext,
+    VibesUIMessage,
+    VibesDataParts,
+} from './streaming.js';
 
 /**
  * Types of tasks for categorization and filtering.
@@ -214,7 +218,7 @@ export interface SubAgent {
  *   name: 'MyPlugin',
  *   tools: { myTool },
  *   modifySystemPrompt: (prompt) => prompt + '\\n\\nAdditional instructions...',
- *   onStreamReady: (writer) => writer.write({ type: 'data-status', data: { message: 'Ready' } }),
+ *   onStreamContextReady: ({ writer }) => writer.writeStatus('Ready'),
  *   onError: (error) => console.error('Tool failed:', error),
  *   waitReady: async () => { await initialize(); },
  * }
@@ -278,7 +282,13 @@ export interface Plugin {
     /** Optional promise to wait for during initialization (e.g., sandbox startup) */
     waitReady?: () => Promise<void>;
 
-    /** Optional hook to receive a data stream writer for real-time UI updates */
+    /** Optional hook to receive the full stream context for real-time UI updates */
+    onStreamContextReady?: (context: PluginStreamContext) => void;
+
+    /**
+     * Optional hook to receive a raw data stream writer for real-time UI updates.
+     * @deprecated Prefer onStreamContextReady() and DataStreamWriter.
+     */
     onStreamReady?: (writer: UIMessageStreamWriter<VibesUIMessage>) => void;
 
     /** Optional hook executed when the stream finishes (successful completion) */
@@ -323,13 +333,17 @@ export type AgentUIMessage = import('./streaming.js').VibesUIMessage;
  * Re-export commonly used streaming types and utilities
  */
 export type {
+    PluginStreamContext,
     VibesDataParts,
     VibesUIMessage,
 } from './streaming.js';
 
 export {
     createDataStreamWriter,
+    createPluginStreamContext,
+    createScopedUIMessageStreamWriter,
     DataStreamWriter,
+    DataStreamOperation,
 } from './streaming.js';
 
 /**

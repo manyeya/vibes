@@ -1,5 +1,11 @@
-import { tool } from "ai";
-import { Plugin } from "../core/types";
+import { tool, type UIMessageStreamWriter } from "ai";
+import {
+    Plugin,
+    PluginStreamContext,
+    VibesUIMessage,
+    createDataStreamWriter,
+    type DataStreamWriter,
+} from "../core/types";
 import z from "zod";
 
 /**
@@ -10,6 +16,8 @@ import z from "zod";
 export default class MemoryPlugin implements Plugin {
     name = 'MemoryPlugin';
 
+    private writer?: DataStreamWriter;
+    private streamContext?: PluginStreamContext;
     private scratchpadPath: string;
     private reflexionPath: string;
 
@@ -20,6 +28,16 @@ export default class MemoryPlugin implements Plugin {
     constructor(config: { scratchpadPath?: string, reflexionPath?: string } = {}) {
         this.scratchpadPath = config.scratchpadPath || 'workspace/scratchpad.md';
         this.reflexionPath = config.reflexionPath || 'workspace/reflections.md';
+    }
+
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     async waitReady() {
@@ -63,8 +81,16 @@ Overwrite the entire file with the new content.`,
                     content: z.string().describe('The new content of the scratchpad. Be detailed.'),
                 }),
                 execute: async ({ content }) => {
+                    const operation = this.streamContext?.createOperation({
+                        name: 'update-scratchpad',
+                        toolName: 'update_scratchpad',
+                        plugin: this.name,
+                        heartbeatEnabled: false,
+                    });
+                    operation?.milestone('Persisting scratchpad', { phase: 'persist' });
                     await Bun.write(this.scratchpadPath, content);
                     this.scratchpadContent = content;
+                    operation?.complete('Scratchpad updated', { phase: 'complete' });
                     return { success: true, message: 'Scratchpad updated.' };
                 },
             }),
@@ -76,11 +102,19 @@ This will be appended to your long-term memory.`,
                     lesson: z.string().describe('The lesson, insight, or reflection to save.'),
                 }),
                 execute: async ({ lesson }) => {
+                    const operation = this.streamContext?.createOperation({
+                        name: 'save-reflection',
+                        toolName: 'save_reflection',
+                        plugin: this.name,
+                        heartbeatEnabled: false,
+                    });
                     const entry = `\n- [${new Date().toISOString()}] ${lesson}`;
                     const file = Bun.file(this.reflexionPath);
                     const current = await file.exists() ? await file.text() : '';
+                    operation?.milestone('Appending reflection entry', { phase: 'persist' });
                     await Bun.write(this.reflexionPath, current + entry);
                     this.reflexionContent = current + entry;
+                    operation?.complete('Reflection saved', { phase: 'complete' });
                     return { success: true, message: 'Reflection saved.' };
                 },
             }),

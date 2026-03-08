@@ -3,7 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { logger } from "../logger";
 import sessionManager from "../session-manager";
-import { SqliteBackend, type VibesUIMessage, createDeepAgentStreamResponse } from "harness-vibes";
+import { SqliteBackend, type VibesUIMessage, createDeepAgentStreamResponse } from "../../../../packages/harness-vibes/index";
 import { agent as simpleAgent } from "../simple";
 
 

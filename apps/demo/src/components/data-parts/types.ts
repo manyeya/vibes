@@ -10,14 +10,37 @@ export const animationProps = {
 
 // Type exports
 export type NotificationData = VibesDataParts['notification'];
-export type StatusData = VibesDataParts['status'];
+export type StatusData = VibesDataParts['status'] & {
+  plugin?: string;
+  agentName?: string;
+  delegationId?: string;
+  operationId?: string;
+  parentOperationId?: string;
+  phase?: string;
+};
 export type ReasoningModeData = VibesDataParts['reasoning_mode'];
 export type TodoUpdateData = VibesDataParts['todo_update'];
 export type TaskUpdateData = VibesDataParts['task_update'];
 export type TaskGraphData = VibesDataParts['task_graph'];
 export type SummarizationData = VibesDataParts['summarization'];
-export type ToolProgressData = VibesDataParts['tool_progress'];
-export type ErrorData = VibesDataParts['error'];
+export type ToolProgressData = VibesDataParts['tool_progress'] & {
+  message?: string;
+  plugin?: string;
+  agentName?: string;
+  delegationId?: string;
+  operationId?: string;
+  parentOperationId?: string;
+  attempt?: number;
+  elapsedMs?: number;
+};
+export type ErrorData = VibesDataParts['error'] & {
+  plugin?: string;
+  agentName?: string;
+  delegationId?: string;
+  operationId?: string;
+  parentOperationId?: string;
+  attempt?: number;
+};
 export type MemoryUpdateData = VibesDataParts['memory_update'];
 export type SwarmSignalData = VibesDataParts['swarm_signal'];
 export type DelegationData = VibesDataParts['delegation'];

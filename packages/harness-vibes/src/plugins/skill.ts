@@ -1,5 +1,11 @@
 import { tool, UIMessageStreamWriter } from "ai";
-import { VibesUIMessage, Plugin } from "../core/types";
+import {
+    VibesUIMessage,
+    Plugin,
+    PluginStreamContext,
+    createDataStreamWriter,
+    type DataStreamWriter,
+} from "../core/types";
 import z from "zod";
 import * as path from "path";
 
@@ -26,15 +32,22 @@ export default class SkillsPlugin implements Plugin {
     private skills: Map<string, SkillMetadata> = new Map();
     private activeSkills: Set<string> = new Set();
     private initializationPromise: Promise<void>;
-    private writer?: UIMessageStreamWriter<VibesUIMessage>;
+    private writer?: DataStreamWriter;
+    private streamContext?: PluginStreamContext;
     private includeCache: Map<string, string> = new Map();
 
     constructor() {
         this.initializationPromise = this.init();
     }
 
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = writer;
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     private async init() {
@@ -204,13 +217,16 @@ export default class SkillsPlugin implements Plugin {
                     name: z.string().describe('The name or keyword of the skill to activate (e.g., "frontend", "backend", "testing")'),
                 }),
                 execute: async ({ name }) => {
+                    const operation = this.streamContext?.createOperation({
+                        name: 'activate-skill',
+                        toolName: 'activate_skill',
+                        plugin: this.name,
+                        heartbeatEnabled: false,
+                    });
                     try {
+                        operation?.milestone(`Resolving skill "${name}"`, { phase: 'resolve' });
                         const { skill } = await this.activateSkill(name);
-
-                        this.writer?.write({
-                            type: 'data-status',
-                            data: { message: `✓ Activated skill: ${skill.name}` },
-                        });
+                        operation?.complete(`Activated skill: ${skill.name}`, { phase: 'complete' });
 
                         return {
                             success: true,
@@ -218,6 +234,10 @@ export default class SkillsPlugin implements Plugin {
                             message: `Skill "${skill.name}" has been activated. Its instructions are now part of your system prompt.`
                         };
                     } catch (error) {
+                        this.writer?.writeError((error as Error).message, {
+                            toolName: 'activate_skill',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: (error as Error).message
@@ -231,13 +251,24 @@ export default class SkillsPlugin implements Plugin {
                     name: z.string().describe('The name of the skill to deactivate'),
                 }),
                 execute: async ({ name }) => {
+                    const operation = this.streamContext?.createOperation({
+                        name: 'deactivate-skill',
+                        toolName: 'deactivate_skill',
+                        plugin: this.name,
+                        heartbeatEnabled: false,
+                    });
                     const deactivated = this.deactivateSkill(name);
                     if (deactivated) {
+                        operation?.complete(`Deactivated skill: ${name}`, { phase: 'complete' });
                         return {
                             success: true,
                             message: `Skill "${name}" has been deactivated.`
                         };
                     }
+                    this.writer?.writeError(`Skill "${name}" not found or was not active.`, {
+                        toolName: 'deactivate_skill',
+                        recoverable: true,
+                    });
                     return {
                         success: false,
                         error: `Skill "${name}" not found or was not active.`
@@ -248,6 +279,15 @@ export default class SkillsPlugin implements Plugin {
                 description: 'List all available skills with their descriptions and active status',
                 inputSchema: z.object({}),
                 execute: async () => {
+                    const operation = this.streamContext?.createOperation({
+                        name: 'list-skills',
+                        toolName: 'list_skills',
+                        plugin: this.name,
+                        heartbeatEnabled: false,
+                    });
+                    operation?.complete(`Listed ${this.skills.size} available skill${this.skills.size === 1 ? '' : 's'}`, {
+                        phase: 'complete',
+                    });
                     return {
                         skills: Array.from(this.skills.values()).map(s => ({
                             name: s.name,

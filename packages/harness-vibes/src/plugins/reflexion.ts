@@ -8,6 +8,7 @@ import { z } from 'zod';
 import {
     VibesUIMessage,
     Plugin,
+    PluginStreamContext,
     ErrorEntry,
     createDataStreamWriter,
     type DataStreamWriter,
@@ -88,6 +89,7 @@ export class ReflexionPlugin implements Plugin {
     name = 'ReflexionPlugin';
 
     private writer?: DataStreamWriter;
+    private streamContext?: PluginStreamContext;
     private model?: LanguageModel;
 
     private config: Required<ReflexionConfig>;
@@ -108,8 +110,23 @@ export class ReflexionPlugin implements Plugin {
         };
     }
 
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = createDataStreamWriter(writer);
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
+    }
+
+    private createOperation(name: string, toolName: string) {
+        return this.streamContext?.createOperation({
+            name,
+            toolName,
+            plugin: this.name,
+            heartbeatEnabled: false,
+        });
     }
 
     /**
@@ -217,11 +234,17 @@ Use this after encountering repeated errors or to review what went wrong in a se
                 }),
                 execute: async ({ errors, focus }) => {
                     if (!this.model) {
+                        this.writer?.writeError('No model available for error analysis', {
+                            toolName: 'analyze_errors',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: 'No model available for error analysis',
                         };
                     }
+
+                    const operation = this.createOperation('analyze-errors', 'analyze_errors');
 
                     // Use provided errors or get from agent state
                     const errorsToAnalyze = errors || [];
@@ -239,6 +262,9 @@ Use this after encountering repeated errors or to review what went wrong in a se
                             `${i + 1}. [${e.toolName || 'unknown'}] ${e.error}${e.context ? `\n   Context: ${e.context}` : ''}`
                         ).join('\n\n');
 
+                        operation?.milestone(`Analyzing ${errorsToAnalyze.length} error${errorsToAnalyze.length === 1 ? '' : 's'}`, {
+                            phase: 'model',
+                        });
                         const { text } = await generateText({
                             model: this.model,
                             system: `You are an expert at analyzing errors and extracting lessons learned.
@@ -270,6 +296,10 @@ Output ONLY valid JSON:
                             }
                             data = JSON.parse(jsonMatch[1]);
                         } catch (e) {
+                            this.writer?.writeError(`Failed to parse analysis: ${e}`, {
+                                toolName: 'analyze_errors',
+                                recoverable: true,
+                            });
                             return {
                                 success: false,
                                 error: `Failed to parse analysis: ${e}`,
@@ -291,6 +321,9 @@ Output ONLY valid JSON:
                         };
 
                         this.notifyStatus(`Error analysis complete: ${analysis.lessons.length} lessons extracted`);
+                        operation?.complete(`Analyzed ${errorsToAnalyze.length} error${errorsToAnalyze.length === 1 ? '' : 's'}`, {
+                            phase: 'complete',
+                        });
 
                         return {
                             success: true,
@@ -298,6 +331,10 @@ Output ONLY valid JSON:
                             message: `Analyzed ${errorsToAnalyze.length} errors. Found ${analysis.lessons.length} lessons.`,
                         };
                     } catch (e) {
+                        this.writer?.writeError(`Analysis failed: ${e}`, {
+                            toolName: 'analyze_errors',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: `Analysis failed: ${e}`,
@@ -317,6 +354,7 @@ Lessons are persisted and suggested in relevant future contexts.`,
                     tags: z.array(z.string()).optional().describe('Tags for retrieval (e.g., ["authentication", "API"])'),
                 }),
                 execute: async ({ lesson, category, context, tags }) => {
+                    const operation = this.createOperation('save-lesson', 'save_lesson');
                     const now = new Date().toISOString();
                     const newLesson: Lesson = {
                         id: `lesson_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
@@ -337,6 +375,8 @@ Lessons are persisted and suggested in relevant future contexts.`,
 
                     // Persist to file
                     await this.persistLessons();
+                    this.writer?.writeMemoryUpdate('lesson', 'saved', 1);
+                    operation?.complete(`Lesson saved in category: ${category}`, { phase: 'complete' });
 
                     this.notifyStatus(`Lesson saved: ${lesson.slice(0, 50)}...`);
 
@@ -411,8 +451,13 @@ Use this after successfully applying a learned lesson to a problem.`,
                     lessonId: z.string().describe('ID of the lesson to mark as applied'),
                 }),
                 execute: async ({ lessonId }) => {
+                    const operation = this.createOperation('apply-lesson', 'apply_lesson');
                     const lesson = this.lessons.find(l => l.id === lessonId);
                     if (!lesson) {
+                        this.writer?.writeError(`Lesson not found: ${lessonId}`, {
+                            toolName: 'apply_lesson',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: `Lesson not found: ${lessonId}`,
@@ -423,6 +468,10 @@ Use this after successfully applying a learned lesson to a problem.`,
                     lesson.lastReferenced = new Date().toISOString();
 
                     await this.persistLessons();
+                    this.writer?.writeMemoryUpdate('lesson', 'updated', 1);
+                    operation?.complete(`Lesson marked as applied (${lesson.applicationCount})`, {
+                        phase: 'complete',
+                    });
 
                     this.notifyStatus(`Lesson applied (used ${lesson.applicationCount} times)`);
 
@@ -484,6 +533,7 @@ Automatically extracts lessons from the session experience.`,
                     keyInsights: z.array(z.string()).optional().describe('Key insights from the session'),
                 }),
                 execute: async ({ sessionSummary, successes, failures, keyInsights }) => {
+                    const operation = this.createOperation('reflect-session', 'reflect_on_session');
                     const now = new Date().toISOString();
                     const lessonsToCreate: Omit<Lesson, 'id'>[] = [];
 
@@ -541,6 +591,12 @@ Automatically extracts lessons from the session experience.`,
                     }
 
                     await this.persistLessons();
+                    if (created.length > 0) {
+                        this.writer?.writeMemoryUpdate('lesson', 'saved', created.length);
+                    }
+                    operation?.complete(`Reflected on session and saved ${created.length} lesson${created.length === 1 ? '' : 's'}`, {
+                        phase: 'complete',
+                    });
 
                     this.notifyStatus(`Session reflection complete: ${created.length} lessons saved`);
 

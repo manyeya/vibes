@@ -7,6 +7,7 @@ import type { Plugin, VibeAgentConfig } from '../src/core/types';
 import {
   completionSteps,
   completionThenTextSteps,
+  createStreamResult,
   createTempWorkspace,
   createTool,
   recordCompletion,
@@ -35,7 +36,7 @@ function createPlugin(options: {
   workspaceDir: string;
   subAgents: Map<string, any>;
   capturedConfigs?: VibeAgentConfig[];
-  generate?: (config: VibeAgentConfig, call: { messages?: any[] }) => Promise<any>;
+  stream?: (config: VibeAgentConfig, call: { messages?: any[] }) => Promise<any>;
 }) {
   const capturedConfigs = options.capturedConfigs ?? [];
   return new SubAgentPlugin(
@@ -50,16 +51,13 @@ function createPlugin(options: {
     (config) => {
       capturedConfigs.push(config);
       return {
-        generate: (call: { messages?: any[] }) => {
-          if (options.generate) {
-            return options.generate(config, call);
+        stream: (call: { messages?: any[] }) => {
+          if (options.stream) {
+            return options.stream(config, call);
           }
           return (async () => {
             await recordCompletion(config, 'done', ['src/example.ts'], { source: 'test' });
-            return {
-              text: 'done',
-              steps: completionSteps('done', ['src/example.ts']),
-            };
+            return createStreamResult('done', completionSteps('done', ['src/example.ts']));
           })();
         },
       } as any;
@@ -194,10 +192,7 @@ describe('SubAgentPlugin single delegation', () => {
             allowedTools: ['readFile'],
           }],
         ]),
-        generate: async () => ({
-          text: 'I did some work but never completed it.',
-          steps: [],
-        }),
+        stream: async () => createStreamResult('I did some work but never completed it.', []),
       });
 
       const result = await (plugin.tools.delegate as any).execute({
@@ -229,12 +224,9 @@ describe('SubAgentPlugin single delegation', () => {
             allowedTools: ['readFile'],
           }],
         ]),
-        generate: async (config) => {
+        stream: async (config) => {
           await recordCompletion(config, 'done', ['src/example.ts']);
-          return {
-            text: 'done then continued',
-            steps: completionThenTextSteps('done', ['src/example.ts']),
-          };
+          return createStreamResult('done then continued', completionThenTextSteps('done', ['src/example.ts']));
         },
       });
 
@@ -266,14 +258,14 @@ describe('SubAgentPlugin single delegation', () => {
             allowedTools: ['readFile'],
           }],
         ]),
-        generate: async (config, call) => {
+        stream: async (config, call) => {
           generateCount += 1;
           const taskText = call.messages?.[0]?.content ?? '';
           await recordCompletion(config, `run ${generateCount}`, [`src/${generateCount}.ts`]);
-          return {
-            text: String(taskText),
-            steps: completionSteps(`run ${generateCount}`, [`src/${generateCount}.ts`]),
-          };
+          return createStreamResult(
+            String(taskText),
+            completionSteps(`run ${generateCount}`, [`src/${generateCount}.ts`]),
+          );
         },
       });
 

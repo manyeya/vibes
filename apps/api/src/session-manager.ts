@@ -8,8 +8,8 @@
  * - SQLite metadata storage via harness-vibes
  */
 
-import { SessionManager as HarnessSessionManager } from 'harness-vibes';
-import { DeepAgent } from 'harness-vibes';
+import { SessionManager as HarnessSessionManager } from '../../../packages/harness-vibes/index';
+import { DeepAgent } from '../../../packages/harness-vibes/index';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { wrapLanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
@@ -40,7 +40,7 @@ const defaultSubAgents = [
         systemPrompt: `You are Planner, the strategic logical core of the team.
         Your role is to break complex requests into exhaustive, actionable todo lists.`,
         mode: 'general-purpose' as const,
-        allowedTools: ['create_plan', 'generate_tasks', 'update_task', 'get_next_tasks', 'list_tasks', 'readFile'],
+        allowedTools: ['create_plan', 'generate_tasks', 'update_task', 'get_next_tasks', 'list_tasks', 'readFile','writeFile'],
         allowSubdelegation: false,
         artifactMode: 'always' as const,
     },

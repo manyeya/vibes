@@ -6,7 +6,16 @@ import {
 } from 'ai';
 import { z } from 'zod';
 import TasksPlugin from './tasks';
-import { VibesUIMessage, TaskItem, Plugin, TaskType, type ModelMessage } from '../core/types';
+import {
+    VibesUIMessage,
+    TaskItem,
+    Plugin,
+    PluginStreamContext,
+    TaskType,
+    createDataStreamWriter,
+    type DataStreamWriter,
+    type ModelMessage,
+} from '../core/types';
 
 /**
  * Planning configuration options
@@ -72,7 +81,8 @@ interface PlanLLMOutput {
  */
 export class PlanningPlugin implements Plugin {
     name = 'PlanningPlugin';
-    private writer?: UIMessageStreamWriter<VibesUIMessage>;
+    private writer?: DataStreamWriter;
+    private streamContext?: PluginStreamContext;
     private planPath: string;
     private maxRecitationTasks: number;
     private lastRecitedTasks: TaskItem[] = [];
@@ -97,10 +107,26 @@ export class PlanningPlugin implements Plugin {
         await this.tasksPlugin.waitReady();
     }
 
+    onStreamContextReady(context: PluginStreamContext) {
+        this.streamContext = context;
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+        this.tasksPlugin.onStreamContextReady?.(context);
+    }
+
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = writer;
+        this.streamContext = undefined;
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
         // Also forward to tasks plugin
         this.tasksPlugin.onStreamReady(writer);
+    }
+
+    private createOperation(name: string, toolName: string) {
+        return this.streamContext?.createOperation({
+            name,
+            toolName,
+            plugin: this.name,
+            heartbeatMessage: `${toolName} is still working`,
+        });
     }
 
     /**
@@ -438,12 +464,20 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                 }),
                 execute: async ({ request }) => {
                     if (!this.model) {
+                        this.writer?.writeError('No model available for plan generation', {
+                            toolName: 'create_plan',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: 'No model available for plan generation',
                         };
                     }
 
+                    const operation = this.createOperation('create-plan', 'create_plan');
+                    operation?.milestone('Preparing plan generation context', { phase: 'prepare' });
+
+                    operation?.milestone('Calling language model to generate project plan', { phase: 'model' });
                     const { text } = await generateText({
                         model: this.model,
                         system: `You are an expert Project Architect and Lead Planner. Your goal is to create a COMPREHENSIVE, SOLID, and HIGHLY DETAILED project plan.
@@ -496,11 +530,17 @@ NEVER be concise. Be exhaustive. Break every objective down into its smallest ac
                         }
                         planData = JSON.parse(jsonMatch[1]);
                     } catch (e) {
+                        this.writer?.writeError(`Failed to parse plan generation: ${e}`, {
+                            toolName: 'create_plan',
+                            recoverable: true,
+                            context: text.slice(0, 200),
+                        });
                         return {
                             success: false,
                             error: `Failed to parse plan generation: ${e}. Response was: ${text.slice(0, 200)}`,
                         };
                     }
+                    operation?.milestone('Parsed structured plan response', { phase: 'parse' });
 
                     // Create plan object
                     const planId = `plan_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
@@ -518,12 +558,9 @@ NEVER be concise. Be exhaustive. Break every objective down into its smallest ac
 
                     // Save plan
                     this.currentPlan = plan;
+                    operation?.milestone(`Saving plan "${plan.title}"`, { phase: 'persist' });
                     await this.savePlanToFile(plan);
-
-                    this.writer?.write({
-                        type: 'data-status',
-                        data: { message: `Plan created: ${plan.title}` },
-                    });
+                    operation?.complete(`Plan created: ${plan.title}`, { phase: 'complete' });
 
                     return {
                         success: true,
@@ -542,19 +579,30 @@ NEVER be concise. Be exhaustive. Break every objective down into its smallest ac
                 }),
                 execute: async ({ maxTasks }) => {
                     if (!this.model) {
+                        this.writer?.writeError('No model available for task generation', {
+                            toolName: 'generate_tasks_from_plan',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: 'No model available for task generation',
                         };
                     }
 
+                    const operation = this.createOperation('generate-tasks-from-plan', 'generate_tasks_from_plan');
+
                     // Load current plan if not in memory
                     let plan = this.currentPlan;
                     if (!plan) {
+                        operation?.milestone('Loading saved plan from disk', { phase: 'load' });
                         plan = await this.loadPlanFromFile() || undefined;
                     }
 
                     if (!plan) {
+                        this.writer?.writeError('No plan found. Use create_plan() first.', {
+                            toolName: 'generate_tasks_from_plan',
+                            recoverable: true,
+                        });
                         return {
                             success: false,
                             error: 'No plan found. Use create_plan() first.',
@@ -588,6 +636,7 @@ ${plan.phases.map((p, i) => {
 ${plan.milestones.map(m => `- ${m}`).join('\n')}
 `;
 
+                    operation?.milestone(`Generating implementation tasks for "${plan.title}"`, { phase: 'model' });
                     const { text } = await generateText({
                         model: this.model,
                         system: `You are an expert Implementation Engineer. Your job is to translate a project plan into high-fidelity, actionable tasks.
@@ -630,11 +679,19 @@ The planReference field should be a clear path to the plan section so you can tr
                         }
                         tasksData = JSON.parse(jsonMatch[1]);
                     } catch (e) {
+                        this.writer?.writeError(`Failed to parse task generation: ${e}`, {
+                            toolName: 'generate_tasks_from_plan',
+                            recoverable: true,
+                            context: text.slice(0, 200),
+                        });
                         return {
                             success: false,
                             error: `Failed to parse task generation: ${e}. Response was: ${text.slice(0, 200)}`,
                         };
                     }
+                    operation?.milestone(`Parsed ${tasksData.tasks.length} planned task${tasksData.tasks.length === 1 ? '' : 's'}`, {
+                        phase: 'parse',
+                    });
 
                     // Create tasks with plan metadata
                     const now = new Date().toISOString();
@@ -677,14 +734,18 @@ The planReference field should be a clear path to the plan section so you can tr
                         createdTasks.push(newTask);
                         await this.tasksPlugin.addTask(newTask);
 
-                        this.writer?.write({
-                            type: 'data-task_update',
-                            data: { id: newTask.id, status: newTask.status, title: newTask.title },
-                        });
+                        this.writer?.writeTaskUpdate(newTask.id, newTask.status, newTask.title);
                     }
 
                     // Persist tasks
+                    operation?.milestone(`Persisting ${createdTasks.length} task${createdTasks.length === 1 ? '' : 's'} from the plan`, {
+                        phase: 'persist',
+                    });
                     await (this.tasksPlugin as any).persistTasks();
+                    this.tasksPlugin.streamTaskGraph();
+                    operation?.complete(`Generated ${createdTasks.length} task${createdTasks.length === 1 ? '' : 's'} from ${plan.title}`, {
+                        phase: 'complete',
+                    });
 
                     return {
                         success: true,
@@ -705,8 +766,10 @@ The planReference field should be a clear path to the plan section so you can tr
                     path: z.string().optional().describe('File path to save plan (default: workspace/plan.md)'),
                 }),
                 execute: async ({ path }) => {
+                    const operation = this.createOperation('save-plan', 'save_plan');
                     const savePath = path || this.planPath;
                     const tasks = await this.tasksPlugin.getTasks();
+                    operation?.milestone(`Saving task plan to ${savePath}`, { phase: 'persist' });
 
                     let content = `# Task Plan\n\n`;
                     content += `Generated: ${new Date().toISOString()}\n`;
@@ -747,10 +810,7 @@ The planReference field should be a clear path to the plan section so you can tr
                     Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
                     await Bun.write(fullPath, content);
 
-                    this.writer?.write({
-                        type: 'data-status',
-                        data: { message: `Plan saved to ${savePath}` },
-                    });
+                    operation?.complete(`Plan saved to ${savePath}`, { phase: 'complete' });
 
                     return { success: true, path: savePath, taskCount: tasks.length };
                 },
@@ -763,14 +823,18 @@ The planReference field should be a clear path to the plan section so you can tr
                     clearExisting: z.boolean().default(false).describe('Clear existing tasks before loading'),
                 }),
                 execute: async ({ path, clearExisting }) => {
+                    const operation = this.createOperation('load-plan', 'load_plan');
                     const loadPath = path || this.planPath;
                     const fullPath = require('path').resolve(process.cwd(), loadPath);
                     try {
+                        operation?.milestone(`Loading plan from ${loadPath}`, { phase: 'load' });
                         const content = await Bun.file(fullPath).text();
-                        this.writer?.write({
-                            type: 'data-status',
-                            data: { message: `Plan loaded from ${loadPath}` },
-                        });
+                        if (clearExisting) {
+                            operation?.milestone('Clearing existing tasks before applying loaded plan', {
+                                phase: 'clear',
+                            });
+                        }
+                        operation?.complete(`Plan loaded from ${loadPath}`, { phase: 'complete' });
 
                         return {
                             success: true,
@@ -778,6 +842,11 @@ The planReference field should be a clear path to the plan section so you can tr
                             message: 'Plan content loaded.',
                         };
                     } catch (error) {
+                        this.writer?.writeError(error instanceof Error ? error.message : String(error), {
+                            toolName: 'load_plan',
+                            recoverable: true,
+                            context: loadPath,
+                        });
                         return {
                             success: false,
                             error: error instanceof Error ? error.message : String(error),
@@ -790,8 +859,13 @@ The planReference field should be a clear path to the plan section so you can tr
                 description: `Manually trigger plan recitation.`,
                 inputSchema: z.object({}),
                 execute: async () => {
+                    const operation = this.createOperation('recite-plan', 'recite_plan');
+                    operation?.milestone('Refreshing plan recitation cache', { phase: 'refresh' });
                     await this.refreshRecitationCache();
                     const tasks = this.lastRecitedTasks;
+                    operation?.complete(`Recited ${tasks.length} active task${tasks.length === 1 ? '' : 's'}`, {
+                        phase: 'complete',
+                    });
 
                     return {
                         success: true,
@@ -810,10 +884,15 @@ The planReference field should be a clear path to the plan section so you can tr
                     priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
                 }),
                 execute: async ({ parentTaskId, title, description, priority }) => {
+                    const operation = this.createOperation('create-subtask', 'create_subtask');
                     const tasks = await this.tasksPlugin.getTasks();
                     const parent = tasks.find(t => t.id === parentTaskId);
 
                     if (!parent) {
+                        this.writer?.writeError(`Parent task not found: ${parentTaskId}`, {
+                            toolName: 'create_subtask',
+                            recoverable: true,
+                        });
                         return { success: false, error: `Parent task not found: ${parentTaskId}` };
                     }
 
@@ -842,11 +921,9 @@ The planReference field should be a clear path to the plan section so you can tr
                     await this.tasksPlugin.updateTask(parentTaskId, { blocks: [...parent.blocks, subtaskId] });
 
                     await this.refreshRecitationCache();
-
-                    this.writer?.write({
-                        type: 'data-task_update',
-                        data: { id: subtaskId, status: 'blocked', title },
-                    });
+                    this.writer?.writeTaskUpdate(subtaskId, 'blocked', title);
+                    this.tasksPlugin.streamTaskGraph();
+                    operation?.complete(`Created subtask "${title}"`, { phase: 'complete' });
 
                     return { success: true, subtaskId, message: `Created subtask "${title}" under ${parentTaskId}` };
                 },
