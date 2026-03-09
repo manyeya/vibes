@@ -43,27 +43,31 @@ export async function createDeepAgentStreamResponse(
     // Create a UI message stream with an execute function that has writer access
     const stream = createUIMessageStream<VibesUIMessage>({
         async execute({ writer }) {
-            // Call the agent's stream method with the writer
-            // The agent will call plugin onStreamReady hooks with this writer
-            const result = await agent.stream({
-                messages: uiMessages,
-                writer,
-                abortSignal,
-            });
+            try {
+                // Call the agent's stream method with the writer
+                // The agent will call plugin onStreamReady hooks with this writer
+                const result = await agent.stream({
+                    messages: uiMessages,
+                    writer,
+                    abortSignal,
+                });
 
-            // Merge the agent's UI message stream into the writer
-            // This properly converts the StreamTextResult to UI message chunks
-            writer.merge(result.toUIMessageStream());
+                // Merge the agent's UI message stream into the writer
+                // This properly converts the StreamTextResult to UI message chunks
+                writer.merge(result.toUIMessageStream());
 
-            // Wait for the response promise to complete (handles final message state)
-            const response = await result.response;
+                // Wait for the response promise to complete (handles final message state)
+                const response = await result.response;
 
-            // Save messages to backend after streaming completes
-            if (backend && response.messages) {
-                const state: Partial<AgentState> = {
-                    messages: response.messages as any,
-                };
-                backend.setState(state);
+                // Save messages to backend after streaming completes
+                if (backend && response.messages) {
+                    const state: Partial<AgentState> = {
+                        messages: response.messages as any,
+                    };
+                    backend.setState(state);
+                }
+            } finally {
+                backend?.close();
             }
         },
         originalMessages: originalMessages as VibesUIMessage[] | undefined,

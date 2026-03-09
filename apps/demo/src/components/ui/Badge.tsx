@@ -13,13 +13,12 @@ export const Badge: React.FC<BadgeProps> = ({ children, variant = 'zinc', size =
       className={cn(
         'inline-flex items-center gap-1.5 rounded-md font-medium',
         {
-          // Variants - more subtle, professional colors
-          'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400': variant === 'cyan',
-          'bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400': variant === 'violet',
-          'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400': variant === 'amber',
-          'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400': variant === 'emerald',
-          'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400': variant === 'red',
-          'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-400': variant === 'zinc',
+          'bg-sky-500/12 text-sky-700 dark:text-sky-300': variant === 'cyan',
+          'bg-violet-500/12 text-violet-700 dark:text-violet-300': variant === 'violet',
+          'bg-amber-500/12 text-amber-700 dark:text-amber-300': variant === 'amber',
+          'bg-emerald-500/12 text-emerald-700 dark:text-emerald-300': variant === 'emerald',
+          'bg-red-500/12 text-red-700 dark:text-red-300': variant === 'red',
+          'bg-[var(--surface-raised)] text-[var(--muted)]': variant === 'zinc',
         },
         {
           // Sizes

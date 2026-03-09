@@ -2,7 +2,13 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { Lightbulb, FileText, Network } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { memoryTypeConfig, memoryActionConfig, animationProps, type MemoryUpdateData } from './types';
+import {
+  memoryTypeConfig,
+  memoryActionConfig,
+  animationProps,
+  dataPartStyles,
+  type MemoryUpdateData,
+} from './types';
 
 const iconMap = {
   Lightbulb,
@@ -19,14 +25,15 @@ export const MemoryUpdatePart: React.FC<{ data: MemoryUpdateData }> = ({ data })
     <motion.div
       {...animationProps}
       className={cn(
-        'inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-xs',
+        dataPartStyles.chip,
         typeConfig.bg,
-        'border-transparent'
+        typeConfig.border
       )}
     >
-      <Icon className={cn('w-3 h-3', typeConfig.color)} />
-      <span className={typeConfig.color}>
-        {data.type.charAt(0).toUpperCase() + data.type.slice(1)} {actionConfig.label}
+      <Icon className={cn('w-3 h-3', typeConfig.text)} />
+      <span className={typeConfig.text}>
+        {data.type.charAt(0).toUpperCase() + data.type.slice(1)}{' '}
+        <span className={actionConfig.color}>{actionConfig.label}</span>
         {data.count !== undefined && data.count > 1 && (
           <span className="ml-1">({data.count})</span>
         )}

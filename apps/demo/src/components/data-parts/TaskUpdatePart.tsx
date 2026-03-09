@@ -2,7 +2,13 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { Clock, Loader2, CheckCircle2, X, AlertCircle } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { taskStatusConfig, priorityConfig, animationProps, type TaskUpdateData } from './types';
+import {
+  taskStatusConfig,
+  priorityConfig,
+  animationProps,
+  dataPartStyles,
+  type TaskUpdateData,
+} from './types';
 
 const iconMap = {
   Clock,
@@ -20,7 +26,7 @@ export const TaskUpdatePart: React.FC<{ data: TaskUpdateData }> = ({ data }) => 
     <motion.div
       {...animationProps}
       className={cn(
-        'flex items-center gap-2 px-3 py-2 rounded-lg border text-xs',
+        dataPartStyles.chip,
         statusConfig.bg,
         statusConfig.border
       )}
@@ -38,7 +44,9 @@ export const TaskUpdatePart: React.FC<{ data: TaskUpdateData }> = ({ data }) => 
       {data.priority && (
         <span
           className={cn(
-            'ml-auto text-[9px] uppercase px-1.5 py-0.5 rounded bg-zinc-700/50',
+            'ml-auto rounded-full border px-2 py-0.5 text-[9px] uppercase tracking-[0.18em]',
+            statusConfig.border,
+            statusConfig.bg,
             priorityConfig[data.priority].text
           )}
         >
@@ -46,7 +54,7 @@ export const TaskUpdatePart: React.FC<{ data: TaskUpdateData }> = ({ data }) => 
         </span>
       )}
       {data.error && data.status === 'failed' && (
-        <span className="ml-2 text-red-400/70 text-[10px] truncate max-w-[150px]">
+        <span className="ml-2 max-w-[150px] truncate text-[10px] text-[var(--tone-danger-text)]/80">
           {data.error}
         </span>
       )}

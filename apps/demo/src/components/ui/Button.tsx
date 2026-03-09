@@ -14,15 +14,14 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         ref={ref}
         disabled={disabled || isLoading}
         className={cn(
-          'inline-flex items-center justify-center gap-2 font-medium transition-colors duration-150',
-          'focus:outline-none focus:ring-1 focus:ring-zinc-400 focus:ring-offset-1 focus:ring-offset-zinc-950',
+          'inline-flex items-center justify-center gap-2 font-medium transition-all duration-300',
+          'focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40 focus:ring-offset-2 focus:ring-offset-transparent',
           'disabled:opacity-50 disabled:cursor-not-allowed',
           {
-            // Variants - flat, professional design
-            'bg-zinc-100 text-zinc-900 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700': variant === 'primary',
-            'bg-zinc-100 text-zinc-900 hover:bg-zinc-200 border border-zinc-200 dark:bg-zinc-800 dark:text-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-700': variant === 'secondary',
-            'bg-transparent text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-zinc-100 dark:hover:bg-zinc-800': variant === 'ghost',
-            'bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-900/50 dark:hover:bg-red-950/50': variant === 'danger',
+            'border border-[color:color-mix(in_srgb,var(--accent)_28%,var(--glass-border))] bg-[linear-gradient(135deg,var(--accent)_0%,color-mix(in_srgb,var(--tertiary)_72%,var(--accent))_100%)] text-white hover:scale-[1.02] hover:border-[var(--accent-strong)] hover:brightness-110': variant === 'primary',
+            'border border-[var(--glass-border)] bg-[var(--glass)] text-[var(--ink)] backdrop-blur-md hover:border-[var(--glass-border-hover)] hover:bg-[var(--glass-light)]': variant === 'secondary',
+            'bg-transparent text-[var(--muted)] hover:bg-[var(--glass)] hover:text-[var(--ink)]': variant === 'ghost',
+            'border border-red-500/20 bg-red-500/10 text-[var(--danger)] hover:bg-red-500/16': variant === 'danger',
           },
           {
             // Sizes - more restrained rounding

@@ -1,6 +1,5 @@
 import type { VibesDataParts } from 'harness-vibes';
 
-// Animation configuration for all data parts
 export const animationProps = {
   initial: { opacity: 0, y: 8 },
   animate: { opacity: 1, y: 0 },
@@ -8,7 +7,6 @@ export const animationProps = {
   transition: { duration: 0.2 },
 };
 
-// Type exports
 export type NotificationData = VibesDataParts['notification'];
 export type StatusData = VibesDataParts['status'] & {
   plugin?: string;
@@ -45,25 +43,76 @@ export type MemoryUpdateData = VibesDataParts['memory_update'];
 export type SwarmSignalData = VibesDataParts['swarm_signal'];
 export type DelegationData = VibesDataParts['delegation'];
 
-// Configuration objects for consistent styling
+export const dataPartStyles = {
+  chip:
+    'inline-flex max-w-full items-center gap-1.5 rounded-[0.9rem] border px-2.5 py-1.5 text-[11px] leading-5 backdrop-blur-md',
+  stack:
+    'inline-flex max-w-full flex-col items-start gap-0.5 rounded-[0.9rem] border px-2.5 py-1.5 text-[11px] leading-5 backdrop-blur-md',
+  panel:
+    'max-w-full rounded-[0.95rem] border px-3 py-2.5 backdrop-blur-md',
+  meta:
+    'text-[10px] leading-4 text-[var(--tone-neutral-muted)]',
+  label:
+    'text-[9px] uppercase tracking-[0.22em] text-[var(--tone-neutral-muted)]',
+} as const;
+
+export const toneConfig = {
+  neutral: {
+    bg: 'bg-[var(--tone-neutral-bg)]',
+    border: 'border-[var(--tone-neutral-border)]',
+    text: 'text-[var(--tone-neutral-text)]',
+    muted: 'text-[var(--tone-neutral-muted)]',
+    dot: 'bg-[var(--tone-neutral-text)]',
+  },
+  accent: {
+    bg: 'bg-[var(--tone-accent-bg)]',
+    border: 'border-[var(--tone-accent-border)]',
+    text: 'text-[var(--tone-accent-text)]',
+    muted: 'text-[color:color-mix(in_srgb,var(--tone-accent-text)_72%,var(--tone-neutral-muted))]',
+    dot: 'bg-[var(--tone-accent-text)]',
+  },
+  secondary: {
+    bg: 'bg-[var(--tone-secondary-bg)]',
+    border: 'border-[var(--tone-secondary-border)]',
+    text: 'text-[var(--tone-secondary-text)]',
+    muted: 'text-[color:color-mix(in_srgb,var(--tone-secondary-text)_72%,var(--tone-neutral-muted))]',
+    dot: 'bg-[var(--tone-secondary-text)]',
+  },
+  tertiary: {
+    bg: 'bg-[var(--tone-tertiary-bg)]',
+    border: 'border-[var(--tone-tertiary-border)]',
+    text: 'text-[var(--tone-tertiary-text)]',
+    muted: 'text-[color:color-mix(in_srgb,var(--tone-tertiary-text)_72%,var(--tone-neutral-muted))]',
+    dot: 'bg-[var(--tone-tertiary-text)]',
+  },
+  success: {
+    bg: 'bg-[var(--tone-success-bg)]',
+    border: 'border-[var(--tone-success-border)]',
+    text: 'text-[var(--tone-success-text)]',
+    muted: 'text-[color:color-mix(in_srgb,var(--tone-success-text)_72%,var(--tone-neutral-muted))]',
+    dot: 'bg-[var(--tone-success-text)]',
+  },
+  danger: {
+    bg: 'bg-[var(--tone-danger-bg)]',
+    border: 'border-[var(--tone-danger-border)]',
+    text: 'text-[var(--tone-danger-text)]',
+    muted: 'text-[color:color-mix(in_srgb,var(--tone-danger-text)_72%,var(--tone-neutral-muted))]',
+    dot: 'bg-[var(--tone-danger-text)]',
+  },
+} as const;
+
 export const notificationConfig = {
   info: {
     icon: 'Info',
-    color: 'text-blue-600 dark:text-blue-400',
-    bg: 'bg-blue-50 dark:bg-blue-950/30',
-    border: 'border-blue-200 dark:border-blue-900/50',
+    ...toneConfig.secondary,
   },
   warning: {
     icon: 'AlertTriangle',
-    color: 'text-amber-600 dark:text-amber-400',
-    bg: 'bg-amber-50 dark:bg-amber-950/30',
-    border: 'border-amber-200 dark:border-amber-900/50',
+    ...toneConfig.accent,
   },
   error: {
     icon: 'AlertCircle',
-    color: 'text-red-600 dark:text-red-400',
-    bg: 'bg-red-50 dark:bg-red-950/30',
-    border: 'border-red-200 dark:border-red-900/50',
+    ...toneConfig.danger,
   },
 } as const;
 
@@ -71,40 +120,34 @@ export const reasoningConfig = {
   react: {
     icon: 'RefreshCw',
     label: 'ReAct',
-    color: 'text-blue-600 dark:text-blue-400',
-    bg: 'bg-blue-50 dark:bg-blue-950/30',
-    border: 'border-blue-200 dark:border-blue-900/50',
+    ...toneConfig.secondary,
   },
   tot: {
     icon: 'TreePine',
     label: 'Tree-of-Thoughts',
-    color: 'text-purple-600 dark:text-purple-400',
-    bg: 'bg-purple-50 dark:bg-purple-950/30',
-    border: 'border-purple-200 dark:border-purple-900/50',
+    ...toneConfig.tertiary,
   },
   'plan-execute': {
     icon: 'ClipboardList',
     label: 'Plan-Execute',
-    color: 'text-amber-600 dark:text-amber-400',
-    bg: 'bg-amber-50 dark:bg-amber-950/30',
-    border: 'border-amber-200 dark:border-amber-900/50',
+    ...toneConfig.accent,
   },
 } as const;
 
 export const todoStatusConfig = {
   pending: {
     icon: 'Clock',
-    color: 'text-zinc-500 dark:text-zinc-400',
+    ...toneConfig.neutral,
     spin: false,
   },
   in_progress: {
     icon: 'Loader2',
-    color: 'text-amber-600 dark:text-amber-400',
+    ...toneConfig.accent,
     spin: true,
   },
   completed: {
     icon: 'CheckCircle2',
-    color: 'text-emerald-600 dark:text-emerald-400',
+    ...toneConfig.success,
     spin: false,
   },
 } as const;
@@ -112,77 +155,79 @@ export const todoStatusConfig = {
 export const taskStatusConfig = {
   pending: {
     icon: 'Clock',
-    bg: 'bg-zinc-100 dark:bg-zinc-800/50',
-    border: 'border-zinc-300 dark:border-zinc-700',
-    text: 'text-zinc-600 dark:text-zinc-400',
+    ...toneConfig.neutral,
     spin: false,
   },
   blocked: {
     icon: 'X',
-    bg: 'bg-red-50 dark:bg-red-950/30',
-    border: 'border-red-200 dark:border-red-900/50',
-    text: 'text-red-600 dark:text-red-400',
+    ...toneConfig.danger,
     spin: false,
   },
   in_progress: {
     icon: 'Loader2',
-    bg: 'bg-amber-50 dark:bg-amber-950/30',
-    border: 'border-amber-200 dark:border-amber-900/50',
-    text: 'text-amber-600 dark:text-amber-400',
+    ...toneConfig.accent,
     spin: true,
   },
   completed: {
     icon: 'CheckCircle2',
-    bg: 'bg-emerald-50 dark:bg-emerald-950/30',
-    border: 'border-emerald-200 dark:border-emerald-900/50',
-    text: 'text-emerald-600 dark:text-emerald-400',
+    ...toneConfig.success,
     spin: false,
   },
   failed: {
     icon: 'AlertCircle',
-    bg: 'bg-red-50 dark:bg-red-950/30',
-    border: 'border-red-200 dark:border-red-900/50',
-    text: 'text-red-600 dark:text-red-400',
+    ...toneConfig.danger,
     spin: false,
   },
 } as const;
 
 export const priorityConfig = {
-  low: { bg: 'bg-emerald-500 dark:bg-emerald-600', text: 'text-white' },
-  medium: { bg: 'bg-amber-500 dark:bg-amber-600', text: 'text-white' },
-  high: { bg: 'bg-orange-500 dark:bg-orange-600', text: 'text-white' },
-  critical: { bg: 'bg-red-500 dark:bg-red-600', text: 'text-white' },
+  low: {
+    bg: toneConfig.secondary.dot,
+    text: 'text-[var(--tone-secondary-text)]',
+  },
+  medium: {
+    bg: toneConfig.tertiary.dot,
+    text: 'text-[var(--tone-tertiary-text)]',
+  },
+  high: {
+    bg: toneConfig.accent.dot,
+    text: 'text-[var(--tone-accent-text)]',
+  },
+  critical: {
+    bg: toneConfig.danger.dot,
+    text: 'text-[var(--tone-danger-text)]',
+  },
 } as const;
 
 export const summarizationConfig = {
-  starting: { label: 'Starting...', icon: 'Database', spin: false },
-  in_progress: { label: 'Compressing...', icon: 'Loader2', spin: true },
-  complete: { label: 'Complete', icon: 'CheckCircle2', spin: false },
-  failed: { label: 'Failed', icon: 'AlertCircle', spin: false },
+  starting: { label: 'Starting...', icon: 'Database', ...toneConfig.tertiary, spin: false },
+  in_progress: { label: 'Compressing...', icon: 'Loader2', ...toneConfig.tertiary, spin: true },
+  complete: { label: 'Complete', icon: 'CheckCircle2', ...toneConfig.success, spin: false },
+  failed: { label: 'Failed', icon: 'AlertCircle', ...toneConfig.danger, spin: false },
 } as const;
 
 export const toolStageConfig = {
-  starting: { label: 'Starting', icon: 'Activity', spin: false },
-  in_progress: { label: 'Running', icon: 'Loader2', spin: true },
-  complete: { label: 'Complete', icon: 'CheckCircle2', spin: false },
-  failed: { label: 'Failed', icon: 'AlertCircle', spin: false },
+  starting: { label: 'Starting', icon: 'Activity', ...toneConfig.secondary, spin: false },
+  in_progress: { label: 'Running', icon: 'Loader2', ...toneConfig.accent, spin: true },
+  complete: { label: 'Complete', icon: 'CheckCircle2', ...toneConfig.success, spin: false },
+  failed: { label: 'Failed', icon: 'AlertCircle', ...toneConfig.danger, spin: false },
 } as const;
 
 export const memoryTypeConfig = {
-  lesson: { icon: 'Lightbulb', color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-950/30' },
-  fact: { icon: 'FileText', color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-950/30' },
-  pattern: { icon: 'Network', color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-950/30' },
+  lesson: { icon: 'Lightbulb', ...toneConfig.accent },
+  fact: { icon: 'FileText', ...toneConfig.secondary },
+  pattern: { icon: 'Network', ...toneConfig.tertiary },
 } as const;
 
 export const memoryActionConfig = {
-  saved: { label: 'saved', color: 'text-emerald-600 dark:text-emerald-400' },
-  updated: { label: 'updated', color: 'text-blue-600 dark:text-blue-400' },
-  deleted: { label: 'deleted', color: 'text-red-600 dark:text-red-400' },
+  saved: { label: 'saved', color: toneConfig.success.text },
+  updated: { label: 'updated', color: toneConfig.secondary.text },
+  deleted: { label: 'deleted', color: toneConfig.danger.text },
 } as const;
 
 export const delegationConfig = {
-  starting: { icon: 'Activity', bg: 'bg-blue-50 dark:bg-blue-950/30', border: 'border-blue-200 dark:border-blue-900/50', text: 'text-blue-600 dark:text-blue-400', spin: false },
-  in_progress: { icon: 'Loader2', bg: 'bg-amber-50 dark:bg-amber-950/30', border: 'border-amber-200 dark:border-amber-900/50', text: 'text-amber-600 dark:text-amber-400', spin: true },
-  complete: { icon: 'CheckCircle2', bg: 'bg-emerald-50 dark:bg-emerald-950/30', border: 'border-emerald-200 dark:border-emerald-900/50', text: 'text-emerald-600 dark:text-emerald-400', spin: false },
-  failed: { icon: 'AlertCircle', bg: 'bg-red-50 dark:bg-red-950/30', border: 'border-red-200 dark:border-red-900/50', text: 'text-red-600 dark:text-red-400', spin: false },
+  starting: { icon: 'Activity', ...toneConfig.secondary, spin: false },
+  in_progress: { icon: 'Loader2', ...toneConfig.accent, spin: true },
+  complete: { icon: 'CheckCircle2', ...toneConfig.success, spin: false },
+  failed: { icon: 'AlertCircle', ...toneConfig.danger, spin: false },
 } as const;

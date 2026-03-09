@@ -1,14 +1,12 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import { readFile } from "node:fs/promises";
+import * as path from "node:path";
 import { logger } from "../logger";
 import sessionManager from "../session-manager";
 import { SqliteBackend, type VibesUIMessage, createDeepAgentStreamResponse } from "../../../../packages/harness-vibes/index";
 import { agent as simpleAgent } from "../simple";
-
-
-// Shared backend instance for session management (without a specific session)
-const sessionBackend = new SqliteBackend('workspace/vibes.db', 'default');
 
 const mimoSchema = z.object({
     messages: z.array(z.any()),
@@ -85,10 +83,12 @@ app.post('/sessions', async (c) => {
         const metadata = body.metadata || {};
 
         const sessionId = await sessionManager.createSession(title, metadata);
+        const session = await sessionManager.getSessionInfo(sessionId);
 
         return c.json({
             success: true,
             sessionId,
+            session,
         });
     } catch (error) {
         logger.error({
@@ -163,12 +163,16 @@ app.patch('/sessions/:id', async (c) => {
 app.get('/sessions/:id/files', async (c) => {
     try {
         const sessionId = c.req.param('id');
-        const tempBackend = new SqliteBackend('workspace/vibes.db', sessionId);
-
+        const trackedFilesPath = path.join(
+            sessionManager.getSessionWorkspace(sessionId),
+            'tracked_files.json',
+        );
+        const raw = await readFile(trackedFilesPath, 'utf8').catch(() => '[]');
+        const files = JSON.parse(raw);
 
         return c.json({
             success: true,
-            files: tempBackend.getState().messages,
+            files: Array.isArray(files) ? files : [],
         });
     } catch (error) {
         logger.error({
@@ -190,6 +194,7 @@ app.get('/sessions/:id/messages', async (c) => {
         const sessionId = c.req.param('id');
         const tempBackend = new SqliteBackend('workspace/vibes.db', sessionId);
         const state = tempBackend.getState();
+        tempBackend.close();
 
         // Convert AgentState messages to UI message format
         const messages = state.messages.map((msg: any, index: number) => ({
@@ -206,6 +211,7 @@ app.get('/sessions/:id/messages', async (c) => {
             success: true,
             messages,
             summary: state.summary,
+            messageCount: state.messages.length,
         });
     } catch (error) {
         logger.error({
@@ -277,9 +283,6 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
 
         const agent = sessionManager.getOrCreateAgent(sessionId);
 
-        // Get or create the backend for this session to persist messages
-        const sessionBackend = new SqliteBackend('workspace/vibes.db', sessionId);
-
         // Pass originalMessages to enable proper message continuation when resubmitting after approval
         // This ensures the stream uses the correct message ID for the last assistant message
         const lastMessage = messages[messages.length - 1];
@@ -289,7 +292,7 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
             agent,
             uiMessages: body.messages,
             originalMessages,
-            backend: sessionBackend,
+            backend: new SqliteBackend('workspace/vibes.db', sessionId),
         });
 
 
@@ -313,11 +316,10 @@ app.post('/simple/stream', zValidator('json', mimoSchema), async (c) => {
 
         // Use custom stream response that integrates with middleware writers
         // This enables onData callbacks and custom data streaming
-        const sessionBackend = new SqliteBackend('workspace/vibes.db', 'default');
         return createDeepAgentStreamResponse({
             agent: simpleAgent as any, // TODO: fix type mismatch
             uiMessages: messages,
-            backend: sessionBackend,
+            backend: new SqliteBackend('workspace/vibes.db', 'simple-demo'),
         });
 
     } catch (error) {

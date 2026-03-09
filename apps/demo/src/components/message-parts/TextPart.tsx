@@ -1,6 +1,5 @@
 import React from 'react';
 import { Streamdown } from 'streamdown';
-import { cn } from '../../lib/utils';
 
 interface TextPartProps {
   text: string;
@@ -9,7 +8,7 @@ interface TextPartProps {
 
 export const TextPart: React.FC<TextPartProps> = ({ text, isUser }) => {
   return (
-    <div className="text-sm streamdown text-zinc-100 leading-relaxed overflow-x-auto">
+    <div className="streamdown overflow-x-auto text-[0.96rem] leading-7 text-inherit">
       <Streamdown>{text}</Streamdown>
     </div>
   );

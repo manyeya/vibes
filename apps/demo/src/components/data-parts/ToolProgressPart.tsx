@@ -2,7 +2,12 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { Activity, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { toolStageConfig, animationProps, type ToolProgressData } from './types';
+import {
+  toolStageConfig,
+  animationProps,
+  dataPartStyles,
+  type ToolProgressData,
+} from './types';
 
 const iconMap = {
   Activity,
@@ -37,19 +42,24 @@ export const ToolProgressPart: React.FC<{ data: ToolProgressData }> = ({ data })
   return (
     <motion.div
       {...animationProps}
-      className="inline-flex flex-col items-start gap-1 px-3 py-2 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900/50 rounded-md text-xs text-blue-700 dark:text-blue-400"
+      className={cn(
+        dataPartStyles.stack,
+        config.bg,
+        config.border,
+        config.text
+      )}
     >
       <div className="inline-flex items-center gap-2">
         <Icon className={cn('w-3 h-3', config.spin && 'animate-spin')} />
         <span>
           {label}
           {data.progress !== undefined && (
-            <span className="ml-1 text-blue-600 dark:text-blue-300">({data.progress}%)</span>
+            <span className={cn('ml-1', config.muted)}>({data.progress}%)</span>
           )}
         </span>
       </div>
       {metadata && (
-        <span className="text-[11px] text-blue-600 dark:text-blue-300">{metadata}</span>
+        <span className={cn(dataPartStyles.meta, config.muted)}>{metadata}</span>
       )}
     </motion.div>
   );

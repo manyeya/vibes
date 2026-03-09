@@ -2,7 +2,12 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { Clock, Loader2, CheckCircle2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { todoStatusConfig, animationProps, type TodoUpdateData } from './types';
+import {
+  todoStatusConfig,
+  animationProps,
+  dataPartStyles,
+  type TodoUpdateData,
+} from './types';
 
 const iconMap = {
   Clock,
@@ -17,21 +22,25 @@ export const TodoUpdatePart: React.FC<{ data: TodoUpdateData }> = ({ data }) => 
   return (
     <motion.div
       {...animationProps}
-      className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-800/50 border border-zinc-700 text-xs"
+      className={cn(
+        dataPartStyles.chip,
+        config.bg,
+        config.border
+      )}
     >
       <Icon
         className={cn(
           'w-3.5 h-3.5',
-          config.color,
+          config.text,
           config.spin && 'animate-spin'
         )}
       />
       <span
-        className={
+        className={cn(
           data.status === 'completed'
-            ? 'text-zinc-500 line-through'
-            : 'text-zinc-300'
-        }
+            ? `${config.muted} line-through`
+            : config.text
+        )}
       >
         {data.title || data.id}
       </span>

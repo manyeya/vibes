@@ -14,13 +14,13 @@ export const ReasoningPart: React.FC<ReasoningPartProps> = ({ text = '' }) => {
 
   return (
     <details className="group" open>
-      <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800/50 rounded-md transition-colors select-none text-xs">
-        <Brain className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+      <summary className="flex cursor-pointer select-none items-center gap-2 rounded-[0.95rem] px-3 py-2 text-xs transition-colors hover:bg-[color:color-mix(in_srgb,var(--surface-raised)_82%,transparent)]">
+        <Brain className="h-3.5 w-3.5 text-[var(--muted)]" />
         <Badge variant="zinc" size="sm">Thinking</Badge>
-        <ChevronDown className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-500 ml-auto group-open:rotate-180 transition-transform" />
+        <ChevronDown className="ml-auto h-3.5 w-3.5 text-[var(--muted)] transition-transform group-open:rotate-180" />
       </summary>
-      <div className="mt-2 px-3 py-2 bg-zinc-100 dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 rounded-md">
-        <pre className="text-xs text-zinc-600 dark:text-zinc-500 whitespace-pre-wrap font-mono">
+      <div className="mt-2 rounded-[1rem] border border-[var(--line)] bg-[color:color-mix(in_srgb,var(--surface-muted)_86%,transparent)] px-3 py-2">
+        <pre className="whitespace-pre-wrap font-mono text-xs text-[var(--muted)]">
           {text}
         </pre>
       </div>

@@ -2,7 +2,12 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { Activity, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { delegationConfig, animationProps, type DelegationData } from './types';
+import {
+  delegationConfig,
+  animationProps,
+  dataPartStyles,
+  type DelegationData,
+} from './types';
 
 const iconMap = {
   Activity,
@@ -24,7 +29,8 @@ export const DelegationPart: React.FC<{ data: DelegationData }> = ({ data }) => 
     <motion.div
       {...animationProps}
       className={cn(
-        'flex items-start gap-2 px-3 py-2 rounded-lg border text-xs',
+        dataPartStyles.panel,
+        'flex items-start gap-2 text-xs',
         config.bg,
         config.border
       )}

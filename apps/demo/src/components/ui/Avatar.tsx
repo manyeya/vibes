@@ -12,14 +12,11 @@ export const Avatar: React.FC<AvatarProps> = ({ type = 'bot', size = 'md', icon,
   return (
     <div
       className={cn(
-        'rounded-md flex items-center justify-center shrink-0',
+        'flex shrink-0 items-center justify-center rounded-md backdrop-blur-md',
         {
-          // User styling
-          'bg-zinc-200 dark:bg-zinc-800': type === 'user',
-          // Bot styling - flat, professional
-          'bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700': type === 'bot',
-          // Custom styling
-          'bg-zinc-700': type === 'custom',
+          'border border-[var(--glass-border)] bg-[var(--glass-light)]': type === 'user',
+          'border border-[var(--glass-border)] bg-[var(--glass)]': type === 'bot',
+          'border border-[color:color-mix(in_srgb,var(--accent)_28%,var(--glass-border))] bg-[color:color-mix(in_srgb,var(--accent)_12%,var(--glass-light))]': type === 'custom',
         },
         {
           // Sizes
@@ -30,7 +27,7 @@ export const Avatar: React.FC<AvatarProps> = ({ type = 'bot', size = 'md', icon,
         className
       )}
     >
-      {icon || (type === 'user' ? <User className="w-3.5 h-3.5 text-zinc-600 dark:text-zinc-400" /> : <Bot className="w-4 h-4 text-zinc-700 dark:text-zinc-300" />)}
+      {icon || (type === 'user' ? <User className="w-3.5 h-3.5 text-[var(--muted)]" /> : <Bot className="w-4 h-4 text-[var(--ink)]" />)}
     </div>
   );
 };

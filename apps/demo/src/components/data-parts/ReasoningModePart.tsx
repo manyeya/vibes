@@ -2,7 +2,12 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { RefreshCw, TreePine, ClipboardList } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { reasoningConfig, animationProps, type ReasoningModeData } from './types';
+import {
+  reasoningConfig,
+  animationProps,
+  dataPartStyles,
+  type ReasoningModeData,
+} from './types';
 
 const iconMap = {
   RefreshCw,
@@ -18,13 +23,13 @@ export const ReasoningModePart: React.FC<{ data: ReasoningModeData }> = ({ data 
     <motion.div
       {...animationProps}
       className={cn(
-        'inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs',
+        dataPartStyles.chip,
         config.bg,
         config.border
       )}
     >
-      <Icon className={cn('w-3 h-3', config.color)} />
-      <span className={config.color}>{config.label}</span>
+      <Icon className={cn('w-3 h-3', config.text)} />
+      <span className={config.text}>{config.label}</span>
     </motion.div>
   );
 };

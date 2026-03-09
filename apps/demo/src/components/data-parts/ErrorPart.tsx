@@ -2,9 +2,10 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { AlertCircle } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { animationProps, type ErrorData } from './types';
+import { animationProps, dataPartStyles, toneConfig, type ErrorData } from './types';
 
 export const ErrorPart: React.FC<{ data: ErrorData }> = ({ data }) => {
+  const tone = data.recoverable ? toneConfig.accent : toneConfig.danger;
   const metadata = [
     data.toolName ? `tool ${data.toolName}` : null,
     data.plugin,
@@ -16,32 +17,27 @@ export const ErrorPart: React.FC<{ data: ErrorData }> = ({ data }) => {
     <motion.div
       {...animationProps}
       className={cn(
-        'flex items-start gap-2 p-3 rounded-md border',
-        data.recoverable
-          ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/50'
-          : 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900/50'
+        dataPartStyles.panel,
+        'flex items-start gap-2',
+        tone.bg,
+        tone.border
       )}
     >
       <AlertCircle
         className={cn(
           'w-4 h-4 shrink-0 mt-0.5',
-          data.recoverable ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'
+          tone.text
         )}
       />
       <div className="flex-1 min-w-0">
-        <p
-          className={cn(
-            'text-sm',
-            data.recoverable ? 'text-amber-700 dark:text-amber-400' : 'text-red-700 dark:text-red-400'
-          )}
-        >
+        <p className={cn('text-sm', tone.text)}>
           {data.error}
         </p>
         {metadata && (
-          <p className="text-xs text-zinc-600 dark:text-zinc-500 mt-1">{metadata}</p>
+          <p className={cn('mt-1 text-xs', tone.muted)}>{metadata}</p>
         )}
         {data.context && (
-          <p className="text-xs text-zinc-500 dark:text-zinc-600 mt-1 truncate">{data.context}</p>
+          <p className="mt-1 truncate text-xs text-[var(--tone-neutral-muted)]">{data.context}</p>
         )}
       </div>
     </motion.div>
