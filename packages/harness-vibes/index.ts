@@ -33,7 +33,7 @@ import {
     PatternApplication,
 } from './src/plugins';
 import MemoryPlugin from './src/plugins/memory';
-import SqliteBackend from './src/backend/sqlitebackend';
+import SqliteBackend from './src/persistence/sqlite-backend';
 import {
     AgentState,
     VibeAgentConfig,
@@ -57,7 +57,7 @@ export {
     type SessionInstance,
     type SessionAgentConfig,
     type CleanupOptions,
-} from './src/core/session-manager';
+} from './src/session/session-manager';
 
 /**
  * Configuration for initializing a DeepAgent instance.

@@ -13,13 +13,17 @@
     "./backend": {
       "import": "./dist/src/backend/sqlitebackend.js",
       "types": "./dist/src/backend/sqlitebackend.d.ts"
+    },
+    "./persistence": {
+      "import": "./dist/src/persistence/index.js",
+      "types": "./dist/src/persistence/index.d.ts"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "bun build index.ts --outdir dist --target bun --sourcemap=external && tsc --emitDeclarationOnly --outDir dist",
+    "build": "rm -rf dist && bun build index.ts src/backend/sqlitebackend.ts src/persistence/index.ts --outdir dist --target bun --sourcemap=external && tsc --emitDeclarationOnly --outDir dist",
     "dev": "bun run --watch index.ts",
     "prepublishOnly": "bun run build",
     "test": "bun test",

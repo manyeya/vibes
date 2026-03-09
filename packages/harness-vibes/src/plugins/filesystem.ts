@@ -9,7 +9,6 @@ import {
 import z from "zod";
 import { $ } from "bun";
 import * as path from "path";
-import StateBackend from "../backend/statebackend";
 
 /**
  * Get file type from extension

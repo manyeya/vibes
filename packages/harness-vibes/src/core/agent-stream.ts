@@ -13,7 +13,7 @@ import type { ModelMessage } from 'ai';
 import type { VibesUIMessage } from './streaming';
 import { createUIMessageStream, createUIMessageStreamResponse } from 'ai';
 import type { AgentState } from './types';
-import SqliteBackend from '../backend/sqlitebackend';
+import SqliteBackend from '../persistence/sqlite-backend';
 
 interface AgentStreamOptions {
     agent: VibeAgent;
