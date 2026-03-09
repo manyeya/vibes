@@ -161,7 +161,7 @@ class APISessionManager {
             this.sessions.set(sessionId, instance);
 
             // Create session record in database (metadata only)
-            this.harnessManager.getOrCreateSession({ id: sessionId }).catch((err: Error) => {
+            this.harnessManager.ensureSession({ id: sessionId }).catch((err: Error) => {
                 console.error(`Failed to create session record for ${sessionId}:`, err);
             });
         } else {
@@ -222,7 +222,7 @@ class APISessionManager {
      */
     async createSession(title?: string, metadata: Record<string, any> = {}): Promise<string> {
         // Create session record in database
-        const session = await this.harnessManager.getOrCreateSession({
+        const session = await this.harnessManager.ensureSession({
             title,
             metadata,
         });
