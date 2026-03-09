@@ -1,6 +1,7 @@
 // Bun types are only available in Bun runtime
 // This file doesn't use Bun-specific APIs directly, so no reference needed
 
+import * as path from 'path';
 import { type LanguageModel } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import {
@@ -85,10 +86,24 @@ interface DefaultPluginFactoryOptions {
     swarmId?: string;
 }
 
+function resolveSharedWorkspaceDir(workspaceDir: string): string {
+    const normalized = path.normalize(workspaceDir);
+    const parentDir = path.dirname(normalized);
+
+    if (path.basename(parentDir) === 'sessions') {
+        return path.dirname(parentDir);
+    }
+
+    return normalized;
+}
+
 export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugin[] {
+    const sharedWorkspaceDir = resolveSharedWorkspaceDir(config.workspaceDir);
+
     return [
         new PlanningPlugin(config.model, {
-            planPath: `${config.workspaceDir}/plan.md`,
+            planPath: path.join(config.workspaceDir, 'plan.md'),
+            tasksPath: path.join(config.workspaceDir, 'tasks.json'),
             maxRecitationTasks: 10,
         }),
         new ReasoningPlugin(config.model, {
@@ -99,20 +114,20 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
         }),
         new ReflexionPlugin(config.model, {
             maxLessons: 100,
-            lessonsPath: `${config.workspaceDir}/lessons.json`,
+            lessonsPath: path.join(sharedWorkspaceDir, 'lessons.json'),
             autoAnalyzeErrors: true,
             analysisThreshold: 2,
             autoSuggestLessons: true,
         }),
         new SemanticMemoryPlugin(undefined, {
             maxFacts: 200,
-            factsPath: `${config.workspaceDir}/facts.json`,
+            factsPath: path.join(sharedWorkspaceDir, 'facts.json'),
             similarityThreshold: 0.3,
             autoExtract: true,
         }),
         new ProceduralMemoryPlugin(config.model, {
             maxPatterns: 50,
-            patternsPath: `${config.workspaceDir}/patterns.json`,
+            patternsPath: path.join(sharedWorkspaceDir, 'patterns.json'),
             autoSuggest: true,
         }),
         new SwarmPlugin(
@@ -120,14 +135,17 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
             {
                 maxStateEntries: 100,
                 maxSignalHistory: 50,
-                statePath: `${config.workspaceDir}/swarm-state.json`,
+                statePath: path.join(sharedWorkspaceDir, 'swarm-state.json'),
                 persistState: true,
             }
         ),
         new SkillsPlugin(),
         new FilesystemPlugin({ baseDir: config.workspaceDir }),
         new BashPlugin(config.workspaceDir),
-        new MemoryPlugin(),
+        new MemoryPlugin({
+            scratchpadPath: path.join(config.workspaceDir, 'scratchpad.md'),
+            reflexionPath: path.join(sharedWorkspaceDir, 'reflections.md'),
+        }),
     ];
 }
 

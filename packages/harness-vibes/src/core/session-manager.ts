@@ -3,20 +3,25 @@
  *
  * Features:
  * - Each session gets an isolated workspace directory (workspace/sessions/{sessionId}/)
- * - Plugin files (facts, patterns, lessons, plans, etc.) are stored per-session
+ * - Session working state is stored per-session, while long-term memory remains shared
  * - Agent instances are cached in memory with configurable TTL
  * - Session lifecycle management (create, get, delete, cleanup)
  * - Integration with SQLite backend for persistent session metadata
  *
  * Directory structure per session:
  * workspace/sessions/{sessionId}/
- *   ├── facts.json       - Semantic memory
- *   ├── patterns.json    - Procedural memory
- *   ├── lessons.json     - Reflexion lessons
+ *   ├── scratchpad.md    - Session working memory
  *   ├── plan.md          - Planning state
  *   ├── tasks.json       - Task queue
- *   ├── swarm-state.json - Swarm coordination
+ *   ├── tracked_files.json - Filesystem plugin session state
  *   └── subagent_results/ - Sub-agent outputs
+ *
+ * Cross-session shared files remain in workspace/:
+ *   ├── lessons.json     - Reflexion lessons
+ *   ├── facts.json       - Semantic memory
+ *   ├── patterns.json    - Procedural memory
+ *   ├── swarm-state.json - Swarm coordination
+ *   └── reflections.md   - Appended reflections
  */
 
 import * as path from 'path';
@@ -93,7 +98,7 @@ export interface CleanupOptions {
  * Harness Session Manager
  *
  * Manages complete session lifecycle with per-session isolated workspaces.
- * All plugin data is stored in session-specific directories.
+ * Session working state is isolated while long-term memory stays shared.
  */
 export class HarnessSessionManager {
     private sessions: Map<string, SessionInstance> = new Map();

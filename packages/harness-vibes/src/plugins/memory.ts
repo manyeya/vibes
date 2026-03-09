@@ -6,6 +6,7 @@ import {
     createDataStreamWriter,
     type DataStreamWriter,
 } from "../core/types";
+import * as path from "path";
 import z from "zod";
 
 /**
@@ -41,10 +42,15 @@ export default class MemoryPlugin implements Plugin {
     }
 
     async waitReady() {
-        // Ensure workspace directory exists using Bun Shell
         try {
             const { $ } = await import('bun');
-            await $`mkdir -p workspace`.quiet();
+            const directories = new Set([
+                path.dirname(this.scratchpadPath),
+                path.dirname(this.reflexionPath),
+            ]);
+            for (const dir of directories) {
+                await $`mkdir -p ${dir}`.quiet();
+            }
         } catch (e) {
             // Ignore
         }
