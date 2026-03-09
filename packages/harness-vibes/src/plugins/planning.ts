@@ -4,6 +4,7 @@ import {
     type LanguageModel,
     generateText,
 } from 'ai';
+import * as path from 'path';
 import { z } from 'zod';
 import TasksPlugin from './tasks';
 import {
@@ -23,6 +24,8 @@ import {
 export interface PlanningConfig {
     /** Path to save/load plan files (default: workspace/plan.md) */
     planPath?: string;
+    /** Path to persist task state alongside the plan (default: same directory as planPath/tasks.json) */
+    tasksPath?: string;
     /** Interval for automatic plan recitation (default: every prepareCall) */
     recitationInterval?: number;
     /** Maximum number of pending tasks to show in recitation */
@@ -97,9 +100,10 @@ export class PlanningPlugin implements Plugin {
         config: PlanningConfig = {}
     ) {
         this.model = model;
-        // TasksPlugin uses its own path (workspace/tasks.json), separate from plan.md
-        this.tasksPlugin = new TasksPlugin(model, {});
         this.planPath = config.planPath || 'workspace/plan.md';
+        this.tasksPlugin = new TasksPlugin(model, {
+            tasksPath: config.tasksPath || path.join(path.dirname(this.planPath), 'tasks.json'),
+        });
         this.maxRecitationTasks = config.maxRecitationTasks || 10;
     }
 

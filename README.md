@@ -151,14 +151,21 @@ Vibes stores runtime data under `workspace/` (gitignored):
 - SQLite DB: `workspace/vibes.db`
 - session directories: `workspace/sessions/<sessionId>/`
 
-Per-session files may include:
+Session-only files may include:
+
+- `scratchpad.md`
+- `plan.md`
+- `tasks.json`
+- `tracked_files.json`
+- `subagent_results/`
+
+Cross-session shared files include:
 
 - `facts.json`
 - `patterns.json`
 - `lessons.json`
-- `plan.md`
-- `tasks.json`
 - `swarm-state.json`
+- `reflections.md`
 - `subagent_results/`
 
 ## Plugin System (`harness-vibes`)
