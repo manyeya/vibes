@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import { createUIMessageStreamResponse, type UIMessageChunk } from "ai";
 import { logger } from "../logger";
 import sessionManager from "../session-manager";
 import { SqliteBackend, createDeepAgentStreamResponse } from "../../../../packages/harness-vibes/index";
@@ -349,29 +350,65 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
             ? messages
             : undefined;
 
-        // Build an AbortController for this stream and combine it with the
-        // incoming request signal so either side can cancel: client disconnect
-        // or an explicit POST /sessions/:id/abort.
+        // Build an AbortController for this stream. Unlike pre-resumable
+        // PRs, we deliberately do NOT link this to `c.req.raw.signal`: a
+        // client disconnect should leave the underlying loop running so a
+        // reconnect can pick up via the live tail. Only an explicit
+        // POST /sessions/:id/abort triggers cancellation.
         const streamController = new AbortController();
         sessionManager.registerStreamController(sessionId, streamController);
-        const clientSignal = c.req.raw.signal;
-        const onClientAbort = () => streamController.abort(clientSignal.reason);
-        if (clientSignal.aborted) {
-            streamController.abort(clientSignal.reason);
-        } else {
-            clientSignal.addEventListener('abort', onClientAbort, { once: true });
-        }
-        streamController.signal.addEventListener('abort', () => {
-            clientSignal.removeEventListener('abort', onClientAbort);
-            sessionManager.clearStreamController(sessionId, streamController);
-        }, { once: true });
 
-        return createDeepAgentStreamResponse({
+        // Provision a streamId + registry entry + SQLite stream row so
+        // both the live-tail and replay paths agree on the same identity.
+        const streamId = crypto.randomUUID();
+        sessionManager.streamRegistry.create(streamId, sessionId);
+        sessionBackend.beginStream(streamId, sessionId);
+
+        const onChunk = (chunk: unknown) => {
+            const entry = sessionManager.streamRegistry.get(streamId);
+            if (!entry) return;
+            // Persist first, then fan out — so a reconnect that arrives
+            // between persist and emit sees the chunk in SQLite and the
+            // subscriber can dedupe by seq.
+            entry.lastSeq += 1;
+            const seq = entry.lastSeq;
+            try {
+                sessionBackend.appendStreamChunk(streamId, seq, chunk);
+            } catch (err) {
+                console.error('[mimo-code] appendStreamChunk failed:', err);
+            }
+            for (const sub of entry.subscribers) {
+                try { sub(seq, chunk); } catch (err) { console.error('[mimo-code] subscriber threw:', err); }
+            }
+        };
+
+        const onStreamEnd = (status: 'completed' | 'failed') => {
+            try { sessionBackend.endStream(streamId, status); } catch (err) {
+                console.error('[mimo-code] endStream failed:', err);
+            }
+            sessionManager.streamRegistry.complete(streamId, status);
+            sessionManager.clearStreamController(sessionId, streamController);
+        };
+
+        const response = await createDeepAgentStreamResponse({
             agent,
             uiMessages: body.messages as unknown as Parameters<typeof createDeepAgentStreamResponse>[0]['uiMessages'],
             originalMessages: originalMessages as unknown as Parameters<typeof createDeepAgentStreamResponse>[0]['originalMessages'],
             backend: sessionBackend,
             abortSignal: streamController.signal,
+            onChunk,
+            onStreamEnd,
+        });
+
+        // Surface the streamId so the client can pass it back to the
+        // reconnect endpoint after a network blip.
+        const headers = new Headers(response.headers);
+        headers.set('x-vibes-stream-id', streamId);
+        headers.set('access-control-expose-headers', 'x-vibes-stream-id');
+        return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
         });
 
 
@@ -387,6 +424,110 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
     }
 });
 
+
+/**
+ * Reconnect to an in-flight stream. The client passes the streamId it
+ * received via the `x-vibes-stream-id` header on the original POST plus
+ * the last chunk_seq it actually processed (`fromSeq`). The endpoint
+ * replays any persisted chunks past fromSeq, then — if the stream is
+ * still active in the in-memory registry — subscribes to the live tail
+ * and forwards new chunks until the stream ends.
+ *
+ * Returns 204 if the stream is unknown or its persisted log has aged
+ * past the replay TTL.
+ */
+const RECONNECT_REPLAY_TTL_MS = 5 * 60 * 1000;
+
+app.get('/mimo-code/:sessionId/stream', async (c) => {
+    const sessionId = c.req.param('sessionId');
+    const streamId = c.req.query('streamId');
+    const fromSeqStr = c.req.query('fromSeq') ?? '0';
+    const fromSeq = Math.max(0, Number.parseInt(fromSeqStr, 10) || 0);
+
+    if (!streamId) {
+        return c.json({ success: false, error: 'streamId query param required' }, 400);
+    }
+
+    const backend = new SqliteBackend('workspace/vibes.db', sessionId);
+    const meta = backend.getStreamMeta(streamId);
+    if (!meta || meta.sessionId !== sessionId) {
+        return c.body(null, 204);
+    }
+
+    // Apply replay TTL to completed streams: long-since-finished streams
+    // shouldn't be replayable indefinitely.
+    if (meta.endedAt) {
+        const endedAtMs = new Date(meta.endedAt).getTime();
+        if (Date.now() - endedAtMs > RECONNECT_REPLAY_TTL_MS) {
+            return c.body(null, 204);
+        }
+    }
+
+    const registry = sessionManager.streamRegistry;
+    const liveEntry = registry.get(streamId);
+
+    const stream = new ReadableStream<UIMessageChunk<unknown, never>>({
+        start(controller) {
+            // Phase 1: replay persisted chunks up to the current cursor.
+            // We capture lastReplayedSeq so the live-tail subscriber can
+            // dedupe any chunk that landed in SQLite between read + emit.
+            let lastReplayedSeq = fromSeq - 1;
+            try {
+                const persisted = backend.readStreamChunks(streamId, fromSeq);
+                for (const row of persisted) {
+                    controller.enqueue(row.payload as UIMessageChunk<unknown, never>);
+                    lastReplayedSeq = Math.max(lastReplayedSeq, row.chunkSeq);
+                }
+            } catch (err) {
+                console.error('[mimo-code] replay failed:', err);
+            }
+
+            // Phase 2: if the stream has already ended, close after replay.
+            if (!liveEntry || liveEntry.completed) {
+                controller.close();
+                return;
+            }
+
+            // Phase 3: subscribe to the live tail. Forward only chunks
+            // whose seq is strictly greater than the highest replayed seq.
+            const unsubscribe = registry.subscribe(
+                streamId,
+                (seq, chunk) => {
+                    if (seq <= lastReplayedSeq) return;
+                    try {
+                        controller.enqueue(chunk as UIMessageChunk<unknown, never>);
+                    } catch (err) {
+                        console.error('[mimo-code] live forward failed:', err);
+                    }
+                },
+                () => {
+                    try { controller.close(); } catch { /* already closed */ }
+                }
+            );
+
+            // Best-effort: tear down the subscriber if the client cancels
+            // the response. Hono propagates this via the request signal.
+            const clientSignal = c.req.raw.signal;
+            const onAbort = () => {
+                unsubscribe();
+                try { controller.close(); } catch { /* already closed */ }
+            };
+            if (clientSignal.aborted) {
+                onAbort();
+            } else {
+                clientSignal.addEventListener('abort', onAbort, { once: true });
+            }
+        },
+    });
+
+    return createUIMessageStreamResponse({
+        stream,
+        headers: {
+            'X-Accel-Buffering': 'no',
+            'x-vibes-stream-id': streamId,
+        },
+    });
+});
 
 app.post('/simple/stream', zValidator('json', mimoSchema), async (c) => {
     try {

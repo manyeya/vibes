@@ -8,11 +8,12 @@
  * `./agent-factory.ts`. Model resolution lives in `./model-factory.ts`.
  */
 
-import { SessionManager as HarnessSessionManager } from '../../../packages/harness-vibes/index';
+import { SessionManager as HarnessSessionManager, SqliteBackend } from '../../../packages/harness-vibes/index';
 import { DeepAgent } from '../../../packages/harness-vibes/index';
 import { dotenvLoad } from 'dotenv-mono';
 import { createAgentForSession } from './agent-factory';
 import type { ModelSpec } from './model-factory';
+import { StreamRegistry } from './stream-registry';
 
 // Load env vars from root .env
 dotenvLoad();
@@ -48,6 +49,12 @@ class APISessionManager {
     private sessions: Map<string, AgentInstance> = new Map();
     private streamControllers: Map<string, StreamControllerEntry> = new Map();
     private harnessManager: HarnessSessionManager;
+    /**
+     * In-memory registry of active streams. Used by the streaming route to
+     * publish chunks for live-tail reconnects and by the reconnect endpoint
+     * to subscribe to those chunks.
+     */
+    public readonly streamRegistry: StreamRegistry = new StreamRegistry();
 
     constructor() {
         this.harnessManager = new HarnessSessionManager({
@@ -58,7 +65,27 @@ class APISessionManager {
         // Start periodic cleanup (every 30 minutes)
         setInterval(() => {
             this.cleanup();
+            this.cleanupStreamLogs();
         }, 30 * 60 * 1000);
+    }
+
+    /**
+     * Drop persisted stream_log rows older than 1 hour. Keeps the SQLite
+     * table from growing unbounded; the replay TTL in the reconnect
+     * endpoint is shorter (5 min) so this is a safety net.
+     */
+    private cleanupStreamLogs(): void {
+        try {
+            const cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+            const backend = new SqliteBackend('workspace/vibes.db', 'default');
+            const deleted = backend.cleanupStreams(cutoff);
+            backend.close();
+            if (deleted > 0) {
+                console.log(`[APISessionManager] Cleaned up ${deleted} old stream_log rows`);
+            }
+        } catch (err) {
+            console.error('[APISessionManager] stream log cleanup failed:', err);
+        }
     }
 
     /**

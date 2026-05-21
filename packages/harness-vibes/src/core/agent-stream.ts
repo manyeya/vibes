@@ -9,7 +9,7 @@
  */
 
 import type { VibeAgent } from './agent';
-import type { ModelMessage, UIMessage, ToolSet } from 'ai';
+import type { ModelMessage, UIMessage, ToolSet, UIMessageChunk } from 'ai';
 import type { VibesUIMessage } from './streaming';
 import { createUIMessageStream, createUIMessageStreamResponse, convertToModelMessages } from 'ai';
 import type { AgentState } from './types';
@@ -21,6 +21,20 @@ interface AgentStreamOptions {
     abortSignal?: AbortSignal;
     originalMessages?: ModelMessage[];
     backend?: StateBackend;
+    /**
+     * Optional per-chunk observer. Invoked for every UI message chunk
+     * before it is forwarded to the HTTP response. The callback is the
+     * integration point for resumable-stream persistence + live-tail
+     * publishing (see apps/api/src/stream-registry.ts).
+     */
+    onChunk?: (chunk: unknown) => void;
+    /**
+     * Optional stream-end notification. Fires once the agent's stream has
+     * settled, with `'failed'` for unhandled errors and `'completed'`
+     * otherwise. Used by the API layer to mark the stream ended in
+     * SQLite + flush retained subscribers.
+     */
+    onStreamEnd?: (status: 'completed' | 'failed') => void;
 }
 
 /**
@@ -38,7 +52,7 @@ interface AgentStreamOptions {
 export async function createDeepAgentStreamResponse(
     options: AgentStreamOptions
 ): Promise<Response> {
-    const { agent, uiMessages = [], abortSignal, originalMessages, backend } = options;
+    const { agent, uiMessages = [], abortSignal, originalMessages, backend, onChunk, onStreamEnd } = options;
 
     // Create a UI message stream with an execute function that has writer access
     const stream = createUIMessageStream<VibesUIMessage>({
@@ -105,9 +119,41 @@ export async function createDeepAgentStreamResponse(
         originalMessages: originalMessages as VibesUIMessage[] | undefined,
     });
 
+    // Resumable streams: tee the chunk stream when an `onChunk` observer is
+    // supplied so the same chunks can be persisted + broadcast for late
+    // reconnects while the original branch flows out to the HTTP response.
+    let responseStream = stream;
+    if (onChunk) {
+        // `stream` is typed as a chunk stream; .tee() preserves that type.
+        const teed = (stream as unknown as ReadableStream<UIMessageChunk<unknown, never>>).tee();
+        responseStream = teed[0] as unknown as typeof stream;
+        const forObserver = teed[1];
+        void (async () => {
+            const reader = forObserver.getReader();
+            let status: 'completed' | 'failed' = 'completed';
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    try {
+                        onChunk(value);
+                    } catch (err) {
+                        console.error('[agent-stream] onChunk observer threw:', err);
+                    }
+                }
+            } catch (err) {
+                status = 'failed';
+                console.error('[agent-stream] observer branch errored:', err);
+            } finally {
+                reader.releaseLock();
+                try { onStreamEnd?.(status); } catch { /* swallow */ }
+            }
+        })();
+    }
+
     // Create the response with proper SSE formatting
     return createUIMessageStreamResponse({
-        stream,
+        stream: responseStream,
         headers: {
             'X-Accel-Buffering': 'no',
         },

@@ -39,7 +39,7 @@ export default class SqliteBackend extends StateBackend {
     }
 
     /** Current schema version. Bump and add a new migration block below. */
-    private static readonly SCHEMA_VERSION = 1;
+    private static readonly SCHEMA_VERSION = 2;
 
     private init() {
         const versionRow = this.db.query("PRAGMA user_version").get() as { user_version?: number } | undefined;
@@ -85,7 +85,35 @@ export default class SqliteBackend extends StateBackend {
             currentVersion = 1;
         }
 
-        // Future migrations: if (currentVersion < 2) { ... PRAGMA user_version = 2 }
+        if (currentVersion < 2) {
+            // Migration 2: streams + stream_log tables for resumable streams.
+            this.db.transaction(() => {
+                this.db.run(`
+                    CREATE TABLE IF NOT EXISTS streams (
+                        stream_id TEXT PRIMARY KEY,
+                        session_id TEXT,
+                        started_at TEXT,
+                        ended_at TEXT,
+                        status TEXT
+                    )
+                `);
+                this.db.run(`CREATE INDEX IF NOT EXISTS idx_streams_session_id ON streams(session_id, started_at)`);
+                this.db.run(`CREATE INDEX IF NOT EXISTS idx_streams_ended_at ON streams(ended_at)`);
+
+                this.db.run(`
+                    CREATE TABLE IF NOT EXISTS stream_log (
+                        stream_id TEXT,
+                        chunk_seq INTEGER,
+                        payload TEXT,
+                        created_at TEXT,
+                        PRIMARY KEY (stream_id, chunk_seq)
+                    )
+                `);
+                this.db.run(`CREATE INDEX IF NOT EXISTS idx_stream_log_created_at ON stream_log(created_at)`);
+            })();
+            this.db.run(`PRAGMA user_version = 2`);
+            currentVersion = 2;
+        }
 
         void SqliteBackend.SCHEMA_VERSION;
 
@@ -263,6 +291,109 @@ export default class SqliteBackend extends StateBackend {
                 sessionId
             ]
         );
+    }
+
+    // ============ STREAM PERSISTENCE (resumable streams) ============
+
+    /**
+     * Record the start of a stream. Idempotent: a duplicate streamId is a
+     * no-op so re-entering on retry does not corrupt the row.
+     */
+    beginStream(streamId: string, sessionId: string): void {
+        const now = new Date().toISOString();
+        this.db.run(
+            `INSERT OR IGNORE INTO streams (stream_id, session_id, started_at, ended_at, status)
+             VALUES (?, ?, ?, NULL, 'active')`,
+            [streamId, sessionId, now]
+        );
+    }
+
+    /**
+     * Append a stream chunk. The (stream_id, chunk_seq) composite key
+     * guarantees ordering and prevents duplicate inserts on retry.
+     * Payload is stored verbatim as JSON.
+     */
+    appendStreamChunk(streamId: string, chunkSeq: number, payload: unknown): void {
+        const now = new Date().toISOString();
+        this.db.run(
+            `INSERT OR IGNORE INTO stream_log (stream_id, chunk_seq, payload, created_at)
+             VALUES (?, ?, ?, ?)`,
+            [streamId, chunkSeq, JSON.stringify(payload), now]
+        );
+    }
+
+    /**
+     * Mark a stream as completed or failed. Records the end timestamp so the
+     * reconnect endpoint can apply a replay TTL.
+     */
+    endStream(streamId: string, status: 'completed' | 'failed'): void {
+        const now = new Date().toISOString();
+        this.db.run(
+            `UPDATE streams SET ended_at = ?, status = ? WHERE stream_id = ?`,
+            [now, status, streamId]
+        );
+    }
+
+    /**
+     * Read all chunks for a stream starting at `fromSeq` (inclusive).
+     * Returns rows in ascending order — callers should replay them as-is.
+     */
+    readStreamChunks(streamId: string, fromSeq: number = 0): Array<{ chunkSeq: number; payload: unknown; createdAt: string }> {
+        const rows = this.db.query(
+            `SELECT chunk_seq, payload, created_at FROM stream_log
+             WHERE stream_id = ? AND chunk_seq >= ?
+             ORDER BY chunk_seq ASC`
+        ).all(streamId, fromSeq) as Array<{ chunk_seq: number; payload: string; created_at: string }>;
+
+        return rows.map(r => ({
+            chunkSeq: r.chunk_seq,
+            payload: this.parseStreamPayload(r.payload),
+            createdAt: r.created_at,
+        }));
+    }
+
+    /**
+     * Look up stream metadata. Returns null if the stream is unknown.
+     */
+    getStreamMeta(streamId: string): { sessionId: string; startedAt: string; endedAt: string | null; status: string } | null {
+        const row = this.db.query(
+            `SELECT session_id, started_at, ended_at, status FROM streams WHERE stream_id = ?`
+        ).get(streamId) as { session_id: string; started_at: string; ended_at: string | null; status: string } | undefined;
+        if (!row) return null;
+        return {
+            sessionId: row.session_id,
+            startedAt: row.started_at,
+            endedAt: row.ended_at,
+            status: row.status,
+        };
+    }
+
+    /**
+     * Garbage-collect old stream logs. Returns the number of chunks deleted.
+     * Intended to be called on a periodic timer (e.g. the AgentRegistry
+     * cleanup interval).
+     */
+    cleanupStreams(olderThanIso: string): number {
+        let total = 0;
+        this.db.transaction(() => {
+            // Delete chunks first (FK semantics are not enforced but the
+            // ordering makes the data consistent for outside observers).
+            const chunkRes = this.db.run(
+                `DELETE FROM stream_log WHERE created_at < ?`,
+                [olderThanIso]
+            );
+            total += (chunkRes as unknown as { changes?: number }).changes ?? 0;
+            this.db.run(
+                `DELETE FROM streams WHERE (ended_at IS NOT NULL AND ended_at < ?)
+                    OR (ended_at IS NULL AND started_at < ?)`,
+                [olderThanIso, olderThanIso]
+            );
+        })();
+        return total;
+    }
+
+    private parseStreamPayload(raw: string): unknown {
+        try { return JSON.parse(raw); } catch { return raw; }
     }
 
     close() {
