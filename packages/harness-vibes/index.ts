@@ -2,7 +2,7 @@
 // This file doesn't use Bun-specific APIs directly, so no reference needed
 
 import * as path from 'path';
-import { type LanguageModel } from 'ai';
+import { type LanguageModel, type InferAgentUIMessage } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import {
     SkillsPlugin,
@@ -316,6 +316,7 @@ export {
     TaskType,
     type VibesDataParts,
     type VibesUIMessage,
+    type InferAgentUIMessage,
     createDataStreamWriter,
     DataStreamWriter,
     TasksPlugin,

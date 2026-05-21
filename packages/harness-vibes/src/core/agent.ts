@@ -8,6 +8,7 @@ import {
     type UIMessage,
     type ToolLoopAgentSettings,
     type AgentCallParameters,
+    type StepResult,
 } from 'ai';
 import {
     VibesUIMessage,
@@ -102,6 +103,18 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
      */
     protected currentBaseInstructions: string = '';
 
+    /**
+     * Running token usage for the active stream. Reset at the start of each
+     * stream by `consumeLastStreamUsage()`; accumulated in the wrapped
+     * `onStepFinish` callback below. Exposed publicly so the stream wrapper
+     * can persist into the backend's `AgentState.metadata.usage`.
+     */
+    protected lastStreamUsage: { inputTokens: number; outputTokens: number; totalTokens: number } = {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+    };
+
     protected static resolveStopWhen(config: VibeAgentConfig) {
         const maxStepCondition = stepCountIs(config.maxSteps ?? 20);
         if (!config.stopWhen) {
@@ -118,12 +131,28 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         // prepareCall (once per stream/generate, assembles stable system
         // instructions) and prepareStep (every step, prunes context, fans
         // out to plugin.prepareStep and merges the results).
+        // We also wrap onStepFinish to aggregate per-step token usage into
+        // `lastStreamUsage` for the stream wrapper to persist.
+        const userOnStepFinish = config.onStepFinish;
+        const accumulateUsage = (step: StepResult<ToolSet>) => {
+            const u = step.usage;
+            if (u) {
+                this.lastStreamUsage.inputTokens += u.inputTokens ?? 0;
+                this.lastStreamUsage.outputTokens += u.outputTokens ?? 0;
+                this.lastStreamUsage.totalTokens += u.totalTokens ?? 0;
+            }
+        };
         const settings: ToolLoopAgentSettings<never, ToolSet, never> = {
             model: config.model,
             instructions: config.instructions,
             tools: config.tools || {},
             temperature: config.temperature,
-            onStepFinish: config.onStepFinish,
+            onStepFinish: async (step) => {
+                accumulateUsage(step);
+                if (userOnStepFinish) {
+                    await userOnStepFinish(step);
+                }
+            },
             stopWhen: VibeAgent.resolveStopWhen(config),
             prepareCall: async (baseOptions) => {
                 return this.prepareCallOverride(baseOptions as any);
@@ -131,6 +160,23 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             prepareStep: async (stepOptions) => {
                 return this.prepareStepOverride(stepOptions);
             },
+            // Forward experimental_telemetry when enabled. The SDK accepts
+            // an opaque TelemetrySettings object; we populate functionId +
+            // a minimal metadata bag so spans are attributable to a session.
+            // Users wanting an OTLP exporter should set
+            // OTEL_EXPORTER_OTLP_ENDPOINT in their environment — the SDK
+            // picks up the global tracer.
+            ...(config.enableTelemetry
+                ? {
+                    experimental_telemetry: {
+                        isEnabled: true,
+                        functionId: config.name ?? 'vibe-agent',
+                        metadata: {
+                            agentName: config.name ?? 'vibe-agent',
+                        },
+                    },
+                }
+                : {}),
         };
 
         super(settings);
@@ -151,6 +197,18 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
 
         // Pre-build tools for the base tools getter
         this.preloadTools();
+    }
+
+    /**
+     * Return the accumulated token usage for the most recent stream and
+     * reset the internal counter to zero. Intended to be called by
+     * `createDeepAgentStreamResponse` after the stream completes so the
+     * usage can be added to the persisted `AgentState.metadata.usage`.
+     */
+    consumeLastStreamUsage(): { inputTokens: number; outputTokens: number; totalTokens: number } {
+        const usage = { ...this.lastStreamUsage };
+        this.lastStreamUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+        return usage;
     }
 
     addPlugin(plugin: Plugin | Plugin[]) {

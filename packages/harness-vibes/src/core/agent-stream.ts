@@ -74,8 +74,30 @@ export async function createDeepAgentStreamResponse(
                     ...inputModelMessages,
                     ...(response.messages as ModelMessage[]),
                 ];
+
+                // Add this stream's accumulated token usage to the existing
+                // per-session running total. Pulled out of the agent and
+                // merged with whatever's already on the backend.
+                const streamUsage = agent.consumeLastStreamUsage();
+                const prior = backend.getState();
+                const priorUsage = (prior.metadata?.usage ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 }) as {
+                    inputTokens: number;
+                    outputTokens: number;
+                    totalTokens: number;
+                };
+                const mergedMetadata = {
+                    ...(prior.metadata ?? {}),
+                    usage: {
+                        inputTokens: priorUsage.inputTokens + streamUsage.inputTokens,
+                        outputTokens: priorUsage.outputTokens + streamUsage.outputTokens,
+                        totalTokens: priorUsage.totalTokens + streamUsage.totalTokens,
+                    },
+                    lastStreamAt: new Date().toISOString(),
+                };
+
                 const state: Partial<AgentState> = {
                     messages: fullMessages,
+                    metadata: mergedMetadata,
                 };
                 backend.setState(state);
             }

@@ -1,95 +1,21 @@
 /**
- * API Session Manager - Manages sessions with per-session isolated workspaces.
+ * API session registry. Manages the in-memory cache of DeepAgent instances
+ * keyed by session id, plus per-session AbortControllers for the active
+ * stream. Session metadata + workspace lifecycle is delegated entirely to
+ * the harness `SessionManager`.
  *
- * This file provides the session management layer for the API server.
- * Each session gets:
- * - Isolated workspace: workspace/sessions/{sessionId}/
- * - DeepAgent instance with specialized sub-agents
- * - SQLite metadata storage via harness-vibes
+ * Agent construction (model selection, sub-agents, prompts) lives in
+ * `./agent-factory.ts`. Model resolution lives in `./model-factory.ts`.
  */
 
 import { SessionManager as HarnessSessionManager } from '../../../packages/harness-vibes/index';
 import { DeepAgent } from '../../../packages/harness-vibes/index';
-import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { wrapLanguageModel } from 'ai';
-import { devToolsMiddleware } from '@ai-sdk/devtools';
-import { mimoCodePrompt } from './prompts/mimo-code';
-import { createZhipu } from 'zhipu-ai-provider';
 import { dotenvLoad } from 'dotenv-mono';
-import { webSearch } from "@exalabs/ai-sdk";
+import { createAgentForSession } from './agent-factory';
+import type { ModelSpec } from './model-factory';
 
 // Load env vars from root .env
 dotenvLoad();
-
-// Model setup
-const zhipu = createZhipu({
-    baseURL: 'https://api.z.ai/api/paas/v4',
-    apiKey: process.env.ZHIPU_API_KEY,
-});
-
-const model = wrapLanguageModel({
-    model: zhipu('glm-4.7-flash') as any,
-    middleware: devToolsMiddleware(),
-});
-
-// Sub-agents configuration
-const defaultSubAgents = [
-    {
-        name: 'Planner',
-        description: 'Specialized in high-level task breakdown, recursive execution, and progress tracking.',
-        systemPrompt: `You are Planner, the strategic logical core of the team.
-        Your role is to break complex requests into exhaustive, actionable todo lists.`,
-        mode: 'general-purpose' as const,
-        allowedTools: ['create_plan', 'generate_tasks', 'update_task', 'get_next_tasks', 'list_tasks', 'readFile','writeFile'],
-        allowSubdelegation: false,
-        artifactMode: 'always' as const,
-    },
-    {
-        name: 'Librarian',
-        description: 'Focused on codebase documentation, design patterns, and systemic context.',
-        systemPrompt: `You are Librarian. Your role is to maintain the "Source of Truth" for the project.`,
-        mode: 'general-purpose' as const,
-        allowedTools: ['readFile', 'list_files'],
-        allowSubdelegation: false,
-        artifactMode: 'always' as const,
-    },
-    {
-        name: 'Explorer',
-        description: 'Specialized in navigating large codebases and finding relevant files/logic.',
-        systemPrompt: `You are Explorer. Your role is to map out the codebase and find exactly what is needed.`,
-        mode: 'general-purpose' as const,
-        allowedTools: ['readFile', 'list_files', 'bash'],
-        allowSubdelegation: false,
-        artifactMode: 'always' as const,
-    },
-    {
-        name: 'Oracle',
-        description: 'RAG-based knowledge retrieval and expert Q&A for the codebase.',
-        systemPrompt: `You are Oracle. Your role is to answer complex questions about the system logic and architecture.`,
-        mode: 'general-purpose' as const,
-        allowedTools: ['readFile', 'list_files', 'webSearch'],
-        allowSubdelegation: false,
-        artifactMode: 'always' as const,
-    },
-    {
-        name: 'SuperCoder',
-        description: 'Elite Front End UI/UX Engineer and Creative Technologist.',
-        systemPrompt: `You are SuperCoder, the master of implementation. Focus on stunning visuals, fluid interactions, and flawless performance.`,
-        mode: 'general-purpose' as const,
-        allowedTools: ['readFile', 'writeFile', 'list_files', 'bash', 'activate_skill'],
-        allowSubdelegation: false,
-        artifactMode: 'always' as const,
-    },
-    {
-        name: 'BrowserAgent',
-        description: 'Browser Automation with agent-browser for research and testing.',
-        systemPrompt: `You are BrowserAgent. Your role is to interact with the web and verify the UI.`,
-        mode: 'general-purpose' as const,
-        allowedTools: ['bash', 'activate_skill', 'readFile', 'writeFile'],
-        allowSubdelegation: false,
-        artifactMode: 'always' as const,
-    }
-];
 
 /**
  * In-memory agent instance with metadata
@@ -138,34 +64,23 @@ class APISessionManager {
     /**
      * Get or create an agent instance for the given session ID.
      * This is the primary entry point for the API.
+     *
+     * @param sessionId Stable session identifier.
+     * @param modelSpec Optional per-session model override. If omitted,
+     *                  the model factory falls back to env-driven defaults
+     *                  (AI Gateway when available, else Zhipu / OpenAI / etc).
      */
-    getOrCreateAgent(sessionId: string = 'default'): DeepAgent {
+    getOrCreateAgent(sessionId: string = 'default', modelSpec?: ModelSpec): DeepAgent {
         let instance = this.sessions.get(sessionId);
 
         if (!instance) {
-            // Get the workspace directory for this session
             const workspaceDir = this.harnessManager.getSessionWorkspace(sessionId);
+            Bun.spawnSync(['mkdir', '-p', workspaceDir]);
 
-            // Ensure workspace directory exists (sync version)
-            const proc = Bun.spawnSync(['mkdir', '-p', workspaceDir]);
-
-            // Create new DeepAgent instance for this session with its own workspace
-            const agent = new DeepAgent({
-                model,
-                systemPrompt: mimoCodePrompt,
-                maxSteps: 60,
-                // Verbatim window kept by the agent's pruneMessages fallback.
-                // SummarizationPlugin (default-loaded) trims and summarises
-                // earlier history *before* we hit this threshold; raising
-                // this prevents tiny-window truncation when summarisation is
-                // not running (e.g. in tests).
-                maxContextMessages: 50,
+            const agent = createAgentForSession({
                 sessionId,
                 workspaceDir,
-                tools: {
-                    webSearch: webSearch() as any,
-                },
-                subAgents: defaultSubAgents,
+                modelSpec,
             });
 
             instance = {
