@@ -3,17 +3,44 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { logger } from "../logger";
 import sessionManager from "../session-manager";
-import { SqliteBackend, type VibesUIMessage, createDeepAgentStreamResponse } from "../../../../packages/harness-vibes/index";
+import { SqliteBackend, createDeepAgentStreamResponse } from "../../../../packages/harness-vibes/index";
 import { agent as simpleAgent } from "../simple";
 
 
 // Shared backend instance for session management (without a specific session)
 const sessionBackend = new SqliteBackend('workspace/vibes.db', 'default');
 
+/**
+ * Loose message shape accepted by the streaming endpoints. We accept both
+ * UIMessage-style payloads from `useChat` (the common case) and
+ * ModelMessage-style payloads for direct/programmatic callers. The
+ * discriminator is `parts` (UIMessage) vs `content` (ModelMessage); the
+ * rest of the fields are forwarded as-is to the AI SDK conversion layer
+ * via `.passthrough()`.
+ */
+const messagePartSchema = z.object({
+    type: z.string(),
+}).passthrough();
+
+const apiUiMessageSchema = z.object({
+    id: z.string().optional(),
+    role: z.enum(['user', 'assistant', 'system']),
+    parts: z.array(messagePartSchema),
+}).passthrough();
+
+const apiModelMessageSchema = z.object({
+    role: z.enum(['user', 'assistant', 'system', 'tool']),
+    content: z.union([z.string(), z.array(z.unknown())]),
+}).passthrough();
+
+const apiMessageSchema = z.union([apiUiMessageSchema, apiModelMessageSchema]);
+
 const mimoSchema = z.object({
-    messages: z.array(z.any()),
+    messages: z.array(apiMessageSchema),
     session_id: z.string().nullable().optional(),
 }).passthrough();
+
+type ApiMessage = z.infer<typeof apiMessageSchema>;
 
 const app = new Hono();
 
@@ -247,18 +274,38 @@ app.post('/mimo-code', zValidator('json', mimoSchema), async (c) => {
         const agent = sessionManager.getOrCreateAgent(sessionId);
 
         const startTime = Date.now();
+        // The agent's `generate({messages})` overload accepts ModelMessage[]
+        // | UIMessage[]; our zod schema validates the looser API shape and
+        // the agent re-converts at the call boundary via convertMessages.
+        // The single cast here is honest about that boundary handoff.
+        type GenerateOpts = Parameters<typeof agent.generate>[0];
         const result = await agent.generate({
             messages: body.messages,
-        });
+        } as unknown as GenerateOpts);
         const duration = Date.now() - startTime;
 
         const lastMessage = result.state.messages[result.state.messages.length - 1];
+        // `ModelMessage.content` is either a string or an array of typed
+        // parts. Narrow safely without `as any` so a malformed message
+        // doesn't crash the response builder.
+        const responseText: string | null = (() => {
+            const c = lastMessage?.content;
+            if (typeof c === 'string') return c;
+            if (Array.isArray(c)) {
+                const textPart = c.find(
+                    (p): p is { type: 'text'; text: string } =>
+                        typeof p === 'object' && p !== null && (p as { type?: unknown }).type === 'text'
+                );
+                return textPart?.text ?? null;
+            }
+            return null;
+        })();
 
         logger.info({ duration, sessionId }, 'Mimo-Code agent response completed');
 
         return c.json({
             success: true,
-            response: (lastMessage?.content as any)?.[0]?.text || lastMessage?.content || null,
+            response: responseText,
             duration,
             timestamp: new Date().toISOString(),
             sessionId,
@@ -280,7 +327,7 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
     try {
         const body = c.req.valid('json');
         const sessionId = body.session_id || 'default';
-        const messages = body.messages as any[];
+        const messages: ApiMessage[] = body.messages;
 
         logger.info({ sessionId }, 'Mimo-Code agent streaming request received');
 
@@ -295,8 +342,9 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
         // tool-approval-response part (which is what addToolApprovalResponse
         // appends client-side).
         const lastMessage = messages[messages.length - 1];
-        const hasApprovalResponse = Array.isArray(lastMessage?.parts)
-            && lastMessage.parts.some((p: any) => p?.type === 'tool-approval-response');
+        const lastParts = 'parts' in (lastMessage ?? {}) ? (lastMessage as { parts: Array<{ type: string }> }).parts : undefined;
+        const hasApprovalResponse = Array.isArray(lastParts)
+            && lastParts.some(p => p?.type === 'tool-approval-response');
         const originalMessages = (lastMessage?.role === 'assistant' || hasApprovalResponse)
             ? messages
             : undefined;
@@ -320,8 +368,8 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
 
         return createDeepAgentStreamResponse({
             agent,
-            uiMessages: body.messages,
-            originalMessages,
+            uiMessages: body.messages as unknown as Parameters<typeof createDeepAgentStreamResponse>[0]['uiMessages'],
+            originalMessages: originalMessages as unknown as Parameters<typeof createDeepAgentStreamResponse>[0]['originalMessages'],
             backend: sessionBackend,
             abortSignal: streamController.signal,
         });
@@ -343,14 +391,14 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
 app.post('/simple/stream', zValidator('json', mimoSchema), async (c) => {
     try {
         const body = c.req.valid('json');
-        const messages = body.messages as any[];
+        const messages: ApiMessage[] = body.messages;
 
         // Use custom stream response that integrates with middleware writers
         // This enables onData callbacks and custom data streaming
         const sessionBackend = new SqliteBackend('workspace/vibes.db', 'default');
         return createDeepAgentStreamResponse({
-            agent: simpleAgent as any, // TODO: fix type mismatch
-            uiMessages: messages,
+            agent: simpleAgent,
+            uiMessages: messages as unknown as Parameters<typeof createDeepAgentStreamResponse>[0]['uiMessages'],
             backend: sessionBackend,
         });
 
