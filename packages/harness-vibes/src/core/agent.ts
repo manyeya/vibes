@@ -94,6 +94,13 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     protected pluginsVersion: number = 0;
     protected toolOwners: Record<string, string> = {};
     protected activeStreamContext?: PluginStreamContext;
+    /**
+     * The assembled system instructions for the active call. Computed in
+     * prepareCall (modifySystemPrompt chain + customSystemPrompt) and reused
+     * per step. Recent-error injection is overlaid in prepareStep so the
+     * latest errors are visible without re-running the plugin chain.
+     */
+    protected currentBaseInstructions: string = '';
 
     protected static resolveStopWhen(config: VibeAgentConfig) {
         const maxStepCondition = stepCountIs(config.maxSteps ?? 20);
@@ -107,7 +114,10 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     }
 
     constructor(config: VibeAgentConfig) {
-        // Initialize ToolLoopAgent with base configuration and prepareCall hook
+        // Initialize ToolLoopAgent with base configuration. We hook both
+        // prepareCall (once per stream/generate, assembles stable system
+        // instructions) and prepareStep (every step, prunes context, fans
+        // out to plugin.prepareStep and merges the results).
         const settings: ToolLoopAgentSettings<never, ToolSet, never> = {
             model: config.model,
             instructions: config.instructions,
@@ -115,10 +125,11 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             temperature: config.temperature,
             onStepFinish: config.onStepFinish,
             stopWhen: VibeAgent.resolveStopWhen(config),
-            // The prepareCall hook is called before each generate/stream
-            // This is where we inject our custom logic
             prepareCall: async (baseOptions) => {
                 return this.prepareCallOverride(baseOptions as any);
+            },
+            prepareStep: async (stepOptions) => {
+                return this.prepareStepOverride(stepOptions);
             },
         };
 
@@ -127,7 +138,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         // Store model reference for use in summarization and other features
         this.model = config.model;
         this.customSystemPrompt = config.systemPrompt || '';
-        this.maxContextMessages = config.maxContextMessages ?? 30;
+        this.maxContextMessages = config.maxContextMessages ?? 50;
         this.maxRetries = config.maxRetries ?? 2;
         this.customTools = config.tools || {};
         this.toolsRequiringApproval = config.toolsRequiringApproval || [];
@@ -206,16 +217,13 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     // ============ PREPARE CALL OVERRIDE ============
 
     /**
-     * The prepareCall hook that's passed to ToolLoopAgent constructor.
-     * This is called before each generate/stream and allows us to modify:
-     * - system prompt (add plugin prompts)
-     * - messages (prune, compress)
-     * - tools (add plugin tools)
+     * Called once per stream/generate. Assembles the stable parts of the
+     * system prompt (modifySystemPrompt chain + customSystemPrompt) and
+     * resolves the active tool set. Per-step concerns — message pruning,
+     * recent-error overlay, plugin.prepareStep fan-out — live in
+     * prepareStepOverride so they re-run for every model call in the loop.
      */
     protected async prepareCallOverride(baseOptions: PrepareCallOptions): Promise<PrepareCallOptions> {
-        // Process messages with pruning and compression
-        const processedMessages = await this.pruneMessages(baseOptions.messages || []);
-
         // Build system prompt with plugin modifications
         let instructions = baseOptions.instructions;
         for (const plugin of this.plugins) {
@@ -230,11 +238,8 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             instructions += `\n\n## Custom Instructions\n${this.customSystemPrompt} `;
         }
 
-        // Add recent errors to prompt (keep errors visible for self-correction)
-        const recentErrors = this.getRecentErrors();
-        if (recentErrors.length > 0) {
-            instructions += `\n\n${this.formatRecentErrors(recentErrors)}`;
-        }
+        // Cache the assembled base so prepareStep can overlay recent errors.
+        this.currentBaseInstructions = instructions;
 
         // Get all tools with plugin tools and wrapping
         const tools = await this.getAllTools();
@@ -242,9 +247,98 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         return {
             ...baseOptions,
             instructions,
-            messages: processedMessages,
             tools: tools as ToolSet,
         };
+    }
+
+    // ============ PREPARE STEP OVERRIDE ============
+
+    /**
+     * Called before every step in the tool loop. Responsibilities:
+     *   1. Prune/compress messages so context stays bounded even across
+     *      long multi-step runs (the previous prepareCall-only path could
+     *      grow unbounded across `maxSteps`).
+     *   2. Overlay the latest "Recent Errors" section on the system prompt
+     *      so the model sees freshly logged failures without rebuilding
+     *      the whole instruction chain.
+     *   3. Fan out to `plugin.prepareStep` for every plugin and merge the
+     *      results. Merge rules:
+     *        - `activeTools` → intersection (every plugin that asks for a
+     *          narrower set wins; absent value = no constraint)
+     *        - `messages` → last non-undefined plugin override wins,
+     *          otherwise the pruned messages
+     *        - `model`, `system`, `toolChoice`, `experimental_context`,
+     *          `providerOptions` → last writer wins
+     */
+    protected async prepareStepOverride(stepOptions: {
+        steps: any[];
+        stepNumber: number;
+        model: LanguageModel;
+        messages: ModelMessage[];
+        experimental_context?: unknown;
+    }): Promise<{
+        model?: LanguageModel;
+        toolChoice?: any;
+        activeTools?: string[];
+        system?: string | any;
+        messages?: ModelMessage[];
+        experimental_context?: unknown;
+        providerOptions?: any;
+    } | undefined> {
+        // 1. Prune messages
+        const prunedMessages = await this.pruneMessages(stepOptions.messages || []);
+
+        // 2. Overlay recent errors onto the cached base instructions
+        const recentErrors = this.getRecentErrors();
+        const systemOverride = recentErrors.length > 0
+            ? `${this.currentBaseInstructions}\n\n${this.formatRecentErrors(recentErrors)}`
+            : undefined;
+
+        // 3. Fan out to plugin.prepareStep
+        const pluginStepOptions = {
+            ...stepOptions,
+            messages: prunedMessages,
+        };
+
+        let merged: {
+            model?: LanguageModel;
+            toolChoice?: any;
+            activeTools?: string[];
+            system?: string | any;
+            messages?: ModelMessage[];
+            experimental_context?: unknown;
+            providerOptions?: any;
+        } = {
+            ...(systemOverride !== undefined ? { system: systemOverride } : {}),
+            messages: prunedMessages,
+        };
+        let activeToolsSet: Set<string> | undefined;
+
+        for (const plugin of this.plugins) {
+            if (!plugin.prepareStep) continue;
+            const pluginResult = await plugin.prepareStep(pluginStepOptions);
+            if (!pluginResult) continue;
+
+            if (pluginResult.model !== undefined) merged.model = pluginResult.model;
+            if (pluginResult.toolChoice !== undefined) merged.toolChoice = pluginResult.toolChoice;
+            if (pluginResult.system !== undefined) merged.system = pluginResult.system;
+            if (pluginResult.messages !== undefined) merged.messages = pluginResult.messages;
+            if (pluginResult.experimental_context !== undefined) {
+                merged.experimental_context = pluginResult.experimental_context;
+            }
+            if (Array.isArray(pluginResult.activeTools)) {
+                const incoming = new Set(pluginResult.activeTools);
+                activeToolsSet = activeToolsSet
+                    ? new Set([...activeToolsSet].filter(name => incoming.has(name)))
+                    : incoming;
+            }
+        }
+
+        if (activeToolsSet) {
+            merged.activeTools = Array.from(activeToolsSet);
+        }
+
+        return merged;
     }
 
     // ============ STREAM OVERRIDE ============
@@ -389,21 +483,30 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             const originalExecute = toolDefRecord.execute as ((args: unknown, options: unknown) => Promise<unknown>) | undefined;
             const ownerName = this.toolOwners[toolName] ?? 'custom';
 
-            // Determine if this tool needs approval
-            let needsApproval = false;
+            // Resolve approval policy. AI SDK accepts boolean OR
+            // (input, ctx) => boolean | Promise<boolean>. Predicate functions
+            // from user config must be forwarded as-is so AI SDK can evaluate
+            // them per call — collapsing to `true` would force approval on
+            // every invocation and defeat the predicate.
+            let resolvedNeedsApproval: ToolApprovalPolicy | undefined;
             if (Array.isArray(approvalConfig)) {
-                needsApproval = approvalConfig.includes(toolName);
+                if (approvalConfig.includes(toolName)) {
+                    resolvedNeedsApproval = true;
+                }
             } else if (approvalConfig && typeof approvalConfig === 'object') {
                 const policy = (approvalConfig as Record<string, ToolApprovalPolicy>)[toolName];
                 if (policy !== undefined) {
-                    needsApproval = typeof policy === 'boolean' ? policy : true; // Keep it simple for now
+                    resolvedNeedsApproval = policy;
                 }
+            }
+            if (resolvedNeedsApproval === undefined) {
+                resolvedNeedsApproval = toolDefRecord.needsApproval as ToolApprovalPolicy | undefined;
             }
 
             // Create a stable wrapped tool with retry logic
             resolvedTools[toolName] = {
                 ...(toolDef as Record<string, unknown>),
-                needsApproval: needsApproval || (toolDefRecord.needsApproval as boolean | undefined),
+                ...(resolvedNeedsApproval !== undefined ? { needsApproval: resolvedNeedsApproval } : {}),
                 execute: originalExecute ? async (args: unknown, options: unknown) => {
                     const operation = this.activeStreamContext?.createOperation({
                         name: toolName,
@@ -416,7 +519,13 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                         attempt: 1,
                     });
 
-                    // Trigger lifecycle hooks
+                    // Trigger lifecycle hooks.
+                    // NOTE: Plugin.onInputDelta is declared but not invoked
+                    // here — execute() only sees the FINAL tool input. Partial
+                    // input deltas surface inside AI SDK's streamText `onChunk`
+                    // event (search for `tool-input-delta` in
+                    // node_modules/ai/src/generate-text/stream-text.ts). Wiring
+                    // that path is tracked as a follow-up.
                     for (const plugin of this.plugins) {
                         plugin.onInputStart?.({ toolName, args });
                         plugin.onInputAvailable?.({ toolName, args });

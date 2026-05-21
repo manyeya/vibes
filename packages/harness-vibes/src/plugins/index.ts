@@ -12,6 +12,7 @@ import FilesystemPlugin from "./filesystem";
 import BashPlugin from "./bash";
 import SubAgentPlugin, { type ParallelDelegationResult } from "./subagent";
 import MemoryPlugin from "./memory";
+import SummarizationPlugin, { type SummarizationConfig } from "./summarization";
 
 export {
     type Plugin,
@@ -44,5 +45,7 @@ export {
     BashPlugin,
     SubAgentPlugin,
     type ParallelDelegationResult,
-    MemoryPlugin
+    MemoryPlugin,
+    SummarizationPlugin,
+    type SummarizationConfig,
 }

@@ -16,6 +16,8 @@ import {
     FilesystemPlugin,
     BashPlugin,
     SubAgentPlugin,
+    SummarizationPlugin,
+    type SummarizationConfig,
     AgentSignal,
     ProceduralMemoryConfig,
     SharedStateEntry,
@@ -34,6 +36,7 @@ import {
 } from './src/plugins';
 import MemoryPlugin from './src/plugins/memory';
 import SqliteBackend from './src/backend/sqlitebackend';
+import StateBackend, { InMemoryStateBackend } from './src/backend/statebackend';
 import {
     AgentState,
     VibeAgentConfig,
@@ -146,6 +149,11 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
             scratchpadPath: path.join(config.workspaceDir, 'scratchpad.md'),
             reflexionPath: path.join(sharedWorkspaceDir, 'reflections.md'),
         }),
+        // Rolling-summary plugin: keeps long conversations within token
+        // budget by summarising the oldest excess messages once we exceed
+        // 1.5x its threshold. Triggers before the agent's pruneMessages
+        // fallback truncation.
+        new SummarizationPlugin(config.model, { maxContextMessages: 30 }),
     ];
 }
 
@@ -334,6 +342,10 @@ export {
     type ParallelDelegationResult,
     createDeepAgent,
     SqliteBackend,
+    StateBackend,
+    InMemoryStateBackend,
+    SummarizationPlugin,
+    type SummarizationConfig,
     type VibeAgentConfig,
     type SubAgent,
     VibeAgent as VibesAgent, // Alias for backwards compatibility with tests
