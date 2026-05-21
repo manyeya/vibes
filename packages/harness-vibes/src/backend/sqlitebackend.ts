@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { AgentState, TodoItem, TaskItem, TaskTemplate } from "../core/types";
 import * as path from "path";
+import StateBackend from "./statebackend";
 
 /**
  * Result from execution order calculation
@@ -21,11 +22,12 @@ export interface SessionInfo {
  * Persistent state manager for the agent using Bun SQLite.
  * Handles conversation history, structured todo list data, and session metadata.
  */
-export default class SqliteBackend {
+export default class SqliteBackend extends StateBackend {
     private db: Database;
     private sessionId: string;
 
     constructor(dbPath: string = 'workspace/vibes.db', sessionId: string = 'default') {
+        super();
         this.sessionId = sessionId;
 
         // Ensure directory exists sync-ish (constructor limitation)
@@ -36,51 +38,56 @@ export default class SqliteBackend {
         this.init();
     }
 
+    /** Current schema version. Bump and add a new migration block below. */
+    private static readonly SCHEMA_VERSION = 1;
+
     private init() {
-        this.db.run(`
-            CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY,
-                summary TEXT,
-                metadata TEXT,
-                created_at TEXT,
-                updated_at TEXT
-            )
-        `);
+        const versionRow = this.db.query("PRAGMA user_version").get() as { user_version?: number } | undefined;
+        let currentVersion = versionRow?.user_version ?? 0;
 
-        // Add columns to existing sessions table if they don't exist (migration)
-        // SQLite doesn't support DEFAULT in ALTER TABLE, so we add without default
-        try {
-            this.db.run(`ALTER TABLE sessions ADD COLUMN created_at TEXT`);
-            // Set current timestamp for existing rows
-            const now = new Date().toISOString();
-            this.db.run(`UPDATE sessions SET created_at = ? WHERE created_at IS NULL`, [now]);
-        } catch { /* Column already exists */ }
-        try {
-            this.db.run(`ALTER TABLE sessions ADD COLUMN updated_at TEXT`);
-            // Set current timestamp for existing rows
-            const now = new Date().toISOString();
-            this.db.run(`UPDATE sessions SET updated_at = ? WHERE updated_at IS NULL`, [now]);
-        } catch { /* Column already exists */ }
+        if (currentVersion < 1) {
+            // Migration 1: sessions + messages + content_type column + index.
+            // Idempotent: pre-versioned databases may already have the tables.
+            this.db.transaction(() => {
+                this.db.run(`
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        id TEXT PRIMARY KEY,
+                        summary TEXT,
+                        metadata TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                `);
+                // Legacy ALTER TABLE migrations for databases that predate
+                // created_at/updated_at. ADD COLUMN throws on duplicate; ignore.
+                const now = new Date().toISOString();
+                try { this.db.run(`ALTER TABLE sessions ADD COLUMN created_at TEXT`); } catch { /* exists */ }
+                try { this.db.run(`ALTER TABLE sessions ADD COLUMN updated_at TEXT`); } catch { /* exists */ }
+                this.db.run(`UPDATE sessions SET created_at = ? WHERE created_at IS NULL`, [now]);
+                this.db.run(`UPDATE sessions SET updated_at = ? WHERE updated_at IS NULL`, [now]);
 
-        this.db.run(`
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT,
-                role TEXT,
-                content TEXT,
-                FOREIGN KEY(session_id) REFERENCES sessions(id)
-            )
-        `);
+                this.db.run(`
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT,
+                        role TEXT,
+                        content TEXT,
+                        content_type TEXT,
+                        FOREIGN KEY(session_id) REFERENCES sessions(id)
+                    )
+                `);
+                // Legacy migration: messages predates content_type.
+                try { this.db.run(`ALTER TABLE messages ADD COLUMN content_type TEXT`); } catch { /* exists */ }
 
-        this.db.run(`
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT,
-                role TEXT,
-                content TEXT,
-                FOREIGN KEY(session_id) REFERENCES sessions(id)
-            )
-        `);
+                this.db.run(`CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id)`);
+            })();
+            this.db.run(`PRAGMA user_version = 1`);
+            currentVersion = 1;
+        }
+
+        // Future migrations: if (currentVersion < 2) { ... PRAGMA user_version = 2 }
+
+        void SqliteBackend.SCHEMA_VERSION;
 
         // Ensure session exists
         const session = this.db.query("SELECT id FROM sessions WHERE id = ?").get(this.sessionId);
@@ -91,18 +98,39 @@ export default class SqliteBackend {
         }
     }
 
+    /**
+     * Decode stored content. Rows written by the current schema carry a
+     * content_type column; legacy rows fall back to a safe heuristic that
+     * tolerates user text starting with `[` or `{`.
+     */
+    private decodeContent(content: string, contentType: string | null | undefined): unknown {
+        if (contentType === 'json') {
+            try { return JSON.parse(content); } catch { return content; }
+        }
+        if (contentType === 'text') {
+            return content;
+        }
+        // Legacy row (NULL content_type). Try JSON only when it parses cleanly.
+        if (content.startsWith('[') || content.startsWith('{')) {
+            try { return JSON.parse(content); } catch { return content; }
+        }
+        return content;
+    }
+
     /** Retrieves the full current state object */
     getState(): AgentState {
         const session = this.db.query("SELECT summary, metadata FROM sessions WHERE id = ?").get(this.sessionId) as any;
-        const messages = this.db.query("SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC").all(this.sessionId) as any[];
+        const messages = this.db
+            .query("SELECT role, content, content_type FROM messages WHERE session_id = ? ORDER BY id ASC")
+            .all(this.sessionId) as Array<{ role: string; content: string; content_type: string | null }>;
 
         return {
             messages: messages.map(m => ({
                 role: m.role,
-                content: m.content.startsWith('[') || m.content.startsWith('{') ? JSON.parse(m.content) : m.content
+                content: this.decodeContent(m.content, m.content_type),
             })) as any,
             metadata: JSON.parse(session?.metadata || '{}'),
-            summary: session?.summary || undefined
+            summary: session?.summary || undefined,
         };
     }
 
@@ -122,9 +150,14 @@ export default class SqliteBackend {
             }
             if (state.messages !== undefined) {
                 this.db.run("DELETE FROM messages WHERE session_id = ?", [this.sessionId]);
-                const insertMsg = this.db.prepare("INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)");
+                const insertMsg = this.db.prepare(
+                    "INSERT INTO messages (session_id, role, content, content_type) VALUES (?, ?, ?, ?)"
+                );
                 for (const msg of state.messages) {
-                    insertMsg.run(this.sessionId, msg.role, typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content));
+                    const isString = typeof msg.content === 'string';
+                    const content = isString ? (msg.content as string) : JSON.stringify(msg.content);
+                    const contentType = isString ? 'text' : 'json';
+                    insertMsg.run(this.sessionId, msg.role, content, contentType);
                 }
             }
         })();

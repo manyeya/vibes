@@ -100,6 +100,15 @@ interface AgentInstance {
 }
 
 /**
+ * Per-session abort controller registry entry.
+ * Holds the controller for the session's currently-active stream.
+ */
+interface StreamControllerEntry {
+    controller: AbortController;
+    startedAt: number;
+}
+
+/**
  * APISessionManager manages sessions with isolated workspaces.
  *
  * Uses HarnessSessionManager for:
@@ -111,6 +120,7 @@ interface AgentInstance {
  */
 class APISessionManager {
     private sessions: Map<string, AgentInstance> = new Map();
+    private streamControllers: Map<string, StreamControllerEntry> = new Map();
     private harnessManager: HarnessSessionManager;
 
     constructor() {
@@ -144,7 +154,12 @@ class APISessionManager {
                 model,
                 systemPrompt: mimoCodePrompt,
                 maxSteps: 60,
-                maxContextMessages: 3,
+                // Verbatim window kept by the agent's pruneMessages fallback.
+                // SummarizationPlugin (default-loaded) trims and summarises
+                // earlier history *before* we hit this threshold; raising
+                // this prevents tiny-window truncation when summarisation is
+                // not running (e.g. in tests).
+                maxContextMessages: 50,
                 sessionId,
                 workspaceDir,
                 tools: {
@@ -245,6 +260,42 @@ class APISessionManager {
      */
     getLoadedSessions(): string[] {
         return Array.from(this.sessions.keys());
+    }
+
+    /**
+     * Register an AbortController for a session's active stream. If the
+     * session already has a registered controller, abort the previous one
+     * (newest-wins) so a stray stream does not get orphaned.
+     */
+    registerStreamController(sessionId: string, controller: AbortController): void {
+        const existing = this.streamControllers.get(sessionId);
+        if (existing && existing.controller !== controller) {
+            existing.controller.abort(new Error('superseded by new stream'));
+        }
+        this.streamControllers.set(sessionId, { controller, startedAt: Date.now() });
+    }
+
+    /**
+     * Clear a session's stream controller if it matches the supplied one.
+     * A mismatch means a newer stream already took the slot — leave it alone.
+     */
+    clearStreamController(sessionId: string, controller: AbortController): void {
+        const existing = this.streamControllers.get(sessionId);
+        if (existing && existing.controller === controller) {
+            this.streamControllers.delete(sessionId);
+        }
+    }
+
+    /**
+     * Abort the session's currently-active stream, if any.
+     * Returns true if a stream was aborted, false if nothing was running.
+     */
+    abortStream(sessionId: string, reason?: string): boolean {
+        const existing = this.streamControllers.get(sessionId);
+        if (!existing) return false;
+        existing.controller.abort(new Error(reason ?? 'client requested abort'));
+        this.streamControllers.delete(sessionId);
+        return true;
     }
 
     /**

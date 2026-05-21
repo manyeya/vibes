@@ -126,6 +126,22 @@ app.delete('/sessions/:id', async (c) => {
 });
 
 /**
+ * Abort the session's currently-active stream, if any.
+ */
+app.post('/sessions/:id/abort', async (c) => {
+    try {
+        const sessionId = c.req.param('id');
+        const aborted = sessionManager.abortStream(sessionId, 'client requested abort');
+        return c.json({ success: true, aborted });
+    } catch (error) {
+        logger.error({
+            error: error instanceof Error ? error.message : String(error),
+        }, 'Failed to abort stream');
+        return c.json({ success: false, error: 'Failed to abort stream' }, 500);
+    }
+});
+
+/**
  * Update session metadata
  */
 app.patch('/sessions/:id', async (c) => {
@@ -266,13 +282,6 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
         const sessionId = body.session_id || 'default';
         const messages = body.messages as any[];
 
-        // createAgentUIStreamResponse({
-        //     agent: techAgent,
-        //     uiMessages: messages,
-        // });
-
-
-
         logger.info({ sessionId }, 'Mimo-Code agent streaming request received');
 
         const agent = sessionManager.getOrCreateAgent(sessionId);
@@ -280,16 +289,41 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
         // Get or create the backend for this session to persist messages
         const sessionBackend = new SqliteBackend('workspace/vibes.db', sessionId);
 
-        // Pass originalMessages to enable proper message continuation when resubmitting after approval
-        // This ensures the stream uses the correct message ID for the last assistant message
+        // Pass originalMessages so AI SDK reuses message IDs when the client
+        // resubmits after a tool approval. We detect that case either by the
+        // last message being an assistant turn OR by it carrying any
+        // tool-approval-response part (which is what addToolApprovalResponse
+        // appends client-side).
         const lastMessage = messages[messages.length - 1];
-        const originalMessages = lastMessage?.role === 'assistant' ? messages : undefined;
+        const hasApprovalResponse = Array.isArray(lastMessage?.parts)
+            && lastMessage.parts.some((p: any) => p?.type === 'tool-approval-response');
+        const originalMessages = (lastMessage?.role === 'assistant' || hasApprovalResponse)
+            ? messages
+            : undefined;
+
+        // Build an AbortController for this stream and combine it with the
+        // incoming request signal so either side can cancel: client disconnect
+        // or an explicit POST /sessions/:id/abort.
+        const streamController = new AbortController();
+        sessionManager.registerStreamController(sessionId, streamController);
+        const clientSignal = c.req.raw.signal;
+        const onClientAbort = () => streamController.abort(clientSignal.reason);
+        if (clientSignal.aborted) {
+            streamController.abort(clientSignal.reason);
+        } else {
+            clientSignal.addEventListener('abort', onClientAbort, { once: true });
+        }
+        streamController.signal.addEventListener('abort', () => {
+            clientSignal.removeEventListener('abort', onClientAbort);
+            sessionManager.clearStreamController(sessionId, streamController);
+        }, { once: true });
 
         return createDeepAgentStreamResponse({
             agent,
             uiMessages: body.messages,
             originalMessages,
             backend: sessionBackend,
+            abortSignal: streamController.signal,
         });
 
 

@@ -9,18 +9,18 @@
  */
 
 import type { VibeAgent } from './agent';
-import type { ModelMessage } from 'ai';
+import type { ModelMessage, UIMessage, ToolSet } from 'ai';
 import type { VibesUIMessage } from './streaming';
-import { createUIMessageStream, createUIMessageStreamResponse } from 'ai';
+import { createUIMessageStream, createUIMessageStreamResponse, convertToModelMessages } from 'ai';
 import type { AgentState } from './types';
-import SqliteBackend from '../backend/sqlitebackend';
+import type StateBackend from '../backend/statebackend';
 
 interface AgentStreamOptions {
     agent: VibeAgent;
     uiMessages?: ModelMessage[];
     abortSignal?: AbortSignal;
     originalMessages?: ModelMessage[];
-    backend?: SqliteBackend;
+    backend?: StateBackend;
 }
 
 /**
@@ -58,10 +58,24 @@ export async function createDeepAgentStreamResponse(
             // Wait for the response promise to complete (handles final message state)
             const response = await result.response;
 
-            // Save messages to backend after streaming completes
+            // Save the FULL conversation (input + new turn) to the backend.
+            // `response.messages` only contains the newly generated assistant/
+            // tool messages; we have to prepend the input to preserve history.
+            // Input may be ModelMessage[] or UIMessage[]; convert if needed.
             if (backend && response.messages) {
+                const firstInput = uiMessages[0] as { parts?: unknown } | undefined;
+                const inputModelMessages: ModelMessage[] = firstInput && 'parts' in firstInput
+                    ? await convertToModelMessages(uiMessages as unknown as UIMessage[], {
+                        tools: agent.tools as ToolSet,
+                        ignoreIncompleteToolCalls: true,
+                    })
+                    : (uiMessages as ModelMessage[]);
+                const fullMessages: ModelMessage[] = [
+                    ...inputModelMessages,
+                    ...(response.messages as ModelMessage[]),
+                ];
                 const state: Partial<AgentState> = {
-                    messages: response.messages as any,
+                    messages: fullMessages,
                 };
                 backend.setState(state);
             }

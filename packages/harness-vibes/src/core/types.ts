@@ -14,9 +14,21 @@ import {
 export type { ModelMessage };
 
 /**
- * Tool approval policy - either boolean or predicate function.
+ * Tool approval policy — either a boolean or a predicate function whose
+ * signature matches AI SDK's `Tool.needsApproval`. The context arg is
+ * optional from the caller's perspective; TypeScript happily accepts
+ * 1-arg predicates here.
  */
-export type ToolApprovalPolicy = boolean | ((args: unknown) => boolean | Promise<boolean>);
+export type ToolApprovalPolicy =
+    | boolean
+    | ((
+        input: unknown,
+        context: {
+            toolCallId: string;
+            messages: ModelMessage[];
+            experimental_context?: unknown;
+        }
+    ) => boolean | Promise<boolean>);
 
 /**
  * Tool approval configuration.
@@ -248,7 +260,8 @@ export interface Plugin {
         experimental_context?: unknown;
     }) => (
             | void
-            | Promise<void>
+            | undefined
+            | Promise<void | undefined>
             | {
                 model?: LanguageModel;
                 toolChoice?: any;
@@ -257,6 +270,7 @@ export interface Plugin {
                 messages?: ModelMessage[];
                 experimental_context?: unknown;
             }
+            | undefined
             | Promise<{
                 model?: LanguageModel;
                 toolChoice?: any;
@@ -264,7 +278,7 @@ export interface Plugin {
                 system?: string | any;
                 messages?: ModelMessage[];
                 experimental_context?: unknown;
-            }>
+            } | undefined>
         );
 
     /** Function to modify or extend the system prompt (can be async) */
