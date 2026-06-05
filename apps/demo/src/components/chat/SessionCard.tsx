@@ -1,12 +1,13 @@
 import { motion } from 'framer-motion';
 import { cn } from '../../lib/utils';
-import { MessageSquare, X } from 'lucide-react';
+import { X } from 'lucide-react';
 
 interface SessionCardProps {
   id: string;
   title?: string;
   isActive: boolean;
   messageCount: number;
+  timeLabel?: string;
   onSelect: () => void;
   onDelete: () => void;
 }
@@ -16,33 +17,53 @@ export const SessionCard: React.FC<SessionCardProps> = ({
   title,
   isActive,
   messageCount,
+  timeLabel,
   onSelect,
   onDelete,
 }) => {
   return (
     <motion.div
-      initial={{ opacity: 0, x: -10 }}
-      animate={{ opacity: 1, x: 0 }}
-      whileHover={{ scale: 1.01 }}
-      whileTap={{ scale: 0.99 }}
+      layout
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, height: 0, marginBottom: 0 }}
+      transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
       onClick={onSelect}
       className={cn(
-        'group relative flex items-center gap-3 px-3 py-2.5 rounded-md cursor-pointer transition-colors',
+        'group relative flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors',
         isActive
-          ? 'bg-zinc-200 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700'
-          : 'hover:bg-zinc-100 dark:hover:bg-zinc-800/50 border border-transparent'
+          ? 'border-[color:var(--color-line-strong)] bg-[rgba(244,238,228,0.06)]'
+          : 'border-transparent hover:bg-[rgba(244,238,228,0.035)]'
       )}
     >
-      {isActive && <div className="absolute left-0 top-2 bottom-2 w-0.5 bg-zinc-400 dark:bg-zinc-600 rounded-full" />}
+      {/* status dot — amber when active, faint otherwise (no side-stripe) */}
+      <span
+        aria-hidden
+        className={cn(
+          'h-1.5 w-1.5 shrink-0 rounded-full transition-colors',
+          isActive
+            ? 'bg-[color:var(--color-amber)]'
+            : 'bg-[color:var(--color-ink-faint)] group-hover:bg-[color:var(--color-ink-soft)]'
+        )}
+      />
 
-      <MessageSquare className={cn('w-4 h-4 shrink-0', isActive ? 'text-zinc-700 dark:text-zinc-300' : 'text-zinc-500 dark:text-zinc-500')} />
-
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium truncate text-zinc-900 dark:text-zinc-200">
-          {title || 'Untitled Session'}
+      <div className="min-w-0 flex-1">
+        <div
+          className={cn(
+            'truncate text-[13px] leading-tight',
+            isActive ? 'text-[color:var(--color-ink)]' : 'text-[color:var(--color-ink-soft)]'
+          )}
+        >
+          {title || 'Untitled session'}
         </div>
-        <div className="text-[10px] text-zinc-500 dark:text-zinc-600">
-          {messageCount} message{messageCount !== 1 ? 's' : ''}
+        <div className="mt-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-[color:var(--color-ink-faint)]">
+          {timeLabel && <span>{timeLabel}</span>}
+          {timeLabel && messageCount > 0 && <span aria-hidden>·</span>}
+          {messageCount > 0 && (
+            <span>
+              {messageCount} msg{messageCount === 1 ? '' : 's'}
+            </span>
+          )}
         </div>
       </div>
 
@@ -52,9 +73,10 @@ export const SessionCard: React.FC<SessionCardProps> = ({
             e.stopPropagation();
             onDelete();
           }}
-          className="opacity-0 group-hover:opacity-100 p-1 rounded-md hover:bg-red-100 dark:hover:bg-red-950/30 hover:text-red-600 dark:hover:text-red-400 text-zinc-400 dark:text-zinc-600 transition-colors"
+          aria-label="Delete session"
+          className="shrink-0 rounded-md p-1 text-[color:var(--color-ink-faint)] opacity-0 transition-colors hover:bg-[rgba(239,108,79,0.14)] hover:text-[color:var(--color-ember)] group-hover:opacity-100"
         >
-          <X className="w-3.5 h-3.5" />
+          <X className="h-3.5 w-3.5" />
         </button>
       )}
     </motion.div>

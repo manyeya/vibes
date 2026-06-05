@@ -31,10 +31,15 @@ export const DelegationPart: React.FC<{ data: DelegationData }> = ({ data }) => 
     >
       <Icon className={cn('w-3.5 h-3.5 mt-0.5 shrink-0', config.text, config.spin && 'animate-spin')} />
       <div className={cn('min-w-0 space-y-1', config.text)}>
-        <div>
+        <div className="flex flex-wrap items-center gap-1.5">
           <span className="font-medium">{data.agentName}</span>
-          {' '}
           <span className="uppercase tracking-wide opacity-75">{data.status.replace('_', ' ')}</span>
+          {data.cached && (
+            <span className="rounded bg-black/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wide opacity-90 dark:bg-white/10">cached</span>
+          )}
+          {data.inferred && (
+            <span className="rounded bg-black/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wide opacity-90 dark:bg-white/10">inferred</span>
+          )}
         </div>
         <div className="break-words">{label}</div>
         {data.artifactPath && (

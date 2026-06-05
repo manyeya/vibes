@@ -1,17 +1,88 @@
 @import "tailwindcss";
 
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
-    "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
+/* ============ DESIGN TOKENS ============
+ * Editorial-terminal aesthetic for a developer-facing agent harness.
+ * One italic serif for soul (the brand wordmark + section heads),
+ * a humanist sans for body, a precise mono for tool runs + metadata.
+ */
+:root {
+  --font-display: "Instrument Serif", "Cormorant Garamond", "Iowan Old Style",
+    "Apple Garamond", Georgia, serif;
+  --font-sans: "Bricolage Grotesque", "Söhne", "Helvetica Neue", system-ui,
     sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  --font-mono: "JetBrains Mono", "Berkeley Mono", "IBM Plex Mono", ui-monospace,
+    SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Warm-black palette: hex slightly off-pure to read as paper, not screen. */
+  --color-ink: #f4eee4; /* primary text on dark */
+  --color-ink-soft: rgba(244, 238, 228, 0.72);
+  --color-ink-faint: rgba(244, 238, 228, 0.42);
+  --color-ground: #0d0c0b; /* page background, warm near-black */
+  --color-surface: #161412; /* panels */
+  --color-line: rgba(244, 238, 228, 0.08);
+  --color-line-strong: rgba(244, 238, 228, 0.16);
+  --color-amber: #f0b86c; /* accent, in-progress */
+  --color-ember: #ef6c4f; /* failure, attention */
+  --color-moss: #9ec19a; /* success */
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New",
-    monospace;
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "ss02", "cv11";
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--color-ground);
+  color: var(--color-ink);
+}
+
+code, .font-mono, kbd {
+  font-family: var(--font-mono);
+  font-feature-settings: "ss01", "zero", "calt";
+}
+
+.font-display {
+  font-family: var(--font-display);
+  font-style: italic;
+  letter-spacing: -0.01em;
+}
+
+/* Faintly textured background — a printed-paper grain in dark mode. */
+.bg-paper-grain {
+  background-image:
+    radial-gradient(rgba(244, 238, 228, 0.04) 1px, transparent 1px),
+    radial-gradient(rgba(244, 238, 228, 0.025) 1px, transparent 1px);
+  background-size: 6px 6px, 11px 11px;
+  background-position: 0 0, 3px 3px;
+}
+
+/* Pulsing dot for in-progress operations in the activity stream. */
+@keyframes vibes-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.7); }
+}
+.dot-pulse {
+  animation: vibes-pulse 1.4s ease-in-out infinite;
+}
+
+/* Subtle marquee bar for the "thinking" state. */
+@keyframes vibes-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+.sweep-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 25%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(240, 184, 108, 0.45),
+    transparent
+  );
+  animation: vibes-sweep 1.6s cubic-bezier(0.55, 0, 0.45, 1) infinite;
 }
 
 /* ============ OVERFLOW HELPERS ============ */

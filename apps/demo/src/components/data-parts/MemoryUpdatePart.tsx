@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Lightbulb, FileText, Network } from 'lucide-react';
+import { Lightbulb, FileText, Network, StickyNote } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { memoryTypeConfig, memoryActionConfig, animationProps, type MemoryUpdateData } from './types';
 
@@ -8,6 +8,7 @@ const iconMap = {
   Lightbulb,
   FileText,
   Network,
+  StickyNote,
 };
 
 export const MemoryUpdatePart: React.FC<{ data: MemoryUpdateData }> = ({ data }) => {
@@ -26,7 +27,7 @@ export const MemoryUpdatePart: React.FC<{ data: MemoryUpdateData }> = ({ data })
     >
       <Icon className={cn('w-3 h-3', typeConfig.color)} />
       <span className={typeConfig.color}>
-        {data.type.charAt(0).toUpperCase() + data.type.slice(1)} {actionConfig.label}
+        {data.title ?? `${data.type.charAt(0).toUpperCase() + data.type.slice(1)} ${actionConfig.label}`}
         {data.count !== undefined && data.count > 1 && (
           <span className="ml-1">({data.count})</span>
         )}

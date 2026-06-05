@@ -19,6 +19,11 @@ export type StatusData = VibesDataParts['status'] & {
   phase?: string;
 };
 export type ReasoningModeData = VibesDataParts['reasoning_mode'];
+export type ReasoningThoughtsData = VibesDataParts['reasoning_thoughts'];
+export type ReasoningSelectionData = VibesDataParts['reasoning_selection'];
+export type CommandData = VibesDataParts['command'];
+export type FileOperationData = VibesDataParts['file_operation'];
+export type SkillData = VibesDataParts['skill'];
 export type TodoUpdateData = VibesDataParts['todo_update'];
 export type TaskUpdateData = VibesDataParts['task_update'];
 export type TaskGraphData = VibesDataParts['task_graph'];
@@ -44,6 +49,8 @@ export type ErrorData = VibesDataParts['error'] & {
 export type MemoryUpdateData = VibesDataParts['memory_update'];
 export type SwarmSignalData = VibesDataParts['swarm_signal'];
 export type DelegationData = VibesDataParts['delegation'];
+export type ArtifactData = VibesDataParts['artifact'];
+export type ArtifactKind = ArtifactData['kind'];
 
 // Configuration objects for consistent styling
 export const notificationConfig = {
@@ -172,12 +179,20 @@ export const memoryTypeConfig = {
   lesson: { icon: 'Lightbulb', color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-950/30' },
   fact: { icon: 'FileText', color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-950/30' },
   pattern: { icon: 'Network', color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-950/30' },
+  note: { icon: 'StickyNote', color: 'text-[color:var(--color-ink-soft)]', bg: 'bg-[rgba(244,238,228,0.05)]' },
 } as const;
 
 export const memoryActionConfig = {
   saved: { label: 'saved', color: 'text-emerald-600 dark:text-emerald-400' },
   updated: { label: 'updated', color: 'text-blue-600 dark:text-blue-400' },
   deleted: { label: 'deleted', color: 'text-red-600 dark:text-red-400' },
+} as const;
+
+export const artifactKindConfig = {
+  html: { label: 'Website', icon: 'Globe' },
+  markdown: { label: 'Document', icon: 'FileText' },
+  mermaid: { label: 'Diagram', icon: 'Workflow' },
+  chart: { label: 'Chart', icon: 'BarChart3' },
 } as const;
 
 export const delegationConfig = {

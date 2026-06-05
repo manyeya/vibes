@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses } from 'ai';
 import {
@@ -17,6 +17,9 @@ import {
   CheckCircle2,
   ChevronDown,
   X,
+  PanelLeft,
+  ArrowUp,
+  Coins,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from './lib/utils';
@@ -35,11 +38,23 @@ import { Divider } from './components/ui/Divider';
 import { ChatBubble } from './components/chat/ChatBubble';
 import { TypingIndicator } from './components/chat/TypingIndicator';
 import { SessionCard } from './components/chat/SessionCard';
+import { ModelSelector, type ModelOption } from './components/chat/ModelSelector';
+import { TaskChecklist, type ChecklistTask } from './components/chat/TaskChecklist';
+import { ActivityStream, StatusStrip } from './components/chat/ActivityStream';
+import { ArtifactPanel } from './components/artifacts/ArtifactPanel';
+import { ArtifactsContext } from './components/artifacts/ArtifactsContext';
+import type { ArtifactData } from './components/data-parts/types';
 
 // ============ TYPES ============
+interface SessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
 interface Session {
   id: string;
-  metadata?: { title?: string };
+  metadata?: { title?: string; usage?: SessionUsage };
   createdAt: string;
   updatedAt: string;
   messageCount: number;
@@ -149,12 +164,27 @@ const ApprovalCard = ({ toolName, args, approvalId, onApprove, onDeny }: Approva
 };
 
 // ============ SESSION SIDEBAR ============
+function timeAgo(iso?: string): string | undefined {
+  if (!iso) return undefined;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return undefined;
+  const s = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (s < 45) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(then).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 interface SessionSidebarProps {
   sessions: Session[];
   currentSessionId: string;
   isLoading: boolean;
   onSessionSelect: (id: string) => void;
-  onNewSession: () => void;
+  onCreate: (title: string) => void;
   onDeleteSession: (id: string) => void;
   onClose: () => void;
 }
@@ -164,51 +194,116 @@ const SessionSidebar = ({
   currentSessionId,
   isLoading,
   onSessionSelect,
-  onNewSession,
+  onCreate,
   onDeleteSession,
   onClose,
 }: SessionSidebarProps) => {
+  const [isCreating, setIsCreating] = useState(false);
+  const [draft, setDraft] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isCreating) inputRef.current?.focus();
+  }, [isCreating]);
+
+  const submit = () => {
+    const title = draft.trim();
+    onCreate(title || `Session ${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`);
+    setDraft('');
+    setIsCreating(false);
+  };
+  const cancel = () => {
+    setDraft('');
+    setIsCreating(false);
+  };
+
   return (
     <>
-      <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={onClose} />
-      <aside className="fixed top-0 left-0 bottom-0 w-72 bg-white dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-800 z-50 lg:static lg:z-0 flex flex-col">
-        <div className="flex items-center justify-between p-4 border-b border-zinc-200 dark:border-zinc-800">
-          <div className="flex items-center gap-2">
-            <History className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />
-            <h2 className="text-sm font-medium text-zinc-900 dark:text-zinc-200">Sessions</h2>
+      <div className="fixed inset-0 z-40 bg-black/60 lg:hidden" onClick={onClose} />
+      <aside className="fixed left-0 top-0 bottom-0 z-50 flex w-[300px] flex-col border-r border-[color:var(--color-line)] bg-[color:var(--color-surface)] lg:static lg:z-0">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 pt-5 pb-3">
+          <div className="flex items-baseline gap-2.5">
+            <h2 className="font-display text-[20px] leading-none text-[color:var(--color-ink)]">Sessions</h2>
+            {sessions.length > 0 && (
+              <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-[color:var(--color-ink-faint)]">
+                {sessions.length}
+              </span>
+            )}
           </div>
-          <IconButton
-            icon={<Plus className="w-4 h-4" />}
-            label="New session"
-            onClick={onNewSession}
-          />
+          <button
+            onClick={onClose}
+            aria-label="Close sidebar"
+            className="rounded-md p-1 text-[color:var(--color-ink-faint)] transition-colors hover:text-[color:var(--color-ink)] lg:hidden"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-3">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-5 h-5 text-zinc-400 dark:text-zinc-600 animate-spin" />
-            </div>
-          ) : sessions.length === 0 ? (
-            <div className="text-center py-8">
-              <p className="text-xs text-zinc-500 dark:text-zinc-600">No sessions yet</p>
+        {/* New session: inline create, not a modal */}
+        <div className="px-3 pb-2">
+          {isCreating ? (
+            <div className="flex items-center gap-2 rounded-lg border border-[color:var(--color-line-strong)] bg-[rgba(244,238,228,0.04)] px-3 py-2 transition-colors focus-within:border-[color:var(--color-amber)]">
+              <Plus className="h-3.5 w-3.5 shrink-0 text-[color:var(--color-amber)]" />
+              <input
+                ref={inputRef}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') submit();
+                  else if (e.key === 'Escape') cancel();
+                }}
+                onBlur={() => {
+                  if (!draft.trim()) cancel();
+                }}
+                placeholder="Name this session"
+                className="w-full bg-transparent text-[13px] text-[color:var(--color-ink)] outline-none placeholder:text-[color:var(--color-ink-faint)]"
+              />
+              <kbd className="font-mono text-[10px] text-[color:var(--color-ink-faint)]">↵</kbd>
             </div>
           ) : (
-            <div className="space-y-1">
-              {sessions.map((session) => (
-                <SessionCard
-                  key={session.id}
-                  id={session.id}
-                  title={session.metadata?.title}
-                  isActive={session.id === currentSessionId}
-                  messageCount={session.messageCount}
-                  onSelect={() => {
-                    onSessionSelect(session.id);
-                    onClose();
-                  }}
-                  onDelete={() => onDeleteSession(session.id)}
-                />
-              ))}
+            <button
+              onClick={() => setIsCreating(true)}
+              className="group flex w-full items-center gap-2.5 rounded-lg border border-dashed border-[color:var(--color-line-strong)] px-3 py-2 text-left text-[13px] text-[color:var(--color-ink-soft)] transition-colors hover:border-[color:var(--color-amber)] hover:text-[color:var(--color-ink)]"
+            >
+              <Plus className="h-4 w-4 text-[color:var(--color-ink-faint)] transition-colors group-hover:text-[color:var(--color-amber)]" />
+              New session
+            </button>
+          )}
+        </div>
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto px-3 pb-4">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-10">
+              <Loader2 className="h-4 w-4 animate-spin text-[color:var(--color-ink-faint)]" />
+            </div>
+          ) : sessions.length === 0 ? (
+            <div className="px-2 py-12 text-center">
+              <p className="font-display text-[16px] text-[color:var(--color-ink-soft)]">Nothing here yet</p>
+              <p className="mt-1 text-[12px] leading-relaxed text-[color:var(--color-ink-faint)]">
+                Start a session above to begin.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-0.5">
+              <AnimatePresence initial={false}>
+                {sessions.map((session) => (
+                  <SessionCard
+                    key={session.id}
+                    id={session.id}
+                    title={session.metadata?.title}
+                    isActive={session.id === currentSessionId}
+                    messageCount={session.messageCount}
+                    timeLabel={timeAgo(session.updatedAt || session.createdAt)}
+                    onSelect={() => {
+                      onSessionSelect(session.id);
+                      onClose();
+                    }}
+                    onDelete={() => onDeleteSession(session.id)}
+                  />
+                ))}
+              </AnimatePresence>
             </div>
           )}
         </div>
@@ -222,36 +317,150 @@ interface ChatMessageProps {
   message: any;
   onApprove: (id: string) => void;
   onDeny: (id: string) => void;
+  // `live` = this is the in-flight turn; its tool/data activity is already
+  // shown in the activity rail above, so render only text + reasoning here to
+  // avoid double-printing the same work.
+  live?: boolean;
 }
 
-const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
+/** Pretty millisecond format for tool-call elapsed time. */
+function fmtMs(ms?: number): string | null {
+  if (ms == null) return null;
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60_000)}m`;
+}
+
+interface ToolRow {
+  key: string;
+  toolName: string;
+  detail?: string;
+  elapsedMs?: number;
+  status: 'ok' | 'error';
+}
+
+// One row per *real* tool call. The persisted parts (verified against the DB)
+// arrive in execution order as:
+//   SDK `tool-<name>` part (one per toolCallId)  →  opens the row
+//   `data-tool_progress` chunks that follow it    →  enrich it (elapsed + msg)
+// The agent-core wrapper always emits a generic "<tool> complete"; plugins may
+// add a richer one ("Generated 8 tasks", "Wrote file.txt"). We open on the SDK
+// part and fold every progress chunk up to the next SDK part into it, dropping
+// the generic wrapper text in favour of a specific message when present. That
+// collapses the old 2-3 rows per call (bare + complete + plugin) into one.
+function assembleToolRows(parts: any[]): ToolRow[] {
+  const rows: ToolRow[] = [];
+  let current: ToolRow | null = null;
+  const flush = () => {
+    if (current) rows.push(current);
+    current = null;
+  };
+  const isGeneric = (msg: string | undefined, tool: string) =>
+    !msg ||
+    msg === `${tool} complete` ||
+    msg === `Starting ${tool}` ||
+    msg === `Running ${tool}`;
+
+  for (const part of parts) {
+    const type = part?.type as string | undefined;
+    if (!type) continue;
+
+    const isToolPart = type.startsWith('tool-') || type === 'dynamic-tool';
+    const isTerminal = ['output-available', 'output-error', 'output-denied'].includes(part.state);
+    if (isToolPart && isTerminal && part.toolCallId) {
+      flush();
+      current = {
+        key: part.toolCallId,
+        toolName: part.toolName || part.name || type.replace(/^tool-/, ''),
+        status: part.state === 'output-error' || part.state === 'output-denied' ? 'error' : 'ok',
+      };
+      continue;
+    }
+
+    if (type === 'data-tool_progress') {
+      const d = (part.data ?? {}) as {
+        toolName?: string;
+        stage?: string;
+        message?: string;
+        elapsedMs?: number;
+      };
+      if (d.stage !== 'complete' && d.stage !== 'failed') continue;
+      const toolName: string = d.toolName ?? current?.toolName ?? 'tool';
+      // A tool that reported only via progress (no SDK part) still gets a row.
+      if (!current) current = { key: `progress-${rows.length}`, toolName, status: 'ok' };
+      if (d.elapsedMs != null) current.elapsedMs = Math.max(current.elapsedMs ?? 0, d.elapsedMs);
+      if (d.stage === 'failed') current.status = 'error';
+      if (d.message && !isGeneric(d.message, toolName)) current.detail = d.message;
+    }
+  }
+  flush();
+  return rows;
+}
+
+const ChatMessage = ({ message, onApprove, onDeny, live = false }: ChatMessageProps) => {
   const isUser = message.role === 'user';
-  const parts = (message as any).parts || [];
+  const allParts = (message as any).parts || [];
+  // For the in-flight turn, the activity rail above already shows tool runs and
+  // data-part cards, so render only the conversational content (text/reasoning)
+  // here to avoid duplicating it. Completed messages render everything inline.
+  const parts = live
+    ? allParts.filter(
+        (p: any) =>
+          p?.type === 'text' ||
+          p?.type === 'reasoning' ||
+          p?.type === 'thinking' ||
+          p?.approval?.id,
+      )
+    : allParts;
 
   const seenToolApprovals = new Set<string>();
-  const seenToolResults = new Set<string>();
 
-  // Render parts and collect results
+  // One clean row per real tool call (see assembleToolRows). Suppressed on the
+  // live turn — the activity rail owns tool display while streaming.
+  const toolRows = live ? [] : assembleToolRows(allParts);
+
   const renderedParts = parts.map((part: any, partIndex: number) => {
-    // Text content
     if (part.type === 'text') {
       return <TextPart key={`text-${partIndex}`} text={part.text} isUser={isUser} />;
     }
-
-    // Thinking/reasoning
     if (part.type === 'reasoning' || part.type === 'thinking') {
       return <ReasoningPart key={`reasoning-${partIndex}`} text={part.text} />;
     }
 
-    // Data parts - handle both wrapped and direct formats
+    // data-tool_progress chunks are aggregated into the tool log by
+    // assembleToolRows (one row per real call) — never rendered as cards here.
+    if (part.type === 'data-tool_progress') return null;
+
+    // Other data parts (errors, summaries, …) still render. Suppress the
+    // noisier ones aggregated elsewhere — status, and task updates/graph which
+    // now live in the sticky checklist above the composer.
+    if (part.type === 'data-status') return null;
+    if (part.type === 'data-task_update' || part.type === 'data-task_graph') return null;
     if (isDataPart(part)) {
+      // Sub-agent activity: parts carrying a delegationId are what a delegated
+      // agent is *doing* (its commands, file ops, thoughts). Nest + label them
+      // so you can see the sub-agent's work, not just "in progress".
+      const pdata = (part.data ?? {}) as { delegationId?: string; agentName?: string };
+      if (pdata.delegationId && part.type !== 'data-delegation') {
+        const prevDelegationId = (parts[partIndex - 1]?.data as { delegationId?: string } | undefined)?.delegationId;
+        const showLabel = pdata.delegationId !== prevDelegationId;
+        return (
+          <div key={`data-${partIndex}`} className="ml-3 border-l border-[color:var(--color-line)] pl-3">
+            {showLabel && pdata.agentName && (
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-[color:var(--color-ink-faint)]">
+                ↳ {pdata.agentName}
+              </div>
+            )}
+            <DataPartRenderer part={part} />
+          </div>
+        );
+      }
       return <DataPartRenderer key={`data-${partIndex}`} part={part} />;
     }
     if (part.type === 'data' && isDataPart(part.data)) {
       return <DataPartRenderer key={`data-${partIndex}`} part={part.data} />;
     }
 
-    // Tool approvals
     const needsApproval = part.state === 'call' || part.state === 'approval-requested' || part.state === 'input-available';
     if (needsApproval && part.toolCallId && !seenToolApprovals.has(part.toolCallId) && part.approval?.id) {
       seenToolApprovals.add(part.toolCallId);
@@ -267,38 +476,63 @@ const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
       );
     }
 
-    // Tool results
-    const isToolPart = part.type?.startsWith('tool-') || part.type === 'dynamic-tool';
-    const isComplete = ['output-available', 'output-error', 'output-denied'].includes(part.state);
-    if (isToolPart && isComplete && part.toolCallId && !seenToolResults.has(part.toolCallId)) {
-      seenToolResults.add(part.toolCallId);
-      return (
-        <ToolResultPart
-          key={`result-${part.toolCallId}`}
-          toolName={part.toolName || part.name}
-          isError={part.state === 'output-error' || part.state === 'output-denied'}
-        />
-      );
-    }
-
+    // Terminal `tool-<name>` parts are folded into the tool log by
+    // assembleToolRows above; nothing to render inline here.
     return null;
   });
 
-  // Filter out null parts and check if any content was rendered
-  const hasContent = renderedParts.some((part: React.ReactNode) => part !== null) ||
-    (!isUser && (message as any).usage);
+  const hasContent = renderedParts.some((p: React.ReactNode) => p !== null)
+    || toolRows.length > 0
+    || (!isUser && (message as any).usage);
 
-  // Filter out empty assistant messages (no rendered content)
   if (!isUser && !hasContent) return null;
 
-  // Use ChatBubble for simple text messages, custom layout for complex ones
-  const hasComplexContent = renderedParts.some((part: React.ReactNode) =>
-    part && (React.isValidElement(part) && part.type !== TextPart)
-  );
+  const hasComplexContent =
+    toolRows.length > 0 ||
+    renderedParts.some((p: React.ReactNode) =>
+      p && React.isValidElement(p) && p.type !== TextPart
+    );
+
+  const ToolLog = toolRows.length > 0 ? (
+    <ul className="mt-2 space-y-[3px]">
+      {toolRows.map((row) => {
+        const elapsed = fmtMs(row.elapsedMs);
+        return (
+          <li
+            key={row.key}
+            className="group flex items-center gap-3 font-mono text-[12px] leading-[18px] text-[color:var(--color-ink-soft)]"
+          >
+            <span
+              aria-hidden
+              className={cn(
+                'flex h-[14px] w-[14px] shrink-0 items-center justify-center text-[10px]',
+                row.status === 'error'
+                  ? 'text-[color:var(--color-ember)]'
+                  : 'text-[color:var(--color-moss)]'
+              )}
+            >
+              {row.status === 'error' ? '×' : '✓'}
+            </span>
+            <span className="shrink-0 text-[color:var(--color-ink)]">
+              {row.toolName}
+            </span>
+            {row.detail && (
+              <span className="min-w-0 flex-1 truncate text-[color:var(--color-ink-soft)]">
+                {row.detail}
+              </span>
+            )}
+            {elapsed && (
+              <span className="shrink-0 text-[11px] uppercase tracking-[0.05em] text-[color:var(--color-ink-faint)]">
+                {elapsed}
+              </span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  ) : null;
 
   if (!hasComplexContent) {
-    // Simple text message - use ChatBubble
-    const textContent = parts.find((p: any) => p.type === 'text')?.text || '';
     return (
       <ChatBubble role={isUser ? 'user' : 'assistant'}>
         {renderedParts}
@@ -306,16 +540,14 @@ const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
     );
   }
 
-  // Complex message with tool results/approvals - use custom layout
   return (
     <div className={cn("flex gap-3 mb-6", isUser && "flex-row-reverse")}>
       <Avatar type={isUser ? 'user' : 'bot'} size="md" />
-
-      <div className={cn("flex-1 space-y-2 min-w-0", isUser && "flex flex-col items-end")}>
+      <div className={cn("flex-1 min-w-0 space-y-2", isUser && "flex flex-col items-end")}>
         {renderedParts}
-
+        {ToolLog}
         {!isUser && (message as any).usage && (
-          <div className="text-[9px] text-zinc-600 font-mono">
+          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-ink-faint)]">
             {(message as any).usage.promptTokens + (message as any).usage.completionTokens} tokens
           </div>
         )}
@@ -324,22 +556,66 @@ const ChatMessage = ({ message, onApprove, onDeny }: ChatMessageProps) => {
   );
 };
 
+// Data-part types aggregated elsewhere (activity rail, task checklist) and
+// therefore NOT rendered as loose cards in the chat stream.
+const SUPPRESSED_CHAT_PARTS = new Set([
+  'data-tool_progress',
+  'data-status',
+  'data-task_update',
+  'data-task_graph',
+]);
+
 // ============ MAIN CHAT AREA ============
+function formatTokens(n: number): string {
+  if (!n) return '0';
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
+function estimateCost(usage: SessionUsage | undefined, model: ModelOption | undefined): string {
+  if (!usage) return '$0.00';
+  const cost =
+    (usage.inputTokens / 1_000_000) * (model?.priceIn ?? 0) +
+    (usage.outputTokens / 1_000_000) * (model?.priceOut ?? 0);
+  if (cost === 0) return '$0.00';
+  return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`;
+}
+
 interface ChatAreaProps {
   sessionId: string;
+  model?: string;
+  models: ModelOption[];
+  onModelChange: (id: string) => void;
+  usage?: SessionUsage;
   onSessionUpdate: () => void;
 }
 
-const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
+const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpdate }: ChatAreaProps) => {
   const [input, setInput] = useState('');
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [dataParts, setDataParts] = useState<LiveDataPart[]>([]);
+  // Canvas panel: which artifact is focused, and whether the panel is open.
+  const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
+  const [panelOpen, setPanelOpen] = useState(false);
+
+  // Keep the selected model in a ref so the transport (created once) always
+  // reads the latest value — including on automatic tool-approval resends.
+  const modelRef = useRef(model);
+  modelRef.current = model;
 
   const { messages, sendMessage, status, addToolApprovalResponse, error, stop, setMessages } = useChat({
     transport: new DefaultChatTransport({
-      api: '/api/mimo-code/stream',
+      api: '/api/vibe/stream',
       headers: { 'Content-Type': 'application/json' },
-      body: { session_id: sessionId },
+      prepareSendMessagesRequest: ({ body, messages }) => ({
+        body: {
+          ...(body ?? {}),
+          messages,
+          session_id: sessionId,
+          model: modelRef.current || undefined,
+        },
+      }),
     }),
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
 
@@ -390,6 +666,7 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
         case 'data-memory_update':
         case 'data-swarm_signal':
         case 'data-delegation':
+        case 'data-artifact':
         case 'data-notification':
           updateLiveDataParts();
           break;
@@ -452,6 +729,130 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
 
   const isLoading = status === 'streaming' || status === 'submitted' || isLoadingHistory;
 
+  // Build the checklist from task data — streamed live AND persisted in
+  // message parts. The `task_graph` carries the authoritative FULL task set
+  // (with priority + handling clears) on every change, so prefer the latest
+  // one; fall back to accumulating `task_update` parts only if no graph
+  // exists. Pinned above the composer instead of scattered through the chat.
+  const tasks = useMemo<ChecklistTask[]>(() => {
+    let latestGraphNodes: any[] | null = null;
+    const updateMap = new Map<string, ChecklistTask>();
+    const scan = (type?: string, data?: any) => {
+      if (type === 'data-task_graph' && Array.isArray(data?.nodes)) {
+        latestGraphNodes = data.nodes;
+      } else if (type === 'data-task_update' && data?.id) {
+        const prev = updateMap.get(data.id);
+        updateMap.set(data.id, {
+          id: data.id,
+          status: data.status ?? prev?.status ?? 'pending',
+          title: data.title ?? prev?.title,
+          priority: data.priority ?? prev?.priority,
+        });
+      }
+    };
+    for (const m of messages as any[]) {
+      for (const p of (m?.parts ?? [])) scan(p?.type, p?.data);
+    }
+    for (const p of dataParts) scan(p.type, p.data as any);
+
+    if (latestGraphNodes) {
+      return (latestGraphNodes as any[]).map((n) => ({
+        id: n.id,
+        title: n.title,
+        status: n.status,
+        priority: n.priority,
+      }));
+    }
+    return Array.from(updateMap.values());
+  }, [messages, dataParts]);
+
+  // Collect artifacts from persisted message parts AND the live stream. Keyed
+  // by id, latest version wins; insertion order = creation order. Feeds the
+  // canvas panel and the inline artifact cards.
+  const artifacts = useMemo<ArtifactData[]>(() => {
+    const map = new Map<string, ArtifactData>();
+    const ingest = (type?: string, data?: any) => {
+      if (type !== 'data-artifact' || !data?.id) return;
+      const prev = map.get(data.id);
+      if (!prev || (data.version ?? 0) >= (prev.version ?? 0)) {
+        map.set(data.id, data as ArtifactData);
+      }
+    };
+    for (const m of messages as any[]) {
+      for (const p of (m?.parts ?? [])) ingest(p?.type, p?.data);
+    }
+    for (const p of dataParts) ingest(p.type, p.data as any);
+    return Array.from(map.values());
+  }, [messages, dataParts]);
+
+  // The artifact currently being *written* by the model. The tool's arguments
+  // (title/kind/content) stream in as `tool-create_artifact` / `tool-update_artifact`
+  // input deltas BEFORE the tool executes, so we can render the source into the
+  // canvas live instead of waiting for the finished file. For updates the id
+  // matches the existing artifact (content streams over it in place); for
+  // creates we use a transient `pending:` id until the real one arrives.
+  const streamingArtifact = useMemo<ArtifactData | null>(() => {
+    const KINDS = ['html', 'markdown', 'mermaid', 'chart'];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i] as any;
+      if (m?.role !== 'assistant') continue;
+      const parts = m.parts ?? [];
+      for (let j = parts.length - 1; j >= 0; j--) {
+        const p = parts[j];
+        const isArtifactTool = p?.type === 'tool-create_artifact' || p?.type === 'tool-update_artifact';
+        if (!isArtifactTool) continue;
+        // Most recent artifact tool call: only a live one (not yet executed) streams.
+        if (p.state !== 'input-streaming' && p.state !== 'input-available') return null;
+        const input = (p.input ?? {}) as { id?: string; title?: string; kind?: string; content?: string };
+        const content = typeof input.content === 'string' ? input.content : '';
+        if (!content && !input.title) return null; // nothing meaningful yet
+        const isUpdate = p.type === 'tool-update_artifact';
+        const id = isUpdate && input.id ? input.id : `pending:${p.toolCallId}`;
+        const kind = (KINDS.includes(input.kind ?? '') ? input.kind : 'markdown') as ArtifactData['kind'];
+        return { id, title: input.title ?? 'Untitled', kind, content, version: 0, status: 'streaming' };
+      }
+    }
+    return null;
+  }, [messages]);
+
+  // What the panel shows: completed artifacts, with the in-flight one merged in
+  // (overriding the same id on an update, appended on a create).
+  const panelArtifacts = useMemo<ArtifactData[]>(() => {
+    if (!streamingArtifact) return artifacts;
+    const map = new Map(artifacts.map((a) => [a.id, a] as const));
+    map.set(streamingArtifact.id, streamingArtifact);
+    return Array.from(map.values());
+  }, [artifacts, streamingArtifact]);
+
+  // A signature of "what artifacts exist + their versions" (the in-flight one
+  // counts as v0, stable as its content grows, so we open the canvas ONCE when
+  // it appears). When it changes — new artifact, edit, or stream start — open
+  // the newest. We *adopt* a loaded session's existing artifacts silently so
+  // reopening a chat doesn't fling the panel open. (ChatArea is keyed by
+  // session, so this ref resets per session.)
+  const artifactSignature = panelArtifacts.map((a) => `${a.id}@${a.version}`).join('|');
+  const prevSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevSignatureRef.current === null) {
+      // First settled state: record it without opening (skip while still loading).
+      if (!isLoadingHistory) prevSignatureRef.current = artifactSignature;
+      return;
+    }
+    if (artifactSignature && artifactSignature !== prevSignatureRef.current) {
+      const newest = panelArtifacts[panelArtifacts.length - 1];
+      if (newest) {
+        setActiveArtifactId(newest.id);
+        setPanelOpen(true);
+      }
+    }
+    prevSignatureRef.current = artifactSignature;
+  }, [artifactSignature, isLoadingHistory]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openArtifact = useCallback((id: string) => {
+    setActiveArtifactId(id);
+    setPanelOpen(true);
+  }, []);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (input.trim()) {
@@ -461,8 +862,33 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
     }
   };
 
+  // The in-flight assistant turn must render its live activity rail (the
+  // PROCESS) *above* its streamed answer (the TEXT) so the turn reads top to
+  // bottom in the order it happened. We peel the active assistant message out
+  // of the normal list and re-render it after the activity block — otherwise
+  // the answer pops into `messages.map` above the rail that produced it.
+  const lastMessage = messages[messages.length - 1];
+  const activeAssistant =
+    !isLoadingHistory &&
+    lastMessage?.role === 'assistant' &&
+    (isLoading || dataParts.length > 0)
+      ? lastMessage
+      : undefined;
+  const displayMessages = activeAssistant ? messages.slice(0, -1) : messages;
+  // Has the active turn produced conversational text/reasoning yet? (Tool work
+  // lives in the activity rail, so it doesn't count as a visible "answer".)
+  const hasAnswerContent = (m: any) =>
+    (m?.parts ?? []).some(
+      (p: any) =>
+        (p?.type === 'text' && p.text) ||
+        ((p?.type === 'reasoning' || p?.type === 'thinking') && p.text),
+    );
+  const answerReady = !!activeAssistant && hasAnswerContent(activeAssistant);
+
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <ArtifactsContext.Provider value={{ open: openArtifact, activeId: activeArtifactId }}>
+    <div className="flex h-full overflow-hidden">
+    <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
       {/* Chat messages */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-4 py-6">
@@ -472,21 +898,51 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
               <span className="text-sm text-zinc-600 dark:text-zinc-500">Loading...</span>
             </div>
           ) : messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-center">
-              <Avatar type="bot" size="lg" className="mb-4" />
-              <h2 className="text-lg font-medium text-zinc-900 dark:text-zinc-100 mb-1">Vibes</h2>
-              <p className="text-sm text-zinc-600 dark:text-zinc-500">Your Deep Agent assistant</p>
-              <div className="mt-4 flex flex-wrap justify-center gap-2">
-                {['Planning', 'Tree-of-Thoughts', 'Memory', 'Reflexion', 'Swarm'].map((cap) => (
-                  <Badge key={cap} variant="zinc" size="sm">
-                    {cap}
-                  </Badge>
+            <div className="relative mx-auto flex h-full max-w-2xl flex-col justify-end gap-12 px-2 pb-14 pt-24">
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-[color:var(--color-ink-faint)]">
+                  /sessions/{sessionId.slice(0, 12)}
+                </p>
+                <h2 className="mt-4 font-display text-[64px] leading-[0.95] text-[color:var(--color-ink)]">
+                  what would you<br />like to <span className="text-[color:var(--color-amber)]">build</span>?
+                </h2>
+                <p className="mt-5 max-w-md text-[15px] leading-relaxed text-[color:var(--color-ink-soft)]">
+                  An agent harness with planning, reflexion, memory and a roster
+                  of specialists. Describe a goal — files, code, browser, the lot.
+                </p>
+              </div>
+              <ul className="grid grid-cols-1 gap-px overflow-hidden rounded-sm border border-[color:var(--color-line-strong)] bg-[color:var(--color-line-strong)] sm:grid-cols-2">
+                {[
+                  { tag: 'audit', text: 'Walk this repo and tell me what to fix first.' },
+                  { tag: 'build', text: 'Scaffold a Hono + Bun API with auth.' },
+                  { tag: 'research', text: 'Compare three vector DBs for our use case.' },
+                  { tag: 'fix', text: 'Find every `as any` in src/ and propose typed alternatives.' },
+                ].map((seed) => (
+                  <li key={seed.text}>
+                    <button
+                      type="button"
+                      onClick={() => setInput(seed.text)}
+                      className="group flex h-full w-full flex-col items-start gap-2 bg-[color:var(--color-ground)] px-4 py-3 text-left transition-colors hover:bg-[color:var(--color-surface)]"
+                    >
+                      <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-amber)]">
+                        {seed.tag}
+                      </span>
+                      <span className="text-[13.5px] leading-snug text-[color:var(--color-ink-soft)] group-hover:text-[color:var(--color-ink)]">
+                        {seed.text}
+                      </span>
+                    </button>
+                  </li>
                 ))}
+              </ul>
+              <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.22em] text-[color:var(--color-ink-faint)]">
+                <span className="h-px flex-1 bg-[color:var(--color-line)]" />
+                <span>{['planning', 'reflexion', 'memory', 'swarm', 'sub-agents'].join(' · ')}</span>
+                <span className="h-px flex-1 bg-[color:var(--color-line)]" />
               </div>
             </div>
           ) : (
             <AnimatePresence mode="popLayout">
-              {messages.map((message) => {
+              {displayMessages.map((message) => {
                 // Pre-filter messages: skip assistant messages with no parts or empty parts
                 const parts = message.parts || [];
                 const isUser = message.role === 'user';
@@ -529,85 +985,87 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
             </AnimatePresence>
           )}
 
-          {/* Loading indicator */}
-          {(() => {
-            const lastMessage = messages[messages.length - 1];
-            if (!lastMessage) return false;
-
-            const lastMessageParts = lastMessage.parts || [];
-
-            // Check if last message has actual content (matches the filter in messages.map)
-            const lastMessageHasActualContent = lastMessageParts.some((part: any) => {
-              // Text with content
-              if (part.type === 'text' && part.text) return true;
-              // Reasoning with content
-              if ((part.type === 'reasoning' || part.type === 'thinking') && part.text) return true;
-              // Data parts
-              if (part.type?.startsWith('data-')) return true;
-              // Tool approvals with id
-              if (part.approval?.id) return true;
-              // Completed tool parts
-              if ((part.type?.startsWith('tool-') || part.type === 'dynamic-tool') &&
-                  ['output-available', 'output-error', 'output-denied'].includes(part.state)) {
-                return true;
-              }
-              return false;
-            });
-
-            const shouldShowLoading = isLoading && !isLoadingHistory && messages.length > 0 && (
-              lastMessage.role === 'user' ||
-              (lastMessage.role === 'assistant' && !lastMessageHasActualContent)
-            );
-
-            return shouldShowLoading;
-          })() && (
-            <TypingIndicator />
-          )}
-
-          {/* Streaming data parts */}
+          {/* Streaming data parts — tool runs collapse into a single
+              activity rail (one row per operationId) so the chat doesn't
+              fill with `bash complete` cards. Other live parts (errors,
+              task updates, summaries, …) render through the legacy path. */}
           {dataParts.length > 0 && (
-            <div className="flex items-start gap-3 py-2">
+            <div className="flex items-start gap-3 py-3">
               <Avatar type="bot" size="md" />
-              <div className="flex-1 space-y-2">
-                <AnimatePresence mode="popLayout">
-                  {dataParts.map((part) => (
-                    <motion.div
-                      key={part.key}
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -8 }}
-                      transition={{ duration: 0.2 }}
-                    >
-                      <DataPartRenderer part={part} />
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
+              <div className="flex-1 space-y-3">
+                <StatusStrip parts={dataParts} />
+                <ActivityStream parts={dataParts} />
+                {dataParts.some(p => !SUPPRESSED_CHAT_PARTS.has(p.type)) && (
+                  <div className="space-y-2">
+                    <AnimatePresence mode="popLayout">
+                      {dataParts
+                        .filter(p => !SUPPRESSED_CHAT_PARTS.has(p.type))
+                        .map((part) => (
+                          <motion.div
+                            key={part.key}
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -8 }}
+                            transition={{ duration: 0.2 }}
+                          >
+                            <DataPartRenderer part={part} />
+                          </motion.div>
+                        ))}
+                    </AnimatePresence>
+                  </div>
+                )}
               </div>
             </div>
           )}
 
-          {/* Error */}
+          {/* The in-flight assistant answer, rendered AFTER its activity rail so
+              the turn reads process → answer instead of answer-on-top. `live`
+              keeps it to text/reasoning — the rail above owns the tool log. */}
+          {answerReady && (
+            <ChatMessage
+              key={activeAssistant!.id}
+              message={activeAssistant}
+              live
+              onApprove={(id) => addToolApprovalResponse({ id, approved: true, reason: 'Approved' })}
+              onDeny={(id) => addToolApprovalResponse({ id, approved: false, reason: 'user denied' })}
+            />
+          )}
+
+          {/* Thinking indicator — only at the very start, before the rail or any
+              answer has appeared (otherwise the rail already signals progress). */}
+          {isLoading && !isLoadingHistory && messages.length > 0 &&
+            !answerReady && dataParts.length === 0 && (
+            <TypingIndicator />
+          )}
+
+          {/* Error — soft, inline. The provider can return errors mid-loop
+              (rate limits on free tiers, transient upstream failures, …);
+              treat them as a status note, not a screen-of-doom card. */}
           {error && (
-            <Card className="mb-4 border-red-300 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20">
-              <p className="text-sm text-red-700 dark:text-red-400">{error.message || 'An error occurred'}</p>
-            </Card>
+            <div className="mt-4 flex items-start gap-3 border-l-2 border-[color:var(--color-ember)] pl-3 font-mono text-[12px] leading-relaxed text-[color:var(--color-ink-soft)]">
+              <span className="mt-[2px] text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-ember)]">
+                error
+              </span>
+              <span className="flex-1 break-words">
+                {error.message || 'provider returned an error — try again, or pick a different model'}
+              </span>
+            </div>
           )}
         </div>
       </div>
 
-      {/* Input area */}
-      <div className="shrink-0 border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/50 p-4">
-        <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
-          <div className={cn(
-            "flex items-end gap-2 bg-white dark:bg-zinc-900 rounded-lg border p-2 transition-colors",
-            document.activeElement?.tagName === 'TEXTAREA' ? "border-zinc-400 dark:border-zinc-600" : "border-zinc-300 dark:border-zinc-700"
-          )}>
+      {/* Composer */}
+      <div className="shrink-0 px-4 pb-5 pt-3">
+        <TaskChecklist tasks={tasks} />
+        <form onSubmit={handleSubmit} className="mx-auto max-w-3xl">
+          <div className="rounded-2xl border border-[color:var(--color-line-strong)] bg-[color:var(--color-surface)] px-3.5 pt-3 pb-2 transition-all focus-within:border-[color:var(--color-amber)]/70 focus-within:shadow-[0_0_0_3px_rgba(240,184,108,0.08)]">
             <Textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="What would you like to build?"
+              placeholder="Describe a goal — Vibes plans, codes, and runs it."
               autoResize
               maxLength={5000}
+              className="block w-full min-h-[76px] px-0 py-0 text-[15px] leading-relaxed text-[color:var(--color-ink)] placeholder:text-[color:var(--color-ink-faint)]"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
@@ -615,23 +1073,56 @@ const ChatArea = ({ sessionId, onSessionUpdate }: ChatAreaProps) => {
                 }
               }}
             />
-            <IconButton
-              icon={isLoading ? <Square className="w-4 h-4" /> : <Send className="w-4 h-4" />}
-              label={isLoading ? "Stop" : "Send"}
-              onClick={isLoading ? () => stop?.() : undefined}
-              disabled={!isLoading && !input.trim()}
-              variant={isLoading ? "ghost" : "ghost"}
-              className={cn(
-                "shrink-0",
-                !isLoading && !input.trim() && "opacity-50 cursor-not-allowed",
-                isLoading && "text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-950/30",
-                !isLoading && input.trim() && "text-zinc-900 dark:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-              )}
-            />
+            <div className="mt-2 flex items-center justify-between gap-2">
+              {/* session token usage + estimated cost */}
+              <div
+                className="flex items-center gap-1.5 font-mono text-[11px] text-[color:var(--color-ink-faint)]"
+                title="Session tokens · estimated cost"
+              >
+                <Coins className="h-3.5 w-3.5" />
+                <span className="text-[color:var(--color-ink-soft)]">{formatTokens(usage?.totalTokens ?? 0)}</span>
+                <span>tok</span>
+                <span className="opacity-40">·</span>
+                <span>{estimateCost(usage, models.find((m) => m.id === model))}</span>
+              </div>
+
+              {/* model selector + send */}
+              <div className="flex items-center gap-2">
+                <ModelSelector models={models} value={model ?? ''} onChange={onModelChange} placement="top" />
+                <button
+                  type={isLoading ? 'button' : 'submit'}
+                  onClick={isLoading ? () => stop?.() : undefined}
+                  disabled={!isLoading && !input.trim()}
+                  aria-label={isLoading ? 'Stop generating' : 'Send message'}
+                  className={cn(
+                    'flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-all duration-150',
+                    isLoading
+                      ? 'bg-[color:var(--color-ember)] text-[color:var(--color-ground)] hover:opacity-90'
+                      : input.trim()
+                        ? 'scale-100 bg-[color:var(--color-amber)] text-[color:var(--color-ground)] shadow-sm hover:opacity-90'
+                        : 'scale-95 cursor-not-allowed bg-[rgba(244,238,228,0.06)] text-[color:var(--color-ink-faint)]'
+                  )}
+                >
+                  {isLoading ? <Square className="h-3.5 w-3.5" /> : <ArrowUp className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
           </div>
         </form>
       </div>
     </div>
+    <AnimatePresence>
+      {panelOpen && panelArtifacts.length > 0 && (
+        <ArtifactPanel
+          artifacts={panelArtifacts}
+          activeId={activeArtifactId}
+          onSelect={setActiveArtifactId}
+          onClose={() => setPanelOpen(false)}
+        />
+      )}
+    </AnimatePresence>
+    </div>
+    </ArtifactsContext.Provider>
   );
 };
 
@@ -641,8 +1132,15 @@ export default function App() {
   const [currentSessionId, setCurrentSessionId] = useState<string>(() => {
     return localStorage.getItem('vibes_session_id') || 'default';
   });
-  const [isSessionSidebarOpen, setIsSessionSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
+    const saved = localStorage.getItem('vibes_sidebar_open');
+    if (saved !== null) return saved === '1';
+    return typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches;
+  });
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
+
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>(() => localStorage.getItem('vibes_model') || '');
 
   const fetchSessions = useCallback(async () => {
     setIsLoadingSessions(true);
@@ -694,27 +1192,44 @@ export default function App() {
   }, [currentSessionId]);
 
   useEffect(() => {
+    localStorage.setItem('vibes_sidebar_open', sidebarOpen ? '1' : '0');
+  }, [sidebarOpen]);
+
+  useEffect(() => {
     fetchSessions();
   }, [fetchSessions]);
+
+  // Load available models and resolve the active selection.
+  useEffect(() => {
+    fetch('/api/models')
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d?.success) return;
+        setModels(d.models ?? []);
+        setSelectedModel((prev) => prev || d.active || d.models?.[0]?.id || '');
+      })
+      .catch(() => { /* selector stays hidden if unavailable */ });
+  }, []);
+
+  useEffect(() => {
+    if (selectedModel) localStorage.setItem('vibes_model', selectedModel);
+  }, [selectedModel]);
 
   const currentSession = sessions.find(s => s.id === currentSessionId);
 
   return (
-    <div className="flex h-screen bg-white dark:bg-[#0a0a0a] text-zinc-900 dark:text-zinc-100">
-      {/* Session Sidebar */}
+    <div className="flex h-screen bg-[color:var(--color-ground)] text-[color:var(--color-ink)] bg-paper-grain">
+      {/* Session Sidebar (wider + collapsible) */}
       <AnimatePresence>
-        {(isSessionSidebarOpen || window.innerWidth >= 1024) && (
+        {sidebarOpen && (
           <SessionSidebar
             sessions={sessions}
             currentSessionId={currentSessionId}
             isLoading={isLoadingSessions}
             onSessionSelect={setCurrentSessionId}
-            onNewSession={() => {
-              const title = prompt('Session name:');
-              if (title) createSession(title);
-            }}
+            onCreate={createSession}
             onDeleteSession={deleteSession}
-            onClose={() => setIsSessionSidebarOpen(false)}
+            onClose={() => setSidebarOpen(false)}
           />
         )}
       </AnimatePresence>
@@ -722,29 +1237,30 @@ export default function App() {
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <header className="flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/50">
-          <div className="flex items-center gap-3">
+        <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--color-line)] bg-[color:var(--color-ground)] px-5 py-3">
+          <div className="flex items-center gap-4">
             <IconButton
-              icon={<History className="w-5 h-5 text-zinc-500 dark:text-zinc-400" />}
-              label="Toggle sessions"
-              onClick={() => setIsSessionSidebarOpen(!isSessionSidebarOpen)}
-              className="lg:hidden"
+              icon={<PanelLeft className="w-5 h-5 text-[color:var(--color-ink-soft)]" />}
+              label={sidebarOpen ? 'Hide sessions' : 'Show sessions'}
+              onClick={() => setSidebarOpen((v) => !v)}
             />
 
-            <div className="flex items-center gap-2">
-              <Avatar type="custom" size="md" icon={<Bot className="w-4 h-4 text-zinc-700 dark:text-zinc-300" />} className="bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700" />
-              <div>
-                <h1 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Vibes</h1>
-                <p className="text-[10px] text-zinc-500 dark:text-zinc-500 truncate max-w-[120px]">
-                  {currentSession?.metadata?.title || currentSessionId}
-                </p>
-              </div>
+            <div className="flex items-baseline gap-3">
+              <h1 className="font-display text-[26px] leading-none text-[color:var(--color-ink)]">
+                Vibes
+              </h1>
+              <span className="h-3 w-px bg-[color:var(--color-line-strong)]" aria-hidden />
+              <p className="max-w-[220px] truncate font-mono text-[11px] uppercase tracking-[0.18em] text-[color:var(--color-ink-faint)]">
+                {currentSession?.metadata?.title || currentSessionId}
+              </p>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
             {sessions.length > 1 && (
-              <Badge variant="zinc" size="sm">{sessions.length} sessions</Badge>
+              <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-[color:var(--color-ink-faint)]">
+                {sessions.length} sessions
+              </span>
             )}
           </div>
         </header>
@@ -753,6 +1269,10 @@ export default function App() {
         <ChatArea
           key={currentSessionId}
           sessionId={currentSessionId}
+          model={selectedModel}
+          models={models}
+          onModelChange={setSelectedModel}
+          usage={currentSession?.metadata?.usage}
           onSessionUpdate={fetchSessions}
         />
       </div>
