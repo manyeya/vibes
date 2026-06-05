@@ -97,6 +97,10 @@ Overwrite the entire file with the new content.`,
                     await Bun.write(this.scratchpadPath, content);
                     this.scratchpadContent = content;
                     operation?.complete('Scratchpad updated', { phase: 'complete' });
+                    this.writer?.writeMemoryUpdate('note', 'updated', undefined, {
+                        title: 'Scratchpad updated',
+                        detail: content.slice(0, 140),
+                    });
                     return { success: true, message: 'Scratchpad updated.' };
                 },
             }),
@@ -121,6 +125,10 @@ This will be appended to your long-term memory.`,
                     await Bun.write(this.reflexionPath, current + entry);
                     this.reflexionContent = current + entry;
                     operation?.complete('Reflection saved', { phase: 'complete' });
+                    this.writer?.writeMemoryUpdate('note', 'saved', undefined, {
+                        title: 'Reflection saved',
+                        detail: lesson.slice(0, 140),
+                    });
                     return { success: true, message: 'Reflection saved.' };
                 },
             }),

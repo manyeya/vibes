@@ -7,8 +7,10 @@ import {
     type DataStreamWriter,
 } from "../core/types";
 import z from "zod";
-import { $ } from "bun";
+import * as fs from "fs/promises";
 import * as path from "path";
+import { type Sandbox } from "../core/sandbox";
+import { LocalSandbox } from "../sandbox/local-sandbox";
 
 /**
  * Get file type from extension
@@ -48,19 +50,36 @@ function getFileType(filePath: string): string {
 }
 
 /**
- * Plugin that grants the agent access to a specific directory
- * on the host filesystem. Use Bun's native performance.
+ * Constructor config for {@link FilesystemPlugin}.
+ *
+ * Pass a `sandbox` to route all file I/O through any {@link Sandbox}
+ * implementation. Otherwise a default {@link LocalSandbox} is created from
+ * `baseDir`. `trackedFilesPath` is plugin-internal bookkeeping and is
+ * persisted directly (it may live outside the sandbox root).
+ */
+export interface FilesystemPluginConfig {
+    baseDir?: string;
+    trackedFilesPath?: string;
+    sandbox?: Sandbox;
+}
+
+/**
+ * Plugin that grants the agent access to a sandboxed workspace directory.
+ * File reads/writes/listing are delegated to the {@link Sandbox}, so the
+ * plugin no longer depends on Bun's `Bun.file`/`Bun.write`/`Bun.Glob`.
  */
 export default class FilesystemPlugin implements Plugin {
     name = 'FilesystemPlugin';
     private writer?: DataStreamWriter;
     private streamContext?: PluginStreamContext;
+    private sandbox: Sandbox;
     private baseDir: string;
     private trackedFilesPath: string;
     private trackedFiles: Set<string> = new Set();
 
-    constructor(config: { baseDir?: string, trackedFilesPath?: string } = {}) {
-        this.baseDir = path.resolve(process.cwd(), config.baseDir || 'workspace');
+    constructor(config: FilesystemPluginConfig = {}) {
+        this.sandbox = config.sandbox ?? new LocalSandbox(config.baseDir ?? 'workspace');
+        this.baseDir = this.sandbox.root;
         this.trackedFilesPath = config.trackedFilesPath || path.join(this.baseDir, 'tracked_files.json');
     }
 
@@ -78,10 +97,6 @@ export default class FilesystemPlugin implements Plugin {
         this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
-    private resolvePath(relativePath: string): string {
-        return path.resolve(this.baseDir, relativePath);
-    }
-
     /**
      * Track a file in the current session
      */
@@ -94,9 +109,9 @@ export default class FilesystemPlugin implements Plugin {
 
     private async persistTrackedFiles(): Promise<void> {
         try {
-            const fullPath = require('path').resolve(process.cwd(), this.trackedFilesPath);
-            Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
-            await Bun.write(fullPath, JSON.stringify(Array.from(this.trackedFiles), null, 2));
+            const fullPath = path.resolve(process.cwd(), this.trackedFilesPath);
+            await fs.mkdir(path.dirname(fullPath), { recursive: true });
+            await fs.writeFile(fullPath, JSON.stringify(Array.from(this.trackedFiles), null, 2), 'utf8');
         } catch (e) {
             console.error('[FilesystemPlugin] Failed to persist tracked files:', e);
         }
@@ -104,8 +119,8 @@ export default class FilesystemPlugin implements Plugin {
 
     private async loadTrackedFiles(): Promise<void> {
         try {
-            const fullPath = require('path').resolve(process.cwd(), this.trackedFilesPath);
-            const content = await Bun.file(fullPath).text();
+            const fullPath = path.resolve(process.cwd(), this.trackedFilesPath);
+            const content = await fs.readFile(fullPath, 'utf8');
             const files = JSON.parse(content) as string[];
             this.trackedFiles = new Set(files);
         } catch (e) {
@@ -129,14 +144,15 @@ export default class FilesystemPlugin implements Plugin {
                         heartbeatEnabled: false,
                     });
                     operation?.milestone(`Resolving ${relativePath}`, { phase: 'resolve' });
-                    const fullPath = this.resolvePath(relativePath);
-                    const file = Bun.file(fullPath);
-                    if (!await file.exists()) {
+                    const opId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+                    this.writer?.writeFileOperation(opId, 'read', relativePath, 'running');
+                    if (!await this.sandbox.exists(relativePath)) {
                         throw new Error(`File not found: ${relativePath} in workspace`);
                     }
                     operation?.milestone(`Reading ${relativePath}`, { phase: 'read' });
-                    const content = await file.text();
+                    const content = await this.sandbox.readFile(relativePath);
                     operation?.complete(`Read ${relativePath}`, { phase: 'complete' });
+                    this.writer?.writeFileOperation(opId, 'read', relativePath, 'complete', { bytes: content.length });
                     return { content };
                 },
             }),
@@ -154,20 +170,20 @@ export default class FilesystemPlugin implements Plugin {
                         plugin: this.name,
                         heartbeatEnabled: false,
                     });
-                    const fullPath = this.resolvePath(relativePath);
 
-                    // Ensure parent directory exists
-                    const parentDir = path.dirname(fullPath);
+                    // sandbox.writeFile creates parent directories; we still
+                    // surface the 'mkdir' milestone for UI parity.
                     operation?.milestone(`Ensuring directory exists for ${relativePath}`, { phase: 'mkdir' });
-                    await $`mkdir -p ${parentDir}`.quiet();
-
+                    const opId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+                    this.writer?.writeFileOperation(opId, 'write', relativePath, 'running');
                     operation?.milestone(`Writing ${relativePath}`, { phase: 'write' });
-                    const bytes = await Bun.write(fullPath, content);
+                    const bytes = await this.sandbox.writeFile(relativePath, content);
 
                     // Track the file in the current session
                     operation?.milestone(`Tracking ${relativePath}`, { phase: 'track' });
                     await this.trackFile(relativePath);
                     operation?.complete(`Wrote ${relativePath}`, { phase: 'complete' });
+                    this.writer?.writeFileOperation(opId, 'write', relativePath, 'complete', { bytes });
 
                     return { success: true, bytesWritten: bytes, savedTo: relativePath };
                 },
@@ -187,14 +203,15 @@ export default class FilesystemPlugin implements Plugin {
                         heartbeatEnabled: false,
                     });
                     operation?.milestone(`Scanning ${directory}${recursive ? ' recursively' : ''}`, { phase: 'scan' });
-                    const globPattern = recursive ? `${directory}/**/*` : `${directory}/*`;
-                    const glob = new Bun.Glob(globPattern);
-                    const files = [];
-                    for await (const file of glob.scan(this.baseDir)) {
-                        files.push(file);
-                    }
+                    const opId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+                    this.writer?.writeFileOperation(opId, 'list', directory, 'running');
+                    const files = await this.sandbox.list(directory, { recursive });
                     operation?.complete(`Found ${files.length} file${files.length === 1 ? '' : 's'}`, {
                         phase: 'complete',
+                    });
+                    this.writer?.writeFileOperation(opId, 'list', directory, 'complete', {
+                        fileCount: files.length,
+                        files: files.slice(0, 20),
                     });
                     return { files };
                 },
@@ -206,7 +223,7 @@ export default class FilesystemPlugin implements Plugin {
         return `${prompt}
 
 ## Workspace & Filesystem
-You have direct access to your designated workspace via FilesystemMiddleware.
+You have access to a sandboxed workspace directory.
 - Your workspace root is: ${this.baseDir}
 - Use readFile() and writeFile() to manage files in your workspace.
 - Use list_files() to explore your workspace structure.

@@ -86,6 +86,34 @@ export function completionThenTextSteps(summary = 'done', files: string[] = ['sr
   ];
 }
 
+export function completionThenToolCallSteps(summary = 'done', files: string[] = ['src/example.ts']) {
+  return [
+    {
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'completion-call',
+          toolName: 'task_completion',
+          input: { summary, files },
+        },
+        {
+          type: 'tool-result',
+          toolCallId: 'completion-call',
+          toolName: 'task_completion',
+          input: { summary, files },
+          output: { status: 'recorded' },
+        },
+        {
+          type: 'tool-call',
+          toolCallId: 'post-call',
+          toolName: 'readFile',
+          input: { path: 'src/sneaky.ts' },
+        },
+      ],
+    },
+  ];
+}
+
 export function createStreamResult(text: string, steps: any[]) {
   return {
     text: Promise.resolve(text),

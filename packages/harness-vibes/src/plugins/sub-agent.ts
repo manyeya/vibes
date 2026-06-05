@@ -9,12 +9,12 @@ import {
     PluginStreamContext,
     SubAgent,
     ToolsRequiringApprovalConfig,
-    VibeAgentConfig,
+    AgentCoreConfig,
     createScopedUIMessageStreamWriter,
     createDataStreamWriter,
     type DataStreamWriter,
 } from '../core/types';
-import { VibeAgent } from '../core/agent';
+import { AgentCore } from '../core/agent-core';
 
 const COMPLETION_TOOL_NAME = 'task_completion';
 const DELEGATION_TOOL_NAMES = ['task', 'delegate', 'parallel_delegate'] as const;
@@ -31,6 +31,7 @@ const delegationInputSchema = z.object({
     task: z.string().describe('The task to delegate.'),
     context: z.record(z.string(), z.unknown()).optional().describe('Optional structured context for the sub-agent.'),
     relevantFiles: z.array(z.string()).optional().describe('Optional file paths that are likely relevant to the task.'),
+    fresh: z.boolean().optional().describe('Bypass the cache and force a fresh run, even if an identical task was run recently.'),
 });
 
 export type CompletionPayload = z.infer<typeof completionSchema>;
@@ -43,7 +44,7 @@ type BuiltInPluginFactory = (options: {
     workspaceDir?: string;
 }) => Plugin[];
 
-type AgentFactory = (config: VibeAgentConfig) => VibeAgent;
+type AgentFactory = (config: AgentCoreConfig) => AgentCore;
 
 interface DelegationInput extends z.infer<typeof delegationInputSchema> {}
 
@@ -52,9 +53,11 @@ interface DelegationSuccessResult {
     delegationId: string;
     summary: string;
     cached: boolean;
+    /** True when the summary was inferred from the sub-agent's final output rather than a structured task_completion call. */
+    inferred?: boolean;
     savedTo?: string;
     filesCreated?: string[];
-    completionConfirmed: true;
+    completionConfirmed: boolean;
 }
 
 interface DelegationErrorResult {
@@ -93,6 +96,7 @@ interface NormalizedSubAgentBase {
     model?: LanguageModel;
     allowSubdelegation: boolean;
     artifactMode: ArtifactMode;
+    maxSteps?: number;
 }
 
 export interface NormalizedCustomSubAgent extends NormalizedSubAgentBase {
@@ -264,9 +268,12 @@ function buildSuccessArtifactContent(options: {
     result: DelegationSuccessResult;
     metadata?: Record<string, unknown>;
 }): string {
+    const completionLine = options.result.inferred
+        ? `Inferred from the sub-agent's final output (no structured ${COMPLETION_TOOL_NAME} call).`
+        : `Structured completion confirmed via ${COMPLETION_TOOL_NAME}.`;
     return `# ${options.agentName} Task Result\n\n## Task\n${options.request.task}\n\n## Summary\n${options.result.summary}\n\n## Files\n${options.result.filesCreated && options.result.filesCreated.length > 0
         ? options.result.filesCreated.map(filePath => `- \`${filePath}\``).join('\n')
-        : 'None'}\n\n## Completion\nStructured completion confirmed via ${COMPLETION_TOOL_NAME}.\n\n## Metadata${formatMetadata(options.metadata)}`;
+        : 'None'}\n\n## Completion\n${completionLine}\n\n## Metadata${formatMetadata(options.metadata)}`;
 }
 
 function buildErrorArtifactContent(options: {
@@ -280,7 +287,14 @@ function buildErrorArtifactContent(options: {
     return `# ${options.agentName} Task Failure\n\n## Task\n${options.request.task}\n\n## Error Code\n${options.errorCode}\n\n## Summary\n${options.summary}\n\n## Error\n${options.error}\n\n## Raw Output\n${options.rawText?.trim() ? options.rawText : 'None'}`;
 }
 
-function hasPostCompletionActivity(rawResult: ExecutionResult): boolean {
+/**
+ * Detect real side-effecting actions AFTER the sub-agent reported completion.
+ * Only a fresh tool CALL counts as a violation — trailing text/reasoning (a
+ * harmless "Done.") and the completion tool's own result are allowed. This
+ * keeps the safety intent (catch "done, now delete files") without failing a
+ * delegation over a closing sentence.
+ */
+function hasPostCompletionToolCalls(rawResult: ExecutionResult): boolean {
     let completionSeen = false;
 
     for (const step of rawResult.steps ?? []) {
@@ -294,22 +308,19 @@ function hasPostCompletionActivity(rawResult: ExecutionResult): boolean {
                 continue;
             }
 
-            if (!completionSeen) {
-                continue;
+            if (completionSeen && part.type === 'tool-call') {
+                return true;
             }
-
-            if (part.type === 'text' || part.type === 'reasoning') {
-                if (typeof part.text === 'string' && part.text.trim().length > 0) {
-                    return true;
-                }
-                continue;
-            }
-
-            return true;
         }
     }
 
     return false;
+}
+
+/** Cap an inferred summary so it stays a summary, not a transcript. */
+function inferSummary(rawText: string): string {
+    const trimmed = rawText.trim();
+    return trimmed.length > 800 ? `${trimmed.slice(0, 800)}…` : trimmed;
 }
 
 export default class SubAgentPlugin implements Plugin {
@@ -329,7 +340,7 @@ export default class SubAgentPlugin implements Plugin {
         private readonly workspaceDir: string = 'workspace',
         private readonly cacheTTL: number = 60 * 60 * 1000,
         private readonly maxConcurrentAgents: number = 4,
-        private readonly createAgent: AgentFactory = config => new VibeAgent(config)
+        private readonly createAgent: AgentFactory = config => new AgentCore(config)
     ) {
         this.registry = new DelegationRegistry(cacheTTL);
         this.normalizedSubAgents = this.normalizeSubAgents(subAgents);
@@ -391,6 +402,7 @@ export default class SubAgentPlugin implements Plugin {
                 model: subAgent.model,
                 allowSubdelegation: subAgent.allowSubdelegation ?? false,
                 artifactMode: subAgent.artifactMode ?? 'always',
+                maxSteps: subAgent.maxSteps,
             } satisfies NormalizedSubAgentBase;
 
             if (inferredMode === 'general-purpose') {
@@ -509,7 +521,7 @@ export default class SubAgentPlugin implements Plugin {
         });
     }
 
-    private buildAgentConfig(subAgent: NormalizedSubAgent, completionTool: Tool<any, any>): VibeAgentConfig {
+    private buildAgentConfig(subAgent: NormalizedSubAgent, completionTool: Tool<any, any>): AgentCoreConfig {
         const model = subAgent.model || this.baseModel;
         const blockedTools = mergeBlockedTools(subAgent.blockedTools, subAgent.allowSubdelegation);
 
@@ -548,7 +560,7 @@ export default class SubAgentPlugin implements Plugin {
         return {
             model,
             instructions: buildSubAgentSystemPrompt(subAgent),
-            maxSteps: 30,
+            maxSteps: subAgent.maxSteps ?? 30,
             stopWhen: hasToolCall(COMPLETION_TOOL_NAME),
             plugins: [...subAgent.plugins],
             tools: {
@@ -568,13 +580,17 @@ export default class SubAgentPlugin implements Plugin {
     private async executeSubAgent(
         subAgent: NormalizedSubAgent,
         request: DelegationInput,
-        writer?: UIMessageStreamWriter<VibesUIMessage>
+        writer?: UIMessageStreamWriter<VibesUIMessage>,
+        abortSignal?: AbortSignal
     ): Promise<ExecutionResult> {
         const tracker: CompletionTracker = { callCount: 0, payload: null };
         const agent = this.createAgent(this.buildAgentConfig(subAgent, this.buildCompletionTool(tracker)));
         const rawResult = await agent.stream({
             messages: [{ role: 'user', content: buildDelegationMessage(request) }],
             ...(writer ? { writer } : {}),
+            // Propagate the parent's abort so stopping the top-level run also
+            // cancels in-flight sub-agents instead of leaving them running.
+            ...(abortSignal ? { abortSignal } : {}),
         });
         const [rawText, steps] = await Promise.all([
             rawResult.text,
@@ -646,7 +662,7 @@ export default class SubAgentPlugin implements Plugin {
         };
     }
 
-    private async runDelegationTask(subAgent: NormalizedSubAgent, request: DelegationInput): Promise<DelegationSuccessResult | DelegationErrorResult> {
+    private async runDelegationTask(subAgent: NormalizedSubAgent, request: DelegationInput, abortSignal?: AbortSignal): Promise<DelegationSuccessResult | DelegationErrorResult> {
         const delegationId = `${sanitizeFileComponent(subAgent.name)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const delegationOperation = this.streamContext?.createOperation({
             name: `delegation-${subAgent.name}`,
@@ -656,136 +672,130 @@ export default class SubAgentPlugin implements Plugin {
             agentName: subAgent.name,
             heartbeatMessage: `${subAgent.name} is still working on the delegated task`,
         });
-        this.writer?.writeDelegation(delegationId, subAgent.name, truncateTask(request.task), 'starting');
+        const truncatedTask = truncateTask(request.task);
+        this.writer?.writeDelegation(delegationId, subAgent.name, truncatedTask, 'starting');
         delegationOperation?.milestone(`Starting delegated task for ${subAgent.name}`, { phase: 'start' });
 
-        const cachedEntry = this.registry.get(subAgent.name, request, this.cacheTTL);
-        if (cachedEntry) {
-            if (cachedEntry.artifactPath && !existsSync(path.resolve(process.cwd(), this.workspaceDir, cachedEntry.artifactPath))) {
-                this.registry.delete(subAgent.name, request);
-            } else {
-                this.writer?.writeDelegation(delegationId, subAgent.name, truncateTask(request.task), 'complete', {
-                    artifactPath: cachedEntry.artifactPath,
-                    summary: cachedEntry.summary,
-                });
-                delegationOperation?.complete(`Used cached delegation result from ${subAgent.name}`, {
-                    phase: 'cache',
-                });
-                return {
-                    status: 'completed',
+        // Child-scoped streaming, created once and reused by the success and
+        // failure paths (so the catch block no longer re-creates it).
+        const scopedWriter = this.streamContext
+            ? createScopedUIMessageStreamWriter(this.streamContext.rawWriter, {
+                defaults: {
+                    agentName: subAgent.name,
                     delegationId,
-                    summary: cachedEntry.summary,
-                    cached: true,
-                    savedTo: cachedEntry.artifactPath,
-                    filesCreated: cachedEntry.filesCreated.length > 0 ? cachedEntry.filesCreated : undefined,
-                    completionConfirmed: true,
-                };
-            }
-        }
-
-        this.writer?.writeDelegation(delegationId, subAgent.name, truncateTask(request.task), 'in_progress');
-        delegationOperation?.milestone(`Streaming delegated work from ${subAgent.name}`, { phase: 'stream' });
-
-        try {
-            const scopedWriter = this.streamContext
-                ? createScopedUIMessageStreamWriter(this.streamContext.rawWriter, {
-                    defaults: {
-                        agentName: subAgent.name,
-                        delegationId,
-                        parentOperationId: delegationOperation?.operationId,
-                    },
-                    idPrefix: `${delegationId}:`,
-                })
-                : undefined;
-            const childStreamWriter = scopedWriter
-                ? createDataStreamWriter(scopedWriter).withDefaults({
+                    parentOperationId: delegationOperation?.operationId,
+                },
+                idPrefix: `${delegationId}:`,
+            })
+            : undefined;
+        const childStreamOperation = scopedWriter
+            ? createDataStreamWriter(scopedWriter)
+                .withDefaults({
                     plugin: this.name,
                     agentName: subAgent.name,
                     delegationId,
                     parentOperationId: delegationOperation?.operationId,
                 })
-                : undefined;
-            const childStreamOperation = childStreamWriter?.createOperation({
-                name: `delegated-${subAgent.name}`,
-                toolName: 'subagent',
-                plugin: this.name,
-                agentName: subAgent.name,
-                delegationId,
-                parentOperationId: delegationOperation?.operationId,
-                heartbeatMessage: `${subAgent.name} is analyzing and executing the delegated task`,
-            });
-            childStreamOperation?.progress('starting', {
-                phase: 'start',
-                message: `${subAgent.name} started delegated work`,
-            });
-            childStreamOperation?.milestone(`Delegated work is active in ${subAgent.name}`, {
-                phase: 'stream',
-            });
-            const execution = await this.executeSubAgent(subAgent, request, scopedWriter);
+                .createOperation({
+                    name: `delegated-${subAgent.name}`,
+                    toolName: 'subagent',
+                    plugin: this.name,
+                    agentName: subAgent.name,
+                    delegationId,
+                    parentOperationId: delegationOperation?.operationId,
+                    heartbeatMessage: `${subAgent.name} is analyzing and executing the delegated task`,
+                })
+            : undefined;
 
-            if (!execution.completionPayload) {
+        const emitFailure = (failure: DelegationErrorResult): void => {
+            this.writer?.writeDelegation(delegationId, subAgent.name, truncatedTask, 'failed', {
+                artifactPath: failure.savedTo,
+                summary: failure.summary,
+                error: failure.error,
+            });
+            delegationOperation?.fail(failure.error, { toolName: 'delegate', phase: 'failed', context: failure.errorCode });
+            childStreamOperation?.fail(failure.error, { toolName: 'subagent', phase: 'failed', context: failure.errorCode });
+        };
+
+        // Cache lookup — skipped when the caller asked for a fresh run.
+        if (!request.fresh) {
+            const cachedEntry = this.registry.get(subAgent.name, request, this.cacheTTL);
+            if (cachedEntry) {
+                if (cachedEntry.artifactPath && !existsSync(path.resolve(process.cwd(), this.workspaceDir, cachedEntry.artifactPath))) {
+                    this.registry.delete(subAgent.name, request);
+                } else {
+                    this.writer?.writeDelegation(delegationId, subAgent.name, truncatedTask, 'complete', {
+                        artifactPath: cachedEntry.artifactPath,
+                        summary: cachedEntry.summary,
+                        cached: true,
+                    });
+                    delegationOperation?.complete(`Used cached delegation result from ${subAgent.name}`, { phase: 'cache' });
+                    return {
+                        status: 'completed',
+                        delegationId,
+                        summary: cachedEntry.summary,
+                        cached: true,
+                        savedTo: cachedEntry.artifactPath,
+                        filesCreated: cachedEntry.filesCreated.length > 0 ? cachedEntry.filesCreated : undefined,
+                        completionConfirmed: true,
+                    };
+                }
+            }
+        }
+
+        this.writer?.writeDelegation(delegationId, subAgent.name, truncatedTask, 'in_progress');
+        delegationOperation?.milestone(`Streaming delegated work from ${subAgent.name}`, { phase: 'stream' });
+        childStreamOperation?.progress('starting', { phase: 'start', message: `${subAgent.name} started delegated work` });
+        childStreamOperation?.milestone(`Delegated work is active in ${subAgent.name}`, { phase: 'stream' });
+
+        try {
+            const execution = await this.executeSubAgent(subAgent, request, scopedWriter, abortSignal);
+            const completion = execution.completionPayload;
+            const inferredSummary = execution.rawText?.trim() ?? '';
+
+            // No structured completion AND no output: genuinely nothing to report.
+            if (!completion && !inferredSummary) {
                 const failure = await this.createErrorResult({
                     delegationId,
                     subAgent,
                     request,
                     errorCode: 'missing_completion',
-                    summary: `${subAgent.name} did not call ${COMPLETION_TOOL_NAME}.`,
-                    error: `Delegated task completed without a structured ${COMPLETION_TOOL_NAME} signal.`,
+                    summary: `${subAgent.name} produced no output and did not call ${COMPLETION_TOOL_NAME}.`,
+                    error: `Delegated task finished with no result.`,
                     rawText: execution.rawText,
                 });
-                this.writer?.writeDelegation(delegationId, subAgent.name, truncateTask(request.task), 'failed', {
-                    artifactPath: failure.savedTo,
-                    summary: failure.summary,
-                    error: failure.error,
-                });
-                delegationOperation?.fail(failure.error, {
-                    toolName: 'delegate',
-                    phase: 'failed',
-                    context: failure.errorCode,
-                });
-                childStreamOperation?.fail(failure.error, {
-                    toolName: 'subagent',
-                    phase: 'failed',
-                    context: failure.errorCode,
-                });
+                emitFailure(failure);
                 return failure;
             }
 
-            if (hasPostCompletionActivity(execution)) {
+            // Only NEW tool calls after completion are a real violation — a
+            // trailing "Done." is fine and shouldn't discard the work.
+            if (completion && hasPostCompletionToolCalls(execution)) {
                 const failure = await this.createErrorResult({
                     delegationId,
                     subAgent,
                     request,
                     errorCode: 'post_completion_activity',
-                    summary: `${subAgent.name} continued working after calling ${COMPLETION_TOOL_NAME}.`,
-                    error: `Delegated task kept producing output after completion was reported.`,
+                    summary: `${subAgent.name} kept taking actions after calling ${COMPLETION_TOOL_NAME}.`,
+                    error: `Delegated task issued more tool calls after completion was reported.`,
                     rawText: execution.rawText,
                 });
-                this.writer?.writeDelegation(delegationId, subAgent.name, truncateTask(request.task), 'failed', {
-                    artifactPath: failure.savedTo,
-                    summary: failure.summary,
-                    error: failure.error,
-                });
-                delegationOperation?.fail(failure.error, {
-                    toolName: 'delegate',
-                    phase: 'failed',
-                    context: failure.errorCode,
-                });
-                childStreamOperation?.fail(failure.error, {
-                    toolName: 'subagent',
-                    phase: 'failed',
-                    context: failure.errorCode,
-                });
+                emitFailure(failure);
                 return failure;
             }
 
+            // Graceful fallback: no structured completion, but the sub-agent
+            // produced output — use its final text as the summary rather than
+            // throwing the work away (common with weaker models).
+            const inferred = !completion;
             const success: DelegationSuccessResult = {
                 status: 'completed',
                 delegationId,
-                summary: execution.completionPayload.summary,
+                summary: completion ? completion.summary : inferSummary(inferredSummary),
                 cached: false,
-                filesCreated: execution.completionPayload.files.length > 0 ? execution.completionPayload.files : undefined,
-                completionConfirmed: true,
+                inferred: inferred || undefined,
+                filesCreated: completion?.files.length ? completion.files : undefined,
+                completionConfirmed: !inferred,
             };
 
             if (this.shouldWriteArtifact(subAgent.artifactMode, 'success')) {
@@ -795,7 +805,7 @@ export default class SubAgentPlugin implements Plugin {
                         agentName: subAgent.name,
                         request,
                         result: success,
-                        metadata: execution.completionPayload.metadata,
+                        metadata: completion?.metadata,
                     })
                 );
             }
@@ -809,16 +819,13 @@ export default class SubAgentPlugin implements Plugin {
                 filesCreated: success.filesCreated ?? [],
             });
 
-            this.writer?.writeDelegation(delegationId, subAgent.name, truncateTask(request.task), 'complete', {
+            this.writer?.writeDelegation(delegationId, subAgent.name, truncatedTask, 'complete', {
                 artifactPath: success.savedTo,
                 summary: success.summary,
+                inferred: inferred || undefined,
             });
-            delegationOperation?.complete(`Delegation completed: ${success.summary}`, {
-                phase: 'complete',
-            });
-            childStreamOperation?.complete(`Delegated work completed in ${subAgent.name}`, {
-                phase: 'complete',
-            });
+            delegationOperation?.complete(`Delegation completed: ${success.summary}`, { phase: 'complete' });
+            childStreamOperation?.complete(`Delegated work completed in ${subAgent.name}`, { phase: 'complete' });
             return success;
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -831,51 +838,15 @@ export default class SubAgentPlugin implements Plugin {
                 summary: `${subAgent.name} failed to complete the delegated task.`,
                 error: errorMessage,
             });
-            this.writer?.writeDelegation(delegationId, subAgent.name, truncateTask(request.task), 'failed', {
-                artifactPath: failure.savedTo,
-                summary: failure.summary,
-                error: failure.error,
-            });
-            delegationOperation?.fail(failure.error, {
-                toolName: 'delegate',
-                phase: 'failed',
-                context: failure.errorCode,
-            });
-            const scopedWriter = this.streamContext
-                ? createScopedUIMessageStreamWriter(this.streamContext.rawWriter, {
-                    defaults: {
-                        agentName: subAgent.name,
-                        delegationId,
-                        parentOperationId: delegationOperation?.operationId,
-                    },
-                    idPrefix: `${delegationId}:`,
-                })
-                : undefined;
-            scopedWriter && createDataStreamWriter(scopedWriter).withDefaults({
-                plugin: this.name,
-                agentName: subAgent.name,
-                delegationId,
-                parentOperationId: delegationOperation?.operationId,
-            }).createOperation({
-                name: `delegated-${subAgent.name}-failure`,
-                toolName: 'subagent',
-                plugin: this.name,
-                agentName: subAgent.name,
-                delegationId,
-                parentOperationId: delegationOperation?.operationId,
-                heartbeatEnabled: false,
-            }).fail(failure.error, {
-                toolName: 'subagent',
-                phase: 'failed',
-                context: failure.errorCode,
-            });
+            emitFailure(failure);
             return failure;
         }
     }
 
     private async scheduleParallelDelegations(
         tasks: DelegationInput[],
-        continueOnError: boolean
+        continueOnError: boolean,
+        abortSignal?: AbortSignal
     ): Promise<{
         success: boolean;
         total: number;
@@ -929,7 +900,7 @@ export default class SubAgentPlugin implements Plugin {
                 }
 
                 activeCount += 1;
-                void this.runDelegationTask(subAgent, task)
+                void this.runDelegationTask(subAgent, task, abortSignal)
                     .then(result => {
                         results[taskIndex] = result.status === 'completed'
                             ? {
@@ -989,7 +960,7 @@ export default class SubAgentPlugin implements Plugin {
         const delegateTool = tool({
             description: `Delegate a focused task to a specialized sub-agent.\n\nAvailable sub-agents:\n${availableAgents}`,
             inputSchema: delegationInputSchema,
-            execute: async (input) => {
+            execute: async (input, options) => {
                 const subAgent = this.normalizedSubAgents.get(input.agent_name);
                 if (!subAgent) {
                     return {
@@ -1001,7 +972,7 @@ export default class SubAgentPlugin implements Plugin {
                     };
                 }
 
-                return this.runDelegationTask(subAgent, input);
+                return this.runDelegationTask(subAgent, input, options?.abortSignal);
             },
         });
 
@@ -1011,8 +982,8 @@ export default class SubAgentPlugin implements Plugin {
                 tasks: z.array(delegationInputSchema).min(1).max(10).describe('Tasks to execute in parallel.'),
                 continueOnError: z.boolean().default(false).describe('If true, continue scheduling tasks after a failure.'),
             }),
-            execute: async ({ tasks, continueOnError }) => {
-                const result = await this.scheduleParallelDelegations(tasks, continueOnError);
+            execute: async ({ tasks, continueOnError }, options) => {
+                const result = await this.scheduleParallelDelegations(tasks, continueOnError, options?.abortSignal);
                 this.writer?.writeStatus(result.summary);
                 return result;
             },

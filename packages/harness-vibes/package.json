@@ -1,7 +1,7 @@
 {
   "name": "harness-vibes",
   "version": "1.0.0",
-  "description": "DeepAgents framework - A powerful AI agent orchestrator with multi-step reasoning, memory, and collaboration",
+  "description": "Vibes agent framework - A powerful AI agent orchestrator with multi-step reasoning, memory, and collaboration",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

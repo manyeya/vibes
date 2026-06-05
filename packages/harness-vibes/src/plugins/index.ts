@@ -1,5 +1,5 @@
 import { type Plugin } from "../core/types";
-import TodoListPlugin from "./todos";
+import TodosPlugin from "./todos";
 import TasksPlugin from "./tasks";
 import PlanningPlugin from "./planning";
 import ReasoningPlugin, { type ReasoningMode, type ThoughtBranch, type ThoughtEvaluation, type ReasoningConfig } from "./reasoning";
@@ -7,16 +7,17 @@ import ReflexionPlugin, { type Lesson, type ErrorAnalysis, type ReflexionConfig 
 import SemanticMemoryPlugin, { type Fact, type FactMatch, type SemanticMemoryConfig } from "./semantic-memory";
 import ProceduralMemoryPlugin, { type Pattern, type PatternApplication, type ProceduralMemoryConfig } from "./procedural-memory";
 import SwarmPlugin, { type AgentSignal, type SharedStateEntry, type SwarmConfig } from "./swarm";
-import SkillsPlugin from "./skill";
+import SkillsPlugin from "./skills";
 import FilesystemPlugin from "./filesystem";
 import BashPlugin from "./bash";
-import SubAgentPlugin, { type ParallelDelegationResult } from "./subagent";
+import SubAgentPlugin, { type ParallelDelegationResult } from "./sub-agent";
 import MemoryPlugin from "./memory";
 import SummarizationPlugin, { type SummarizationConfig } from "./summarization";
+import ArtifactPlugin, { type ArtifactKind, type ArtifactPluginConfig } from "./artifact";
 
 export {
     type Plugin,
-    TodoListPlugin,
+    TodosPlugin,
     TasksPlugin,
     PlanningPlugin,
     ReasoningPlugin,
@@ -48,4 +49,7 @@ export {
     MemoryPlugin,
     SummarizationPlugin,
     type SummarizationConfig,
+    ArtifactPlugin,
+    type ArtifactKind,
+    type ArtifactPluginConfig,
 }

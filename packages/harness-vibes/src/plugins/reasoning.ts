@@ -537,6 +537,21 @@ Use after evaluate_thoughts().`,
 
                     const selectedBranch = this.state.branches.find(b => b.id === selected.thoughtId);
 
+                    // Stream the updated branch statuses + the chosen branch so
+                    // the UI can show which thought won (and which were dropped).
+                    this.emitThoughts();
+                    this.writer?.writeReasoningSelection({
+                        cycle: this.state.cycleCount,
+                        selectedId: selected.thoughtId,
+                        thought: selectedBranch?.thought ?? '',
+                        expectedOutcome: selectedBranch?.expectedOutcome,
+                        score: selected.overallScore,
+                        reasoning: selected.reasoning,
+                        discardedIds: this.state.branches
+                            .filter(b => b.status === 'discarded')
+                            .map(b => b.id),
+                    });
+
                     this.notifyStatus(`Selected thought: ${selectedBranch?.thought.slice(0, 50)}... (score: ${selected.overallScore}/10)`);
                     this.createOperation('select-best-thought', 'select_best_thought')
                         ?.complete(`Selected thought with score ${selected.overallScore}/10`, {
@@ -700,9 +715,36 @@ ${modeInstructions[this.state.mode]}
     }
 
     /**
-     * Notify UI of new thought branches
+     * Stream the current branch set (with evaluation scores when available)
+     * as a `reasoning_thoughts` data part. Uses the cycle count as a stable
+     * key so the UI updates the same set in place across explore → evaluate
+     * → select.
+     */
+    private emitThoughts() {
+        if (!this.writer) return;
+        const byId = new Map(this.state.evaluations.map(e => [e.thoughtId, e]));
+        this.writer.writeReasoningThoughts(
+            this.state.cycleCount,
+            this.state.branches.map(b => {
+                const ev = byId.get(b.id);
+                return {
+                    id: b.id,
+                    thought: b.thought,
+                    expectedOutcome: b.expectedOutcome,
+                    confidence: b.confidence,
+                    effort: b.effort,
+                    status: b.status,
+                    ...(ev ? { score: ev.overallScore, reasoning: ev.reasoning } : {}),
+                };
+            })
+        );
+    }
+
+    /**
+     * Notify UI of new thought branches — streams the actual thoughts.
      */
     private notifyThoughts(branches: ThoughtBranch[]) {
+        this.emitThoughts();
         this.writer?.writeStatus(
             `Explored ${branches.length} thought branches`,
             this.state.cycleCount,
@@ -715,9 +757,10 @@ ${modeInstructions[this.state.mode]}
     }
 
     /**
-     * Notify UI of evaluations
+     * Notify UI of evaluations — re-streams the thoughts now carrying scores.
      */
     private notifyEvaluations(evaluations: ThoughtEvaluation[]) {
+        this.emitThoughts();
         const best = evaluations.reduce((a, b) =>
             a.overallScore > b.overallScore ? a : b
         );

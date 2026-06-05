@@ -8,15 +8,15 @@
  * can control the writer and pass it to the agent for plugin hooks.
  */
 
-import type { VibeAgent } from './agent';
+import type { AgentCore } from './agent-core';
 import type { ModelMessage, UIMessage, ToolSet, UIMessageChunk } from 'ai';
 import type { VibesUIMessage } from './streaming';
 import { createUIMessageStream, createUIMessageStreamResponse, convertToModelMessages } from 'ai';
 import type { AgentState } from './types';
-import type StateBackend from '../backend/statebackend';
+import type StateBackend from '../backend/state-backend';
 
 interface AgentStreamOptions {
-    agent: VibeAgent;
+    agent: AgentCore;
     uiMessages?: ModelMessage[];
     abortSignal?: AbortSignal;
     originalMessages?: ModelMessage[];
@@ -40,7 +40,7 @@ interface AgentStreamOptions {
 /**
  * Creates a streaming response with proper plugin writer integration.
  *
- * This follows the same pattern as the working /mimo-code/stream endpoint:
+ * This follows the same pattern as the working /vibe/stream endpoint:
  * 1. Creates a UI message stream with execute function that receives writer
  * 2. Calls agent.stream() with the writer (triggers plugin onStreamReady hooks)
  * 3. Uses writer.merge(result.toUIMessageStream()) to properly forward the agent's response
@@ -49,13 +49,57 @@ interface AgentStreamOptions {
  * The toUIMessageStream() method handles proper conversion of the agent's stream
  * to UI message chunks, including text deltas, tool calls, and tool results.
  */
-export async function createDeepAgentStreamResponse(
+export async function createAgentStreamResponse(
     options: AgentStreamOptions
 ): Promise<Response> {
     const { agent, uiMessages = [], abortSignal, originalMessages, backend, onChunk, onStreamEnd } = options;
 
-    // Create a UI message stream with an execute function that has writer access
+    // Create a UI message stream with an execute function that has writer
+    // access. The custom `onError` shape extracts useful provider context
+    // (HTTP status, response body) instead of leaving the client with a
+    // bare "Provider returned error" — typical for OpenRouter rate limits
+    // or upstream model failures.
     const stream = createUIMessageStream<VibesUIMessage>({
+        onError(error) {
+            const err = error as Error & {
+                cause?: unknown;
+                statusCode?: number;
+                responseBody?: unknown;
+                data?: unknown;
+            };
+            const status =
+                err?.statusCode ??
+                (typeof err?.cause === 'object' && err.cause && 'statusCode' in (err.cause as object)
+                    ? (err.cause as { statusCode?: number }).statusCode
+                    : undefined);
+            const body =
+                err?.responseBody ??
+                err?.data ??
+                (typeof err?.cause === 'object' && err.cause && 'responseBody' in (err.cause as object)
+                    ? (err.cause as { responseBody?: unknown }).responseBody
+                    : undefined);
+            const bodyText = typeof body === 'string'
+                ? body
+                : body !== undefined
+                    ? JSON.stringify(body)
+                    : undefined;
+
+            console.error('[agent-stream] provider error', {
+                message: err?.message,
+                statusCode: status,
+                responseBody: bodyText,
+                stack: err?.stack,
+            });
+
+            const parts: string[] = [];
+            if (status === 429) parts.push('Rate limit hit');
+            else if (status === 402) parts.push('Out of credits');
+            else if (status === 401) parts.push('Auth failed (check API key)');
+            else if (status) parts.push(`HTTP ${status}`);
+            parts.push(err?.message || 'provider error');
+            if (bodyText && bodyText.length < 500) parts.push(bodyText);
+            return parts.join(' — ');
+        },
         async execute({ writer }) {
             // Call the agent's stream method with the writer
             // The agent will call plugin onStreamReady hooks with this writer
@@ -116,7 +160,19 @@ export async function createDeepAgentStreamResponse(
                 backend.setState(state);
             }
         },
-        originalMessages: originalMessages as VibesUIMessage[] | undefined,
+        // Use the incoming UI messages as the conversation base so onFinish
+        // reports the FULL updated thread (prior messages + new assistant turn).
+        originalMessages: (originalMessages ?? uiMessages) as unknown as VibesUIMessage[] | undefined,
+        // Persist the complete UI messages. Their parts include the data-*
+        // activity (ToT thoughts, tool progress, delegation, status), so
+        // reloading a session restores the whole thread, not just text.
+        onFinish({ messages }) {
+            try {
+                (backend as { setUIMessages?: (m: unknown[]) => void } | undefined)?.setUIMessages?.(messages);
+            } catch (err) {
+                console.error('[agent-stream] failed to persist UI messages:', err);
+            }
+        },
     });
 
     // Resumable streams: tee the chunk stream when an `onChunk` observer is

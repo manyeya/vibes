@@ -227,6 +227,7 @@ export default class SkillsPlugin implements Plugin {
                         operation?.milestone(`Resolving skill "${name}"`, { phase: 'resolve' });
                         const { skill } = await this.activateSkill(name);
                         operation?.complete(`Activated skill: ${skill.name}`, { phase: 'complete' });
+                        this.writer?.writeSkill('activate', { name: skill.name });
 
                         return {
                             success: true,
@@ -260,6 +261,7 @@ export default class SkillsPlugin implements Plugin {
                     const deactivated = this.deactivateSkill(name);
                     if (deactivated) {
                         operation?.complete(`Deactivated skill: ${name}`, { phase: 'complete' });
+                        this.writer?.writeSkill('deactivate', { name });
                         return {
                             success: true,
                             message: `Skill "${name}" has been deactivated.`
@@ -288,6 +290,7 @@ export default class SkillsPlugin implements Plugin {
                     operation?.complete(`Listed ${this.skills.size} available skill${this.skills.size === 1 ? '' : 's'}`, {
                         phase: 'complete',
                     });
+                    this.writer?.writeSkill('list', { skills: Array.from(this.skills.keys()) });
                     return {
                         skills: Array.from(this.skills.values()).map(s => ({
                             name: s.name,

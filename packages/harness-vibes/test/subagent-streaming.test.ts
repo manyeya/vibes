@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import SubAgentPlugin from '../src/plugins/subagent';
+import SubAgentPlugin from '../src/plugins/sub-agent';
 import { createPluginStreamContext, type Plugin } from '../src/core/types';
 import {
   completionSteps,
@@ -91,7 +91,8 @@ describe('SubAgentPlugin streaming', () => {
         60 * 60 * 1000,
         4,
         () => ({
-          stream: async () => createStreamResult('missing completion', []),
+          // No completion call AND no output → a genuine failure.
+          stream: async () => createStreamResult('   ', []),
         } as any)
       );
 
@@ -101,7 +102,7 @@ describe('SubAgentPlugin streaming', () => {
       const delegationParts = parts.filter(part => part.type === 'data-delegation');
       expect(delegationParts).toHaveLength(3);
       expect(delegationParts[2].data.status).toBe('failed');
-      expect(delegationParts[2].data.error).toContain('structured task_completion signal');
+      expect(delegationParts[2].data.error).toContain('no result');
       expect(delegationParts[2].data.summary).toContain('did not call task_completion');
     } finally {
       await removeTempWorkspace(workspaceDir);

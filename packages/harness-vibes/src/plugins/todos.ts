@@ -17,8 +17,8 @@ import {
  * Plugin that provides a structured Todo List capability,
  * enabling the agent to plan and track its own progress.
  */
-export default class TodoListPlugin implements Plugin {
-    name = 'TodoListPlugin';
+export default class TodosPlugin implements Plugin {
+    name = 'TodosPlugin';
     private writer?: DataStreamWriter;
     private streamContext?: PluginStreamContext;
     private todos: TodoItem[] = [];

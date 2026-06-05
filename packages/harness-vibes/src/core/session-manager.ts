@@ -25,12 +25,29 @@
  */
 
 import * as path from 'path';
-import { VibeAgent } from './agent';
-import type { VibeAgentConfig } from './types';
-import SqliteBackend from '../backend/sqlitebackend';
-import type { SessionInfo } from '../backend/sqlitebackend';
+import { AgentCore } from './agent-core';
+import type { AgentCoreConfig, AgentState } from './types';
+import type { Sandbox } from './sandbox';
+import { LocalSandbox } from '../sandbox/local-sandbox';
+import SqliteBackend from '../backend/sqlite-backend';
+import type { SessionInfo } from '../backend/sqlite-backend';
 import type { UIMessageStreamWriter } from 'ai';
 import type { VibesUIMessage } from './streaming';
+
+/**
+ * Per-session context handed to a {@link SessionAgentFactory}. The factory
+ * (typically supplied by `Harness`) builds the actual agent for the
+ * session, so the store stays decoupled from any specific agent flavour.
+ */
+export interface SessionContext {
+    sessionId: string;
+    workspaceDir: string;
+    /** A sandbox rooted at the session workspace. */
+    sandbox: Sandbox;
+}
+
+/** Builds the agent instance for a session from its {@link SessionContext}. */
+export type SessionAgentFactory = (ctx: SessionContext) => AgentCore;
 
 /**
  * Root workspace directory
@@ -55,7 +72,7 @@ export interface SessionConfig {
 /**
  * Agent creation configuration for a session
  */
-export interface SessionAgentConfig extends Partial<VibeAgentConfig> {
+export interface SessionAgentConfig extends Partial<AgentCoreConfig> {
     /** Workspace directory (will be set to session workspace) */
     workspaceDir?: string;
 }
@@ -63,11 +80,11 @@ export interface SessionAgentConfig extends Partial<VibeAgentConfig> {
 /**
  * Session instance with all associated resources
  */
-export interface SessionInstance {
+export interface StoredSession {
     /** Unique session identifier */
     id: string;
     /** The agent instance for this session */
-    agent: VibeAgent;
+    agent: AgentCore;
     /** Persistent storage backend for this session */
     backend: SqliteBackend;
     /** Session workspace directory (absolute path) */
@@ -100,25 +117,30 @@ export interface CleanupOptions {
  * Manages complete session lifecycle with per-session isolated workspaces.
  * Session working state is isolated while long-term memory stays shared.
  */
-export class HarnessSessionManager {
-    private sessions: Map<string, SessionInstance> = new Map();
+export class SessionStore {
+    private sessions: Map<string, StoredSession> = new Map();
     private dbPath: string;
     private sessionsDir: string;
 
-    /** Default agent configuration factory */
+    /** Default agent configuration (used only when no agentFactory is set) */
     private defaultAgentConfig?: SessionAgentConfig;
+    /** Builds the agent for each session. When unset, a bare AgentCore is used. */
+    private agentFactory?: SessionAgentFactory;
 
     constructor(config?: {
         /** Path to SQLite database (default: workspace/vibes.db) */
         dbPath?: string;
         /** Directory for session workspaces (default: workspace/sessions) */
         sessionsDir?: string;
-        /** Default agent configuration */
+        /** Default agent configuration (fallback when no agentFactory is provided) */
         defaultAgentConfig?: SessionAgentConfig;
+        /** Factory that builds the per-session agent (e.g. the flagship VibeAgent). */
+        agentFactory?: SessionAgentFactory;
     }) {
         this.dbPath = config?.dbPath || path.join(WORKSPACE_ROOT, 'vibes.db');
         this.sessionsDir = config?.sessionsDir || SESSIONS_DIR;
         this.defaultAgentConfig = config?.defaultAgentConfig;
+        this.agentFactory = config?.agentFactory;
 
         // Ensure sessions directory exists
         this.ensureSessionsDirectory();
@@ -131,7 +153,7 @@ export class HarnessSessionManager {
      * Each session gets its own workspace directory where all plugin
      * data is stored.
      */
-    async getOrCreateSession(config: SessionConfig = {}): Promise<SessionInstance> {
+    async getOrCreateSession(config: SessionConfig = {}): Promise<StoredSession> {
         // Use provided ID or generate a new one
         const sessionId = config.id || this.generateSessionId();
 
@@ -163,7 +185,7 @@ export class HarnessSessionManager {
     /**
      * Get an existing session without creating a new one
      */
-    getSession(sessionId: string): SessionInstance | undefined {
+    getSession(sessionId: string): StoredSession | undefined {
         return this.sessions.get(sessionId);
     }
 
@@ -173,33 +195,42 @@ export class HarnessSessionManager {
     private async createSession(
         sessionId: string,
         config: SessionConfig
-    ): Promise<SessionInstance> {
+    ): Promise<StoredSession> {
         const createdAt = new Date();
 
         // Create session workspace directory
         const workspaceDir = path.join(this.sessionsDir, sessionId);
         await this.ensureDirectory(workspaceDir);
 
-        // Create SQLite backend for this session
+        // Create SQLite backend for this session. NOTE: the SqliteBackend
+        // constructor eagerly inserts a bare session row, so a "create only if
+        // missing" guard never fires — which silently dropped the caller's
+        // title. Persist title/metadata via updateSession instead so the
+        // user-provided title is actually saved.
         const backend = new SqliteBackend(this.dbPath, sessionId);
-
-        // Create session record in database
         const existingSession = await backend.getSession(sessionId);
-        if (!existingSession) {
-            await backend.createSession(config.title, {
-                ...config.metadata,
-                workspaceDir,
-                createdAt: createdAt.toISOString(),
+        const alreadyTitled = Boolean(existingSession?.metadata?.title);
+        if (config.title !== undefined || config.metadata !== undefined || !alreadyTitled) {
+            await backend.updateSession(sessionId, {
+                title: config.title,
+                metadata: {
+                    ...(existingSession?.metadata ?? {}),
+                    ...config.metadata,
+                    workspaceDir,
+                    createdAt: existingSession?.metadata?.createdAt ?? createdAt.toISOString(),
+                },
             });
         }
 
-        // Build agent configuration with session workspace
-        const agentConfig = this.buildAgentConfig(sessionId, workspaceDir);
+        // Build the agent. The factory (when provided) constructs the real
+        // agent — typically the flagship VibeAgent — rooted at a sandbox for
+        // this workspace. Without a factory we fall back to a bare AgentCore.
+        const sandbox = new LocalSandbox(workspaceDir);
+        const agent = this.agentFactory
+            ? this.agentFactory({ sessionId, workspaceDir, sandbox })
+            : new AgentCore(this.buildAgentConfig(sessionId, workspaceDir));
 
-        // Create agent instance
-        const agent = new VibeAgent(agentConfig);
-
-        const instance: SessionInstance = {
+        const instance: StoredSession = {
             id: sessionId,
             agent,
             backend,
@@ -219,7 +250,7 @@ export class HarnessSessionManager {
     private buildAgentConfig(
         sessionId: string,
         workspaceDir: string
-    ): VibeAgentConfig {
+    ): AgentCoreConfig {
         const baseConfig = this.defaultAgentConfig || {};
 
         // All plugin paths should point to the session workspace
@@ -228,7 +259,7 @@ export class HarnessSessionManager {
             workspaceDir,
             // Session ID is passed through metadata for plugins to use
             sessionId,
-        } as VibeAgentConfig;
+        } as AgentCoreConfig;
     }
 
     /**
@@ -268,6 +299,29 @@ export class HarnessSessionManager {
         const sessions = await backend.listSessions();
         backend.close();
         return sessions;
+    }
+
+    /**
+     * Read a session's persisted state (messages, summary, metadata) without
+     * loading the session or building its agent. Cheap, read-only — intended
+     * for HTTP endpoints that just render history.
+     */
+    readState(sessionId: string): AgentState {
+        const backend = new SqliteBackend(this.dbPath, sessionId);
+        const state = backend.getState();
+        backend.close();
+        return state;
+    }
+
+    /**
+     * Read the persisted UI messages (parts include data-* activity) for a
+     * session, or null if none were stored. Cheap, read-only.
+     */
+    readUIMessages(sessionId: string): unknown[] | null {
+        const backend = new SqliteBackend(this.dbPath, sessionId);
+        const ui = backend.getUIMessages();
+        backend.close();
+        return ui;
     }
 
     /**
@@ -336,7 +390,7 @@ export class HarnessSessionManager {
     /**
      * Get all currently loaded sessions
      */
-    getLoadedSessions(): SessionInstance[] {
+    getLoadedSessions(): StoredSession[] {
         return Array.from(this.sessions.values());
     }
 
@@ -463,4 +517,4 @@ export class HarnessSessionManager {
 /**
  * Default session manager instance
  */
-export const defaultSessionManager = new HarnessSessionManager();
+export const defaultSessionManager = new SessionStore();

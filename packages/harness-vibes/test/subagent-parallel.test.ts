@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import SubAgentPlugin from '../src/plugins/subagent';
-import type { Plugin, VibeAgentConfig } from '../src/core/types';
+import SubAgentPlugin from '../src/plugins/sub-agent';
+import type { Plugin, AgentCoreConfig } from '../src/core/types';
 import {
   completionSteps,
   createStreamResult,
@@ -24,7 +24,7 @@ function createBuiltInPlugins(): Plugin[] {
 function createParallelPlugin(options: {
   workspaceDir: string;
   maxConcurrentAgents: number;
-  generate: (config: VibeAgentConfig, call: { messages?: any[] }) => Promise<any>;
+  generate: (config: AgentCoreConfig, call: { messages?: any[] }) => Promise<any>;
 }) {
   return new SubAgentPlugin(
     new Map([
@@ -98,7 +98,7 @@ describe('SubAgentPlugin parallel delegation', () => {
           calls += 1;
           const taskText = String(call.messages?.[0]?.content ?? '');
           if (taskText.includes('Task 1')) {
-            return createStreamResult('failed before completion', []);
+            return createStreamResult('   ', []); // no output + no completion → genuine failure
           }
           await recordCompletion(config, 'done');
           return createStreamResult('done', completionSteps('done'));
@@ -135,7 +135,7 @@ describe('SubAgentPlugin parallel delegation', () => {
           calls += 1;
           const taskText = String(call.messages?.[0]?.content ?? '');
           if (taskText.includes('Task 2')) {
-            return createStreamResult('failed before completion', []);
+            return createStreamResult('   ', []); // no output + no completion → genuine failure
           }
           await recordCompletion(config, 'done');
           return createStreamResult('done', completionSteps('done'));

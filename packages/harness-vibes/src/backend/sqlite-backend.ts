@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { AgentState, TodoItem, TaskItem, TaskTemplate } from "../core/types";
 import * as path from "path";
-import StateBackend from "./statebackend";
+import StateBackend from "./state-backend";
 
 /**
  * Result from execution order calculation
@@ -117,6 +117,11 @@ export default class SqliteBackend extends StateBackend {
 
         void SqliteBackend.SCHEMA_VERSION;
 
+        // Forward-compatible column for persisted UI messages (message parts
+        // including data-* activity). Added unconditionally + idempotently so
+        // existing databases gain the column without a version bump.
+        try { this.db.run(`ALTER TABLE sessions ADD COLUMN ui_messages TEXT`); } catch { /* column exists */ }
+
         // Ensure session exists
         const session = this.db.query("SELECT id FROM sessions WHERE id = ?").get(this.sessionId);
         if (!session) {
@@ -191,6 +196,35 @@ export default class SqliteBackend extends StateBackend {
         })();
     }
 
+
+    /**
+     * Persist the full UI message list for this session. These carry every
+     * rendered part — text, reasoning, tool, and data-* activity (ToT
+     * thoughts, tool progress, delegation, …) — so a reload restores the
+     * whole conversation, not just the assistant text. Stored separately
+     * from the model `messages` table (which feeds the agent's context).
+     */
+    setUIMessages(messages: unknown[]): void {
+        const now = new Date().toISOString();
+        this.db.run(
+            "UPDATE sessions SET ui_messages = ?, updated_at = ? WHERE id = ?",
+            [JSON.stringify(messages), now, this.sessionId]
+        );
+    }
+
+    /** Read persisted UI messages, or null when none have been stored. */
+    getUIMessages(): unknown[] | null {
+        const row = this.db
+            .query("SELECT ui_messages FROM sessions WHERE id = ?")
+            .get(this.sessionId) as { ui_messages?: string } | undefined;
+        if (!row?.ui_messages) return null;
+        try {
+            const parsed = JSON.parse(row.ui_messages);
+            return Array.isArray(parsed) ? parsed : null;
+        } catch {
+            return null;
+        }
+    }
 
     /**
      * List all sessions with metadata

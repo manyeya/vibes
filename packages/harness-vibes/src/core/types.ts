@@ -202,6 +202,8 @@ export interface SubAgent {
     model?: LanguageModel;
     /** Whether this sub-agent may delegate further work */
     allowSubdelegation?: boolean;
+    /** Max reasoning steps for this sub-agent's run (default: 30). */
+    maxSteps?: number;
     /** Whether to persist sub-agent artifacts for audit/debugging */
     artifactMode?: 'always' | 'errors-only' | 'never';
     /** Optional approval policy for custom sub-agent tools */
@@ -361,9 +363,9 @@ export {
 } from './streaming.js';
 
 /**
- * Configuration for initializing a VibeAgent instance.
+ * Configuration for initializing a AgentCore instance.
  */
-export interface VibeAgentConfig {
+export interface AgentCoreConfig {
     /** The AI model to use */
     model: LanguageModel;
     /** The base system instructions */
@@ -401,10 +403,10 @@ export interface VibeAgentConfig {
 }
 
 /**
- * Result returned by VibeAgent.generate()
+ * Result returned by AgentCore.generate()
  * Extends GenerateTextResult with additional agent-specific fields
  */
-export interface VibeAgentGenerateResult<TOOLS extends ToolSet = ToolSet>
+export interface AgentCoreGenerateResult<TOOLS extends ToolSet = ToolSet>
     extends GenerateTextResult<TOOLS, never> {
     /** The current agent state after generation */
     state: AgentState;
@@ -413,7 +415,7 @@ export interface VibeAgentGenerateResult<TOOLS extends ToolSet = ToolSet>
 }
 
 /**
- * Result returned by VibeAgent.stream() - same as StreamTextResult from AI SDK
+ * Result returned by AgentCore.stream() - same as StreamTextResult from AI SDK
  * Using ToolSet for tool types due to dynamic tool registration
  */
-export type VibeAgentStreamResult = StreamTextResult<ToolSet, never>;
+export type AgentCoreStreamResult = StreamTextResult<ToolSet, never>;

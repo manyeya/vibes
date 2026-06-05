@@ -12,9 +12,9 @@ import {
 } from 'ai';
 import {
     VibesUIMessage,
-    VibeAgentConfig,
-    VibeAgentGenerateResult,
-    VibeAgentStreamResult,
+    AgentCoreConfig,
+    AgentCoreGenerateResult,
+    AgentCoreStreamResult,
     PluginStreamContext,
     Plugin,
     ErrorEntry,
@@ -58,7 +58,7 @@ interface PrepareCallOptions {
 }
 
 /**
- * VibeAgent is the core engine for autonomous multi-step reasoning.
+ * AgentCore is the core engine for autonomous multi-step reasoning.
  * Extends ToolLoopAgent for proper AI SDK integration and onData callback support.
  *
  * Deep Agent Features:
@@ -73,7 +73,7 @@ interface PrepareCallOptions {
  * - Built-in tool loop management
  * - prepareCall hook for custom logic injection
  */
-export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
+export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
     protected plugins: Plugin[] = [];
     protected model: LanguageModel;
     protected customSystemPrompt: string;
@@ -83,6 +83,13 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     protected toolsRequiringApproval: ToolsRequiringApprovalConfig = [];
     protected allowedTools?: string[];
     protected blockedTools?: string[];
+    /**
+     * Optional per-run model override. When set, every step uses this model
+     * instead of the one the agent was constructed with (unless a plugin
+     * explicitly picks a different model for a step). Powers UI model
+     * selectors without rebuilding the cached agent.
+     */
+    protected modelOverride?: LanguageModel;
     /** Error log tracked separately from context (never summarized) */
     protected errorLog: ErrorEntry[] = [];
     /** Threshold for content compression (characters) */
@@ -93,6 +100,14 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     // Tool cache - initialize with empty object so tools getter always has a value
     protected toolCache: Record<string, unknown> = {};
     protected pluginsVersion: number = 0;
+    /**
+     * The plugin count the current `toolCache` was actually built from.
+     * `-1` means "never built / invalidated". The cache is only reused when
+     * this still equals `this.plugins.length`, which prevents a stale cache
+     * from sticking when plugins are added after an early build (e.g. the
+     * base `preloadTools()` racing with a subclass adding default plugins).
+     */
+    protected toolCacheVersion: number = -1;
     protected toolOwners: Record<string, string> = {};
     protected activeStreamContext?: PluginStreamContext;
     /**
@@ -115,7 +130,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         totalTokens: 0,
     };
 
-    protected static resolveStopWhen(config: VibeAgentConfig) {
+    protected static resolveStopWhen(config: AgentCoreConfig) {
         const maxStepCondition = stepCountIs(config.maxSteps ?? 20);
         if (!config.stopWhen) {
             return maxStepCondition;
@@ -126,7 +141,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             : [config.stopWhen, maxStepCondition];
     }
 
-    constructor(config: VibeAgentConfig) {
+    constructor(config: AgentCoreConfig) {
         // Initialize ToolLoopAgent with base configuration. We hook both
         // prepareCall (once per stream/generate, assembles stable system
         // instructions) and prepareStep (every step, prunes context, fans
@@ -153,7 +168,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                     await userOnStepFinish(step);
                 }
             },
-            stopWhen: VibeAgent.resolveStopWhen(config),
+            stopWhen: AgentCore.resolveStopWhen(config),
             prepareCall: async (baseOptions) => {
                 return this.prepareCallOverride(baseOptions as any);
             },
@@ -202,7 +217,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     /**
      * Return the accumulated token usage for the most recent stream and
      * reset the internal counter to zero. Intended to be called by
-     * `createDeepAgentStreamResponse` after the stream completes so the
+     * `createAgentStreamResponse` after the stream completes so the
      * usage can be added to the persisted `AgentState.metadata.usage`.
      */
     consumeLastStreamUsage(): { inputTokens: number; outputTokens: number; totalTokens: number } {
@@ -220,6 +235,15 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         // Invalidate tool cache when plugin is added
         this.pluginsVersion = this.plugins.length;
         this.toolCache = {};
+        this.toolCacheVersion = -1;
+    }
+
+    /**
+     * Override the model used for subsequent runs (per-request model
+     * selection). Pass `undefined` to revert to the constructed model.
+     */
+    setModelOverride(model?: LanguageModel): void {
+        this.modelOverride = model;
     }
 
     /**
@@ -396,6 +420,13 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             merged.activeTools = Array.from(activeToolsSet);
         }
 
+        // Per-request model override (e.g. a UI model selector). Applies to
+        // every step of the main loop unless a plugin explicitly chose a
+        // different model for this step.
+        if (this.modelOverride && merged.model === undefined) {
+            merged.model = this.modelOverride;
+        }
+
         return merged;
     }
 
@@ -407,8 +438,8 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
      */
     override async stream(
         options?: any
-    ): Promise<VibeAgentStreamResult> {
-        // Extract VibeAgent-specific options (writer)
+    ): Promise<AgentCoreStreamResult> {
+        // Extract AgentCore-specific options (writer)
         // Also extract 'prompt' to avoid conflicts with 'messages' in super.stream()
         const { messages, writer, prompt, ...agentOptions } = options || {};
 
@@ -451,7 +482,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                 this.activeStreamContext = undefined;
             }
         }).catch((error: Error) => {
-            console.error('[VibeAgent] Stream completion error:', error);
+            console.error('[AgentCore] Stream completion error:', error);
             if (this.activeStreamContext === streamContext) {
                 this.activeStreamContext = undefined;
             }
@@ -467,8 +498,8 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
      */
     override async generate(
         options?: AgentCallParameters<never, ToolSet> & { messages?: UIMessage[] | ModelMessage[] }
-    ): Promise<VibeAgentGenerateResult> {
-        // Extract VibeAgent-specific options
+    ): Promise<AgentCoreGenerateResult> {
+        // Extract AgentCore-specific options
         const { messages, ...agentOptions } = options as any;
 
         // Convert messages if provided
@@ -486,24 +517,35 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             (step.content?.filter((part) => part.type === 'tool-error') ?? []) as Array<{ type: 'tool-error' }>
         ) ?? [];
 
-        return {
-            ...result,
+        // NOTE: spreading the SDK result ({ ...result }) drops its getter
+        // properties (text, usage, response, …) because they live on the
+        // prototype, not as own enumerable keys. Attach our extra fields in
+        // place instead so the returned object keeps the full
+        // GenerateTextResult surface. `state` is derived from the response
+        // messages so callers — including the non-streaming API route and
+        // the public Session.prompt() facade — receive a populated
+        // AgentState rather than `undefined`.
+        const responseMessages = (result.response?.messages ?? []) as ModelMessage[];
+        return Object.assign(result, {
             toolErrors: toolErrors.length > 0 ? toolErrors : undefined,
-        } as VibeAgentGenerateResult;
+            state: { messages: responseMessages, metadata: {} },
+        }) as unknown as AgentCoreGenerateResult;
     }
 
     // ============ TOOL MANAGEMENT ============
 
     protected async getAllTools(allowedTools?: string[]): Promise<Record<string, unknown>> {
-        // Cache bust: always rebuild if allowedTools filter is specified
-        if (!allowedTools && Object.keys(this.toolCache).length > 0) {
+        // Reuse the cache only when it was built from the CURRENT plugin set.
+        // Checking the built-at version (not just "non-empty") closes a
+        // constructor race: the base preloadTools() can populate the cache
+        // before a subclass finishes adding its default plugins, which would
+        // otherwise leave a stale, tool-poor cache stuck forever.
+        if (
+            !allowedTools &&
+            this.toolCacheVersion === this.plugins.length &&
+            Object.keys(this.toolCache).length > 0
+        ) {
             return this.toolCache;
-        }
-
-        // Invalidate cache if plugin was added/removed
-        const currentPluginsVersion = this.plugins.length;
-        if (this.pluginsVersion !== currentPluginsVersion && Object.keys(this.toolCache).length > 0) {
-            this.toolCache = {};
         }
 
         const allTools: Record<string, unknown> = {};
@@ -612,7 +654,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                             if (attempt < this.maxRetries) {
                                 // Exponential backoff before retry
                                 await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 100));
-                                console.warn(`[VibeAgent] Tool ${toolName} failed (attempt ${attempt + 1}/${this.maxRetries + 1}), retrying...`);
+                                console.warn(`[AgentCore] Tool ${toolName} failed (attempt ${attempt + 1}/${this.maxRetries + 1}), retrying...`);
                             }
                         }
                     }
@@ -631,7 +673,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                         try {
                             await plugin.onError?.(lastError!);
                         } catch (hookError) {
-                            console.error(`[VibeAgent] Plugin onError hook error:`, hookError);
+                            console.error(`[AgentCore] Plugin onError hook error:`, hookError);
                         }
                     }
 
@@ -658,12 +700,14 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
             if (!allowedTools) {
                 this.toolCache = filtered;
                 this.pluginsVersion = this.plugins.length;
+                this.toolCacheVersion = this.plugins.length;
             }
             return filtered;
         }
 
         this.toolCache = resolvedTools;
         this.pluginsVersion = this.plugins.length;
+        this.toolCacheVersion = this.plugins.length;
         return resolvedTools;
     }
 
@@ -700,7 +744,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         }
 
         if (process.env.DEBUG_VIBES) {
-            console.error(`[VibeAgent] Error logged:`, { toolName, error, context });
+            console.error(`[AgentCore] Error logged:`, { toolName, error, context });
         }
     }
 
@@ -755,15 +799,40 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
                 .map(part => {
                     if (part.type === 'text') return part.text;
                     if (part.type === 'tool-call') {
-                        const tc = part as { toolName?: string; args?: unknown };
-                        const argsStr = tc.args ? JSON.stringify(tc.args).slice(0, 200) : 'no args';
+                        const tc = part as { toolName?: string; args?: unknown; input?: unknown };
+                        const rawArgs = tc.args ?? tc.input;
+                        const argsStr = rawArgs ? JSON.stringify(rawArgs).slice(0, 200) : 'no args';
                         return `[Tool Call: ${tc.toolName || 'unknown'} with args: ${argsStr}]`;
+                    }
+                    // Tool results carry the LARGE payloads (file reads, command
+                    // output). Extracting their text is what makes the size +
+                    // token estimates — and therefore compression — accurate.
+                    if (part.type === 'tool-result') {
+                        return this.toolResultText(part);
                     }
                     return `[${part.type}]`;
                 })
                 .join('\n');
         }
         return String(msg.content || '');
+    }
+
+    /**
+     * Pull the textual payload out of a tool-result part across AI SDK output
+     * shapes ({ type:'text'|'json'|'error-text'|..., value }, or a legacy
+     * string).
+     */
+    protected toolResultText(part: unknown): string {
+        const out = (part as { output?: unknown })?.output;
+        if (out == null) return '';
+        if (typeof out === 'string') return out;
+        const value = (out as { value?: unknown }).value;
+        if (typeof value === 'string') return value;
+        try {
+            return JSON.stringify(value ?? out);
+        } catch {
+            return String(value ?? '');
+        }
     }
 
     /**
@@ -841,35 +910,48 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
     }
 
     /**
-     * Compress a single message using restorable references.
+     * Compress a single message with restorable references. Crucially this
+     * shrinks payloads IN PLACE while preserving message structure — a
+     * tool-result keeps its `toolCallId`/`toolName` (so the assistant
+     * tool-call ↔ tool-result pairing the provider requires stays intact),
+     * and an assistant message keeps its tool-call parts. Replacing the
+     * whole `content` with a bare string (the old behaviour) produced
+     * invalid messages and orphaned tool calls.
      */
-    protected compressMessage(msg: ModelMessage, content: string): ModelMessage {
-        const { toolName, args } = this.extractToolInfo(msg);
+    protected compressMessage(msg: ModelMessage, _content: string): ModelMessage {
+        const threshold = this.compressionThreshold;
 
-        // File read result - replace with file path reference
-        if (toolName === 'readFile' && args?.path) {
-            return { ...msg, content: `[File: ${args.path} - ${content.length} chars read. Use readFile() again if you need the full content.]` } as ModelMessage;
+        // Tool results carry the big file reads / command output. Truncate the
+        // OUTPUT of each oversized part, keeping the part (and its toolCallId).
+        if (msg.role === 'tool' && Array.isArray(msg.content)) {
+            const parts = (msg.content as any[]).map(part => {
+                if (part?.type !== 'tool-result') return part;
+                const text = this.toolResultText(part);
+                if (text.length < threshold) return part;
+                const ref = `[${part.toolName ?? 'tool'} output truncated — ${text.length} chars. Re-run the tool if you need the full result.]\n${this.summarizeLargeContent(text)}`;
+                return { ...part, output: { type: 'text', value: ref } };
+            });
+            return { ...msg, content: parts } as ModelMessage;
         }
 
-        // Bash command result - compress large outputs
-        if (toolName === 'bash' && args?.command) {
-            const commandPreview = args.command.length > 50
-                ? args.command.slice(0, 50) + '...'
-                : args.command;
-            return { ...msg, content: `[Command "${commandPreview}" output: ${content.length} chars. Run again if needed, or check workspace/logs/.]` } as ModelMessage;
-        }
-
-        // Generic large tool result - create restorable reference
-        if (toolName) {
-            return { ...msg, content: `[${toolName} result: ${content.length} chars. Key info preserved, run again if full details needed.\n\n${this.summarizeLargeContent(content)}]` } as ModelMessage;
-        }
-
-        // Assistant message with large text - summarize
+        // Assistant messages: shrink large TEXT only. NEVER drop tool-call
+        // parts — that would orphan their tool-results.
         if (msg.role === 'assistant') {
-            return { ...msg, content: `[Previous response: ${content.length} chars. ${this.summarizeLargeContent(content)}]` } as ModelMessage;
+            if (typeof msg.content === 'string') {
+                return msg.content.length < threshold
+                    ? msg
+                    : { ...msg, content: `[response truncated — ${msg.content.length} chars]\n${this.summarizeLargeContent(msg.content)}` } as ModelMessage;
+            }
+            if (Array.isArray(msg.content)) {
+                const parts = (msg.content as any[]).map(part => {
+                    if (part?.type !== 'text' || (part.text ?? '').length < threshold) return part;
+                    return { ...part, text: `[text truncated — ${part.text.length} chars]\n${this.summarizeLargeContent(part.text)}` };
+                });
+                return { ...msg, content: parts } as ModelMessage;
+            }
         }
 
-        // Default: keep original
+        // Default: keep original (never corrupt unknown shapes).
         return msg;
     }
 
@@ -972,7 +1054,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         }
 
         if (process.env.DEBUG_VIBES) {
-            console.log(`[VibeAgent] Pruned ${messages.length} → ${messagesToKeep.length} messages`);
+            console.log(`[AgentCore] Pruned ${messages.length} → ${messagesToKeep.length} messages`);
         }
 
         return messagesToKeep;
@@ -998,7 +1080,7 @@ export class VibeAgent extends ToolLoopAgent<never, ToolSet, never> {
         }
 
         if (process.env.DEBUG_VIBES) {
-            console.log('[VibeAgent] Converted Messages:', JSON.stringify(modelMessages, null, 2));
+            console.log('[AgentCore] Converted Messages:', JSON.stringify(modelMessages, null, 2));
         }
         return modelMessages;
     }

@@ -92,6 +92,38 @@ export interface VibesDataParts extends Record<string, unknown> {
         context?: string;
     };
 
+    /**
+     * Tree-of-Thoughts: the explored branches. Emitted with a stable id per
+     * reasoning cycle so the UI updates the same set in place as branches go
+     * proposed → evaluated (scored) → selected/discarded.
+     */
+    reasoning_thoughts: {
+        cycle: number;
+        thoughts: Array<{
+            id: string;
+            thought: string;
+            expectedOutcome: string;
+            confidence: number;
+            effort: 'low' | 'medium' | 'high';
+            status: 'proposed' | 'evaluated' | 'selected' | 'discarded';
+            /** Overall evaluation score (0-10), present once evaluated. */
+            score?: number;
+            /** Evaluator's reasoning, present once evaluated. */
+            reasoning?: string;
+        }>;
+    };
+
+    /** Tree-of-Thoughts: which branch was ultimately selected. */
+    reasoning_selection: {
+        cycle: number;
+        selectedId: string;
+        thought: string;
+        expectedOutcome?: string;
+        score?: number;
+        reasoning?: string;
+        discardedIds: string[];
+    };
+
     /** Updates to specific todo items for UI synchronization */
     todo_update: {
         id: string;
@@ -163,9 +195,13 @@ export interface VibesDataParts extends Record<string, unknown> {
 
     /** Memory system updates */
     memory_update: {
-        type: 'lesson' | 'fact' | 'pattern';
+        type: 'lesson' | 'fact' | 'pattern' | 'note';
         action: 'saved' | 'updated' | 'deleted';
         count?: number;
+        /** Short title/summary of what was stored (for richer display). */
+        title?: string;
+        /** Optional content preview. */
+        detail?: string;
     };
 
     /** Swarm coordination signals */
@@ -185,6 +221,59 @@ export interface VibesDataParts extends Record<string, unknown> {
         artifactPath?: string;
         summary?: string;
         error?: string;
+        /** True when the result was reused from cache instead of re-run. */
+        cached?: boolean;
+        /** True when the summary was inferred from output (no structured completion). */
+        inferred?: boolean;
+    };
+
+    /** Shell command execution (BashPlugin). */
+    command: {
+        command: string;
+        status: 'running' | 'complete';
+        exitCode?: number;
+        stdout?: string;
+        stderr?: string;
+    };
+
+    /** Filesystem operation (FilesystemPlugin). */
+    file_operation: {
+        operation: 'read' | 'write' | 'list';
+        path: string;
+        status: 'running' | 'complete';
+        /** Bytes written (write). */
+        bytes?: number;
+        /** Number of files found (list). */
+        fileCount?: number;
+        /** A short, truncated file list (list). */
+        files?: string[];
+    };
+
+    /** Skill activation / discovery (SkillsPlugin). */
+    skill: {
+        action: 'activate' | 'deactivate' | 'list';
+        name?: string;
+        /** Available skill names (list). */
+        skills?: string[];
+    };
+
+    /**
+     * A renderable artifact (website, document, diagram, chart) produced by the
+     * ArtifactPlugin and shown in the canvas side-panel. Streamed with a stable
+     * id so updates replace the same part in place; `version` bumps each edit.
+     */
+    artifact: {
+        id: string;
+        title: string;
+        kind: 'html' | 'markdown' | 'mermaid' | 'chart';
+        /** Raw source: HTML, markdown, mermaid syntax, or a chart JSON spec. */
+        content: string;
+        version: number;
+        status: 'streaming' | 'complete';
+        /** Sandbox-relative path the artifact was written to. */
+        path?: string;
+        /** One-line description of what the artifact is. */
+        summary?: string;
     };
 }
 
@@ -252,16 +341,30 @@ function transformDataPart(
         transformed.id = `${options.idPrefix}${transformed.id}`;
     }
 
-    if (
-        options.defaults &&
-        (transformed.type === 'data-status' ||
+    if (options.defaults) {
+        if (
+            transformed.type === 'data-status' ||
             transformed.type === 'data-tool_progress' ||
-            transformed.type === 'data-error')
-    ) {
-        transformed.data = {
-            ...options.defaults,
-            ...(transformed.data ?? {}),
-        };
+            transformed.type === 'data-error'
+        ) {
+            // These parts carry the full metadata bag (plugin/phase/operation).
+            transformed.data = {
+                ...options.defaults,
+                ...(transformed.data ?? {}),
+            };
+        } else if (options.defaults.delegationId || options.defaults.agentName) {
+            // Every OTHER data part (command, file_operation, reasoning_*,
+            // memory_update, skill, …) gets just the sub-agent attribution so
+            // the UI can nest it under the right delegation and show what the
+            // sub-agent is actually doing.
+            const attribution: Record<string, unknown> = {};
+            if (options.defaults.delegationId) attribution.delegationId = options.defaults.delegationId;
+            if (options.defaults.agentName) attribution.agentName = options.defaults.agentName;
+            transformed.data = {
+                ...attribution,
+                ...((transformed.data as Record<string, unknown> | undefined) ?? {}),
+            };
+        }
     }
 
     return transformed;
@@ -390,6 +493,35 @@ export class DataStreamWriter {
         } as const);
     }
 
+    /**
+     * Write/replace the Tree-of-Thoughts branch set for a reasoning cycle.
+     * Uses a stable id per cycle so the UI updates the same card in place as
+     * branches are proposed, then scored, then selected/discarded.
+     */
+    writeReasoningThoughts(
+        cycle: number,
+        thoughts: VibesDataParts['reasoning_thoughts']['thoughts']
+    ): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-reasoning_thoughts',
+            id: `reasoning-thoughts-${cycle}`,
+            data: { cycle, thoughts },
+        } as const);
+    }
+
+    /** Write the selected Tree-of-Thoughts branch for a reasoning cycle. */
+    writeReasoningSelection(
+        selection: VibesDataParts['reasoning_selection']
+    ): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-reasoning_selection',
+            id: `reasoning-selection-${selection.cycle}`,
+            data: selection,
+        } as const);
+    }
+
     /** Write todo update */
     writeTodoUpdate(
         id: string,
@@ -496,14 +628,15 @@ export class DataStreamWriter {
 
     /** Write memory update */
     writeMemoryUpdate(
-        type: 'lesson' | 'fact' | 'pattern',
+        type: 'lesson' | 'fact' | 'pattern' | 'note',
         action: 'saved' | 'updated' | 'deleted',
-        count?: number
+        count?: number,
+        options: { title?: string; detail?: string } = {}
     ): void {
         if (!this.writer) return;
         this.writer.write({
             type: 'data-memory_update',
-            data: { type, action, count },
+            data: { type, action, count, ...options },
         } as const);
     }
 
@@ -530,6 +663,8 @@ export class DataStreamWriter {
             artifactPath?: string;
             summary?: string;
             error?: string;
+            cached?: boolean;
+            inferred?: boolean;
         } = {}
     ): void {
         if (!this.writer) return;
@@ -537,6 +672,64 @@ export class DataStreamWriter {
             type: 'data-delegation',
             id: `delegation-${delegationId}`,
             data: { delegationId, agentName, task, status, ...options },
+        } as const);
+    }
+
+    /** Write a shell command execution update (stable id per run). */
+    writeCommand(
+        id: string,
+        command: string,
+        status: 'running' | 'complete',
+        options: { exitCode?: number; stdout?: string; stderr?: string } = {}
+    ): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-command',
+            id: `command-${id}`,
+            data: { command, status, ...options },
+        } as const);
+    }
+
+    /** Write a filesystem operation update (stable id per op). */
+    writeFileOperation(
+        id: string,
+        operation: 'read' | 'write' | 'list',
+        path: string,
+        status: 'running' | 'complete',
+        options: { bytes?: number; fileCount?: number; files?: string[] } = {}
+    ): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-file_operation',
+            id: `file-${id}`,
+            data: { operation, path, status, ...options },
+        } as const);
+    }
+
+    /** Write a skill activation / discovery update. */
+    writeSkill(
+        action: 'activate' | 'deactivate' | 'list',
+        options: { name?: string; skills?: string[] } = {}
+    ): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-skill',
+            id: `skill-${action}-${options.name ?? 'list'}`,
+            data: { action, ...options },
+        } as const);
+    }
+
+    /**
+     * Write/replace a renderable artifact. The stable `artifact-<id>` part id
+     * means re-emitting the same id (a new version) updates the canvas in place
+     * instead of stacking duplicates.
+     */
+    writeArtifact(artifact: VibesDataParts['artifact']): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-artifact',
+            id: `artifact-${artifact.id}`,
+            data: artifact,
         } as const);
     }
 

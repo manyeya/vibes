@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { tool } from 'ai';
 import z from 'zod';
-import { VibeAgent } from '../src/core/agent';
+import { AgentCore } from '../src/core/agent-core';
 import { createPluginStreamContext } from '../src/core/types';
 import { createCapturingWriter, createTool } from './helpers';
 
-class ExposedVibeAgent extends VibeAgent {
+class ExposedVibeAgent extends AgentCore {
   async exposeGetAllTools(allowedTools?: string[]) {
     return this.getAllTools(allowedTools);
   }
@@ -18,7 +18,7 @@ class ExposedVibeAgent extends VibeAgent {
   }
 }
 
-describe('VibeAgent tool filtering', () => {
+describe('AgentCore tool filtering', () => {
   test('allowedTools limits the runtime catalog', async () => {
     const agent = new ExposedVibeAgent({
       model: {} as any,

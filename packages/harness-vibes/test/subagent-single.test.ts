@@ -2,11 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'fs';
 import { readFile, rm } from 'fs/promises';
 import { join } from 'path';
-import SubAgentPlugin from '../src/plugins/subagent';
-import type { Plugin, VibeAgentConfig } from '../src/core/types';
+import SubAgentPlugin from '../src/plugins/sub-agent';
+import type { Plugin, AgentCoreConfig } from '../src/core/types';
 import {
   completionSteps,
   completionThenTextSteps,
+  completionThenToolCallSteps,
   createStreamResult,
   createTempWorkspace,
   createTool,
@@ -35,8 +36,8 @@ function createBuiltInPlugins(): Plugin[] {
 function createPlugin(options: {
   workspaceDir: string;
   subAgents: Map<string, any>;
-  capturedConfigs?: VibeAgentConfig[];
-  stream?: (config: VibeAgentConfig, call: { messages?: any[] }) => Promise<any>;
+  capturedConfigs?: AgentCoreConfig[];
+  stream?: (config: AgentCoreConfig, call: { messages?: any[] }) => Promise<any>;
 }) {
   const capturedConfigs = options.capturedConfigs ?? [];
   return new SubAgentPlugin(
@@ -68,7 +69,7 @@ function createPlugin(options: {
 describe('SubAgentPlugin single delegation', () => {
   test('legacy string-array tools normalize to a general-purpose subagent', async () => {
     const workspaceDir = await createTempWorkspace('subagent-legacy');
-    const capturedConfigs: VibeAgentConfig[] = [];
+    const capturedConfigs: AgentCoreConfig[] = [];
 
     try {
       const plugin = createPlugin({
@@ -105,7 +106,7 @@ describe('SubAgentPlugin single delegation', () => {
 
   test('general-purpose delegations get fresh plugin instances per run', async () => {
     const workspaceDir = await createTempWorkspace('subagent-fresh');
-    const capturedConfigs: VibeAgentConfig[] = [];
+    const capturedConfigs: AgentCoreConfig[] = [];
 
     try {
       const plugin = createPlugin({
@@ -136,7 +137,7 @@ describe('SubAgentPlugin single delegation', () => {
 
   test('custom subagents keep only explicit tools/plugins and block nested delegation', async () => {
     const workspaceDir = await createTempWorkspace('subagent-custom');
-    const capturedConfigs: VibeAgentConfig[] = [];
+    const capturedConfigs: AgentCoreConfig[] = [];
     const explicitPlugin: Plugin = {
       name: 'ExplicitPlugin',
       tools: {
@@ -177,8 +178,8 @@ describe('SubAgentPlugin single delegation', () => {
     }
   });
 
-  test('delegation fails when structured completion is missing', async () => {
-    const workspaceDir = await createTempWorkspace('subagent-missing-completion');
+  test('missing structured completion falls back to the sub-agent output (inferred success)', async () => {
+    const workspaceDir = await createTempWorkspace('subagent-inferred');
 
     try {
       const plugin = createPlugin({
@@ -192,7 +193,40 @@ describe('SubAgentPlugin single delegation', () => {
             allowedTools: ['readFile'],
           }],
         ]),
-        stream: async () => createStreamResult('I did some work but never completed it.', []),
+        // Produces output but never calls task_completion.
+        stream: async () => createStreamResult('I inspected the auth flow and found two issues.', []),
+      });
+
+      const result = await (plugin.tools.delegate as any).execute({
+        agent_name: 'Explorer',
+        task: 'Inspect the auth flow',
+      });
+
+      expect(result.status).toBe('completed');
+      expect(result.inferred).toBe(true);
+      expect(result.completionConfirmed).toBe(false);
+      expect(result.summary).toContain('inspected the auth flow');
+    } finally {
+      await removeTempWorkspace(workspaceDir);
+    }
+  });
+
+  test('a run that produces no output at all still fails as missing_completion', async () => {
+    const workspaceDir = await createTempWorkspace('subagent-empty');
+
+    try {
+      const plugin = createPlugin({
+        workspaceDir,
+        subAgents: new Map([
+          ['Explorer', {
+            name: 'Explorer',
+            description: 'Codebase explorer',
+            systemPrompt: 'Explore the codebase.',
+            mode: 'general-purpose',
+            allowedTools: ['readFile'],
+          }],
+        ]),
+        stream: async () => createStreamResult('   ', []),
       });
 
       const result = await (plugin.tools.delegate as any).execute({
@@ -209,8 +243,8 @@ describe('SubAgentPlugin single delegation', () => {
     }
   });
 
-  test('delegation fails when activity occurs after completion', async () => {
-    const workspaceDir = await createTempWorkspace('subagent-post-completion');
+  test('trailing text after completion is harmless (still a success)', async () => {
+    const workspaceDir = await createTempWorkspace('subagent-trailing-text');
 
     try {
       const plugin = createPlugin({
@@ -226,7 +260,40 @@ describe('SubAgentPlugin single delegation', () => {
         ]),
         stream: async (config) => {
           await recordCompletion(config, 'done', ['src/example.ts']);
-          return createStreamResult('done then continued', completionThenTextSteps('done', ['src/example.ts']));
+          return createStreamResult('done then a closing remark', completionThenTextSteps('done', ['src/example.ts']));
+        },
+      });
+
+      const result = await (plugin.tools.delegate as any).execute({
+        agent_name: 'Explorer',
+        task: 'Inspect the auth flow',
+      });
+
+      expect(result.status).toBe('completed');
+      expect(result.completionConfirmed).toBe(true);
+    } finally {
+      await removeTempWorkspace(workspaceDir);
+    }
+  });
+
+  test('a tool call after completion is a real violation (post_completion_activity)', async () => {
+    const workspaceDir = await createTempWorkspace('subagent-post-toolcall');
+
+    try {
+      const plugin = createPlugin({
+        workspaceDir,
+        subAgents: new Map([
+          ['Explorer', {
+            name: 'Explorer',
+            description: 'Codebase explorer',
+            systemPrompt: 'Explore the codebase.',
+            mode: 'general-purpose',
+            allowedTools: ['readFile'],
+          }],
+        ]),
+        stream: async (config) => {
+          await recordCompletion(config, 'done', ['src/example.ts']);
+          return createStreamResult('done then acted', completionThenToolCallSteps('done', ['src/example.ts']));
         },
       });
 

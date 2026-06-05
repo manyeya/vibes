@@ -1,5 +1,11 @@
-import { generateText, type LanguageModel, type ModelMessage } from 'ai';
-import { Plugin } from '../core/types';
+import { generateText, type LanguageModel, type ModelMessage, type UIMessageStreamWriter } from 'ai';
+import {
+    Plugin,
+    PluginStreamContext,
+    createDataStreamWriter,
+    type DataStreamWriter,
+    type VibesUIMessage,
+} from '../core/types';
 
 export interface SummarizationConfig {
     /**
@@ -29,7 +35,7 @@ const DEFAULT_PER_MESSAGE_CAP = 1200;
  * conversation. The running summary is cached on the plugin instance so
  * a single agent run does not re-summarise content it has already covered.
  *
- * Pairs with `VibeAgent.pruneMessages` (which handles lossless compression
+ * Pairs with `AgentCore.pruneMessages` (which handles lossless compression
  * of large tool outputs). Configure the agent's `maxContextMessages` higher
  * than the plugin's so this summarisation triggers *before* the agent's
  * fallback truncation.
@@ -42,11 +48,20 @@ export default class SummarizationPlugin implements Plugin {
     private readonly maxContextMessages: number;
     private readonly perMessageCharCap: number;
     private readonly model: LanguageModel;
+    private writer?: DataStreamWriter;
 
     constructor(model: LanguageModel, config: SummarizationConfig = {}) {
         this.model = config.summarizationModel ?? model;
         this.maxContextMessages = config.maxContextMessages ?? DEFAULT_MAX_MESSAGES;
         this.perMessageCharCap = config.perMessageCharCap ?? DEFAULT_PER_MESSAGE_CAP;
+    }
+
+    onStreamContextReady(context: PluginStreamContext) {
+        this.writer = context.writer.withDefaults({ plugin: this.name });
+    }
+
+    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
+        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     async prepareStep(options: {
@@ -71,6 +86,7 @@ export default class SummarizationPlugin implements Plugin {
         const newOldies = oldest.filter(m => !this.summarizedFingerprints.has(this.fingerprint(m)));
 
         if (newOldies.length > 0) {
+            this.writer?.writeSummarization('in_progress', messages.length, keepN);
             try {
                 const delta = await this.summarize(newOldies);
                 this.currentSummary = this.currentSummary
@@ -79,7 +95,10 @@ export default class SummarizationPlugin implements Plugin {
                 for (const m of newOldies) {
                     this.summarizedFingerprints.add(this.fingerprint(m));
                 }
+                this.writer?.writeSummarization('complete', messages.length, keepN, newOldies.length);
             } catch (err) {
+                this.writer?.writeSummarization('failed', messages.length, keepN, undefined,
+                    err instanceof Error ? err.message : String(err));
                 // Summarisation is best-effort. On failure, fall through to
                 // the trimmed-without-summary case so the conversation can
                 // continue rather than fail the whole step.
