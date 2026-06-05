@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger as honoLogger } from "hono/logger";
-import mimoCodeRouter from "./routers/mimo-code";
+import vibeRouter from "./routers/vibe";
 import { logger } from "./logger";
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -68,7 +68,7 @@ app.get('/api/', (c) => {
   });
 });
 
-app.route('/api', mimoCodeRouter);
+app.route('/api', vibeRouter);
 
 Bun.serve({
   fetch: app.fetch,

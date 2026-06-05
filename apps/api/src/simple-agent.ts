@@ -1,4 +1,4 @@
-import { DeepAgent } from "../../../packages/harness-vibes/index";
+import { VibeAgent } from "../../../packages/harness-vibes/index";
 import { dotenvLoad } from "dotenv-mono";
 import { wrapLanguageModel } from "ai";
 import { createZhipu } from "zhipu-ai-provider";
@@ -106,7 +106,7 @@ const model = wrapLanguageModel({
     middleware: devToolsMiddleware(),
 });
 
-export const agent = new DeepAgent({
+export const agent = new VibeAgent({
     maxContextMessages: 30,
     model: model,
     systemPrompt: deepAgentPrompt,

@@ -1,5 +1,5 @@
 /**
- * Agent factory. Builds DeepAgent instances for a given session, fully
+ * Agent factory. Builds VibeAgent instances for a given session, fully
  * decoupled from the in-memory registry and HTTP layer so tests and
  * alternative entry points can construct agents directly.
  *
@@ -10,16 +10,20 @@
  *   - Workspace setup for new sessions
  */
 
-import { DeepAgent } from '../../../packages/harness-vibes/index';
+import { createHarness, type Harness } from '../../../packages/harness-vibes/index';
 import type { SubAgent } from '../../../packages/harness-vibes/index';
 import { wrapLanguageModel, type LanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { webSearch } from '@exalabs/ai-sdk';
-import { mimoCodePrompt } from './prompts/mimo-code';
-import { getModel, type ModelSpec } from './model-factory';
+import { vibePrompt } from './prompts/vibe';
+import { getModel } from './model-factory';
+import { dotenvLoad } from 'dotenv-mono';
+
+// Load env (API keys, etc.) before the harness resolves its model below.
+dotenvLoad();
 
 /**
- * The default roster of sub-agents shipped with every Mimo-Code session.
+ * The default roster of sub-agents shipped with every Vibe session.
  * Tools listed in `allowedTools` must exist on the parent agent — they
  * are inherited via the SubAgentPlugin's tool whitelist mechanism.
  */
@@ -81,70 +85,47 @@ export const defaultSubAgents: SubAgent[] = [
     },
 ];
 
-export interface CreateAgentOptions {
-    /** Stable session identifier, used for workspace + SQLite scoping. */
-    sessionId: string;
-    /** Per-session workspace directory, owned by the harness session manager. */
-    workspaceDir: string;
-    /**
-     * Optional model spec to override the env-driven default. Leave undefined
-     * to let `model-factory.getModel()` pick based on environment.
-     */
-    modelSpec?: ModelSpec;
-    /**
-     * Optional override for the base language model. If supplied, it
-     * shortcuts the model factory entirely. Useful in tests.
-     */
-    model?: LanguageModel;
-    /**
-     * Override `maxSteps`. Defaults to 60 (matches the previous inline config).
-     */
-    maxSteps?: number;
-    /**
-     * Override the verbatim-message cap. Defaults to 50 (raised from the old
-     * value of 3 in PR 1).
-     */
-    maxContextMessages?: number;
-    /**
-     * If true, wraps the resolved model with @ai-sdk/devtools middleware.
-     * Defaults to true to match historical behaviour; flip off for tests.
-     */
-    enableDevtools?: boolean;
+/**
+ * Resolve the base model from env (model-factory) and wrap it with the AI
+ * SDK devtools middleware.
+ */
+function buildVibeModel(): LanguageModel {
+    const baseModel = getModel();
+    // `LanguageModel = string | LanguageModelV3 | LanguageModelV2` in AI
+    // SDK v6. Our model factory returns concrete provider instances, but
+    // some legacy providers (e.g. zhipu-ai-provider) still emit V2. We pass
+    // through a single boundary cast here rather than spreading
+    // version-specific branching through the wrap call site.
+    type WrappableModel = Parameters<typeof wrapLanguageModel>[0]['model'];
+    return wrapLanguageModel({
+        model: baseModel as unknown as WrappableModel,
+        middleware: devToolsMiddleware(),
+    });
 }
 
 /**
- * Build a DeepAgent for a session. Pure function (modulo model factory
- * lookups); does not register the result anywhere.
+ * The Vibe harness — the single owner of sessions for the API.
+ *
+ * `vibeHarness.session(id)` builds (once, then caches) a flagship VibeAgent
+ * rooted at a per-session `LocalSandbox` + SQLite-backed workspace. The HTTP
+ * layer routes everything stateful through this; it does not cache agents or
+ * open backends itself.
  */
-export function createAgentForSession(options: CreateAgentOptions): DeepAgent {
-    const baseModel = options.model ?? getModel(options.modelSpec);
-    // `LanguageModel = string | LanguageModelV3 | LanguageModelV2` in AI
-    // SDK v6. Our model factory returns concrete provider instances, but
-    // some legacy providers (e.g. zhipu-ai-provider) still emit V2. We
-    // pass through a single boundary cast here rather than spreading
-    // version-specific branching through the wrap call site.
-    type WrappableModel = Parameters<typeof wrapLanguageModel>[0]['model'];
-    const model = options.enableDevtools === false
-        ? baseModel
-        : wrapLanguageModel({
-            model: baseModel as unknown as WrappableModel,
-            middleware: devToolsMiddleware(),
-        });
-
-    return new DeepAgent({
-        model,
-        systemPrompt: mimoCodePrompt,
-        maxSteps: options.maxSteps ?? 60,
-        // Verbatim window kept by the agent's pruneMessages fallback.
-        // SummarizationPlugin (default-loaded by createDefaultPlugins) trims
-        // and summarises earlier history *before* this threshold; raising
-        // this protects flows where summarisation is not active (tests).
-        maxContextMessages: options.maxContextMessages ?? 50,
-        sessionId: options.sessionId,
-        workspaceDir: options.workspaceDir,
+export const vibeHarness: Harness = createHarness(
+    {
+        model: buildVibeModel(),
+        systemPrompt: vibePrompt,
+        // Verbatim window kept by the agent's pruneMessages fallback;
+        // SummarizationPlugin trims earlier history before this threshold.
+        maxSteps: 60,
+        maxContextMessages: 50,
         tools: {
             webSearch: webSearch() as any,
         },
         subAgents: defaultSubAgents,
-    });
-}
+    },
+    {
+        dbPath: 'workspace/vibes.db',
+        sessionsDir: 'workspace/sessions',
+    },
+);

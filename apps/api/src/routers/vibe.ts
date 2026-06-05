@@ -3,47 +3,65 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { createUIMessageStreamResponse, type UIMessageChunk } from "ai";
 import { logger } from "../logger";
-import sessionManager from "../session-manager";
-import { SqliteBackend, createDeepAgentStreamResponse } from "../../../../packages/harness-vibes/index";
-import { agent as simpleAgent } from "../simple";
-
-
-// Shared backend instance for session management (without a specific session)
-const sessionBackend = new SqliteBackend('workspace/vibes.db', 'default');
+import streamCoordinator from "../stream-coordinator";
+import { vibeHarness } from "../vibe-coder";
+import { SqliteBackend, createAgentStreamResponse } from "../../../../packages/harness-vibes/index";
+import { agent as simpleAgent } from "../simple-agent";
+import { getModel, AVAILABLE_MODELS, getDefaultModelId } from "../model-factory";
 
 /**
- * Loose message shape accepted by the streaming endpoints. We accept both
- * UIMessage-style payloads from `useChat` (the common case) and
- * ModelMessage-style payloads for direct/programmatic callers. The
- * discriminator is `parts` (UIMessage) vs `content` (ModelMessage); the
- * rest of the fields are forwarded as-is to the AI SDK conversion layer
- * via `.passthrough()`.
+ * Loose message shape accepted by the streaming endpoints. AI SDK in
+ * practice emits more roles than the spec lists (tool, function,
+ * developer, system, …) and some message shapes appear with `parts` but
+ * without `content`, or vice versa. We validate the minimum invariant —
+ * `role` is a string and the message carries either `parts` or `content`
+ * — and pass the rest through to the agent's `convertMessages`, which
+ * already handles the union of UIMessage and ModelMessage.
  */
 const messagePartSchema = z.object({
     type: z.string(),
 }).passthrough();
 
-const apiUiMessageSchema = z.object({
+const apiMessageSchema = z.object({
     id: z.string().optional(),
-    role: z.enum(['user', 'assistant', 'system']),
-    parts: z.array(messagePartSchema),
-}).passthrough();
+    role: z.string(),
+    parts: z.array(messagePartSchema).optional(),
+    content: z.union([z.string(), z.array(z.unknown())]).optional(),
+}).passthrough().refine(
+    (msg) => msg.parts !== undefined || msg.content !== undefined,
+    { message: 'message must carry parts (UIMessage) or content (ModelMessage)' }
+);
 
-const apiModelMessageSchema = z.object({
-    role: z.enum(['user', 'assistant', 'system', 'tool']),
-    content: z.union([z.string(), z.array(z.unknown())]),
-}).passthrough();
-
-const apiMessageSchema = z.union([apiUiMessageSchema, apiModelMessageSchema]);
-
-const mimoSchema = z.object({
+const vibeSchema = z.object({
     messages: z.array(apiMessageSchema),
     session_id: z.string().nullable().optional(),
+    /** Optional per-request OpenRouter model id from the UI model selector. */
+    model: z.string().nullable().optional(),
 }).passthrough();
 
 type ApiMessage = z.infer<typeof apiMessageSchema>;
 
 const app = new Hono();
+
+/** Models available to the UI model selector + the current default. */
+app.get('/models', (c) => {
+    return c.json({
+        success: true,
+        models: AVAILABLE_MODELS,
+        active: getDefaultModelId(),
+    });
+});
+
+/**
+ * Apply a per-request model override to a session's agent. A valid id from
+ * the selector swaps the model for this run; anything else reverts to the
+ * agent's constructed default.
+ */
+function applyModelOverride(agent: { setModelOverride: (m?: ReturnType<typeof getModel>) => void }, modelId: unknown): void {
+    const id = typeof modelId === 'string' && modelId.trim() ? modelId.trim() : undefined;
+    const known = id && AVAILABLE_MODELS.some((m) => m.id === id);
+    agent.setModelOverride(known ? getModel({ provider: 'openrouter', id: id! }) : undefined);
+}
 
 
 // ============ SESSION MANAGEMENT ENDPOINTS ============
@@ -53,7 +71,7 @@ const app = new Hono();
  */
 app.get('/sessions', async (c) => {
     try {
-        const sessions = await sessionManager.listSessions();
+        const sessions = await vibeHarness.listSessions();
         return c.json({
             success: true,
             sessions,
@@ -76,7 +94,7 @@ app.get('/sessions', async (c) => {
 app.get('/sessions/:id', async (c) => {
     try {
         const sessionId = c.req.param('id');
-        const session = await sessionManager.getSessionInfo(sessionId);
+        const session = await vibeHarness.getSessionInfo(sessionId);
 
         if (!session) {
             return c.json({
@@ -112,7 +130,7 @@ app.post('/sessions', async (c) => {
         const title = body.title;
         const metadata = body.metadata || {};
 
-        const sessionId = await sessionManager.createSession(title, metadata);
+        const sessionId = await vibeHarness.createSession({ title, metadata });
 
         return c.json({
             success: true,
@@ -136,7 +154,7 @@ app.post('/sessions', async (c) => {
 app.delete('/sessions/:id', async (c) => {
     try {
         const sessionId = c.req.param('id');
-        await sessionManager.deleteSession(sessionId);
+        await vibeHarness.deleteSession(sessionId);
 
         return c.json({
             success: true,
@@ -159,7 +177,7 @@ app.delete('/sessions/:id', async (c) => {
 app.post('/sessions/:id/abort', async (c) => {
     try {
         const sessionId = c.req.param('id');
-        const aborted = sessionManager.abortStream(sessionId, 'client requested abort');
+        const aborted = streamCoordinator.abortStream(sessionId, 'client requested abort');
         return c.json({ success: true, aborted });
     } catch (error) {
         logger.error({
@@ -177,13 +195,13 @@ app.patch('/sessions/:id', async (c) => {
         const sessionId = c.req.param('id');
         const body = await c.req.json().catch(() => ({}));
 
-        await sessionManager.updateSession(sessionId, {
+        await vibeHarness.updateSession(sessionId, {
             title: body.title,
             summary: body.summary,
             metadata: body.metadata,
         });
 
-        const updated = await sessionManager.getSessionInfo(sessionId);
+        const updated = await vibeHarness.getSessionInfo(sessionId);
 
         return c.json({
             success: true,
@@ -207,12 +225,10 @@ app.patch('/sessions/:id', async (c) => {
 app.get('/sessions/:id/files', async (c) => {
     try {
         const sessionId = c.req.param('id');
-        const tempBackend = new SqliteBackend('workspace/vibes.db', sessionId);
-
 
         return c.json({
             success: true,
-            files: tempBackend.getState().messages,
+            files: vibeHarness.readState(sessionId).messages,
         });
     } catch (error) {
         logger.error({
@@ -228,23 +244,70 @@ app.get('/sessions/:id/files', async (c) => {
 
 /**
  * Get messages for a session (for loading chat history)
+ *
+ * IMPORTANT: this endpoint serves UIMessages back to `useChat`, which will
+ * resend them on the next user turn. ModelMessage shapes that round-trip
+ * badly (role:'tool', orphan tool-call parts without their matching
+ * tool-result) are stripped here — leave them in and the next request
+ * to any provider that doesn't natively accept role:'tool' messages
+ * (e.g. some OpenRouter-routed models) returns "Unsupported role: tool".
+ *
+ * Tool runs are visible LIVE during a session via the streaming data
+ * parts; on reload we keep only the user/assistant text exchange.
  */
 app.get('/sessions/:id/messages', async (c) => {
     try {
         const sessionId = c.req.param('id');
-        const tempBackend = new SqliteBackend('workspace/vibes.db', sessionId);
-        const state = tempBackend.getState();
 
-        // Convert AgentState messages to UI message format
-        const messages = state.messages.map((msg: any, index: number) => ({
-            id: `msg_${sessionId}_${index}`,
-            role: msg.role,
-            parts: typeof msg.content === 'string'
-                ? [{ type: 'text', text: msg.content }]
-                : Array.isArray(msg.content)
-                    ? msg.content
-                    : [{ type: 'text', text: String(msg.content) }],
-        }));
+        // Prefer the persisted full UI messages — their parts include the
+        // data-* activity (ToT thoughts, tool progress, delegation, status),
+        // so a reload restores the whole thread, not just text.
+        const storedUi = vibeHarness.readUIMessages(sessionId);
+        if (storedUi && storedUi.length > 0) {
+            return c.json({ success: true, messages: storedUi });
+        }
+
+        // Fallback for sessions persisted before UI-message storage existed:
+        // reconstruct the user/assistant text + reasoning from model messages.
+        const state = vibeHarness.readState(sessionId);
+
+        const messages = state.messages
+            // Drop role:'tool' messages — UIMessage doesn't have a tool
+            // role, and their content (tool results) can't be replayed
+            // without the matching tool-call context.
+            .filter((msg: any) => msg.role === 'user' || msg.role === 'assistant' || msg.role === 'system')
+            .map((msg: any, index: number) => {
+                let parts: Array<{ type: string; text: string }>;
+
+                if (typeof msg.content === 'string') {
+                    parts = [{ type: 'text', text: msg.content }];
+                } else if (Array.isArray(msg.content)) {
+                    // Keep only displayable text / reasoning parts. Tool-call
+                    // parts on assistant messages would be orphaned without
+                    // their matching tool-result, so the provider rejects
+                    // the next turn — strip them.
+                    parts = msg.content
+                        .filter((p: any) => {
+                            const t = p?.type;
+                            return t === 'text' || t === 'reasoning' || t === 'thinking';
+                        })
+                        .map((p: any) => ({
+                            type: p.type === 'text' ? 'text' : 'reasoning',
+                            text: p.text ?? p.reasoning ?? '',
+                        }))
+                        .filter((p: { text: string }) => p.text.length > 0);
+                } else {
+                    parts = [{ type: 'text', text: String(msg.content) }];
+                }
+
+                if (parts.length === 0) return null;
+                return {
+                    id: `msg_${sessionId}_${index}`,
+                    role: msg.role,
+                    parts,
+                };
+            })
+            .filter((m): m is { id: string; role: string; parts: Array<{ type: string; text: string }> } => m !== null);
 
         return c.json({
             success: true,
@@ -265,14 +328,15 @@ app.get('/sessions/:id/messages', async (c) => {
 
 // ============ AGENT INTERACTION ENDPOINTS ============
 
-app.post('/mimo-code', zValidator('json', mimoSchema), async (c) => {
+app.post('/vibe', zValidator('json', vibeSchema), async (c) => {
     try {
         const body = c.req.valid('json');
         const sessionId = body.session_id || 'default';
 
-        logger.info({ messages: body.messages, sessionId }, 'Mimo-Code agent request received');
+        logger.info({ messages: body.messages, sessionId }, 'Vibe agent request received');
 
-        const agent = sessionManager.getOrCreateAgent(sessionId);
+        const agent = (await vibeHarness.session(sessionId)).raw;
+        applyModelOverride(agent, body.model);
 
         const startTime = Date.now();
         // The agent's `generate({messages})` overload accepts ModelMessage[]
@@ -302,7 +366,7 @@ app.post('/mimo-code', zValidator('json', mimoSchema), async (c) => {
             return null;
         })();
 
-        logger.info({ duration, sessionId }, 'Mimo-Code agent response completed');
+        logger.info({ duration, sessionId }, 'Vibe agent response completed');
 
         return c.json({
             success: true,
@@ -314,28 +378,31 @@ app.post('/mimo-code', zValidator('json', mimoSchema), async (c) => {
     } catch (error) {
         logger.error({
             error: error instanceof Error ? error.message : String(error),
-        }, 'Mimo-Code agent error');
+        }, 'Vibe agent error');
 
         return c.json({
             success: false,
-            error: 'Failed to process mimo-code agent request',
+            error: 'Failed to process vibe agent request',
             details: error instanceof Error ? error.message : String(error),
         }, 500);
     }
 });
 
-app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
+app.post('/vibe/stream', zValidator('json', vibeSchema), async (c) => {
     try {
         const body = c.req.valid('json');
         const sessionId = body.session_id || 'default';
         const messages: ApiMessage[] = body.messages;
 
-        logger.info({ sessionId }, 'Mimo-Code agent streaming request received');
+        logger.info({ sessionId }, 'Vibe agent streaming request received');
 
-        const agent = sessionManager.getOrCreateAgent(sessionId);
-
-        // Get or create the backend for this session to persist messages
-        const sessionBackend = new SqliteBackend('workspace/vibes.db', sessionId);
+        // The harness owns the agent + backend for this session (built once,
+        // then cached). The HTTP layer no longer caches agents or opens its
+        // own SQLite connection.
+        const session = await vibeHarness.session(sessionId);
+        const agent = session.raw;
+        const sessionBackend = session.backend!;
+        applyModelOverride(agent, body.model);
 
         // Pass originalMessages so AI SDK reuses message IDs when the client
         // resubmits after a tool approval. We detect that case either by the
@@ -356,16 +423,16 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
         // reconnect can pick up via the live tail. Only an explicit
         // POST /sessions/:id/abort triggers cancellation.
         const streamController = new AbortController();
-        sessionManager.registerStreamController(sessionId, streamController);
+        streamCoordinator.registerStreamController(sessionId, streamController);
 
         // Provision a streamId + registry entry + SQLite stream row so
         // both the live-tail and replay paths agree on the same identity.
         const streamId = crypto.randomUUID();
-        sessionManager.streamRegistry.create(streamId, sessionId);
+        streamCoordinator.streamRegistry.create(streamId, sessionId);
         sessionBackend.beginStream(streamId, sessionId);
 
         const onChunk = (chunk: unknown) => {
-            const entry = sessionManager.streamRegistry.get(streamId);
+            const entry = streamCoordinator.streamRegistry.get(streamId);
             if (!entry) return;
             // Persist first, then fan out — so a reconnect that arrives
             // between persist and emit sees the chunk in SQLite and the
@@ -375,25 +442,25 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
             try {
                 sessionBackend.appendStreamChunk(streamId, seq, chunk);
             } catch (err) {
-                console.error('[mimo-code] appendStreamChunk failed:', err);
+                console.error('[vibe] appendStreamChunk failed:', err);
             }
             for (const sub of entry.subscribers) {
-                try { sub(seq, chunk); } catch (err) { console.error('[mimo-code] subscriber threw:', err); }
+                try { sub(seq, chunk); } catch (err) { console.error('[vibe] subscriber threw:', err); }
             }
         };
 
         const onStreamEnd = (status: 'completed' | 'failed') => {
             try { sessionBackend.endStream(streamId, status); } catch (err) {
-                console.error('[mimo-code] endStream failed:', err);
+                console.error('[vibe] endStream failed:', err);
             }
-            sessionManager.streamRegistry.complete(streamId, status);
-            sessionManager.clearStreamController(sessionId, streamController);
+            streamCoordinator.streamRegistry.complete(streamId, status);
+            streamCoordinator.clearStreamController(sessionId, streamController);
         };
 
-        const response = await createDeepAgentStreamResponse({
+        const response = await createAgentStreamResponse({
             agent,
-            uiMessages: body.messages as unknown as Parameters<typeof createDeepAgentStreamResponse>[0]['uiMessages'],
-            originalMessages: originalMessages as unknown as Parameters<typeof createDeepAgentStreamResponse>[0]['originalMessages'],
+            uiMessages: body.messages as unknown as Parameters<typeof createAgentStreamResponse>[0]['uiMessages'],
+            originalMessages: originalMessages as unknown as Parameters<typeof createAgentStreamResponse>[0]['originalMessages'],
             backend: sessionBackend,
             abortSignal: streamController.signal,
             onChunk,
@@ -415,11 +482,11 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
     } catch (error) {
         logger.error({
             error: error instanceof Error ? error.message : String(error),
-        }, 'Mimo-Code agent streaming error');
+        }, 'Vibe agent streaming error');
 
         return c.json({
             success: false,
-            error: 'Failed to stream mimo-code agent request',
+            error: 'Failed to stream vibe agent request',
         }, 500);
     }
 });
@@ -438,7 +505,7 @@ app.post('/mimo-code/stream', zValidator('json', mimoSchema), async (c) => {
  */
 const RECONNECT_REPLAY_TTL_MS = 5 * 60 * 1000;
 
-app.get('/mimo-code/:sessionId/stream', async (c) => {
+app.get('/vibe/:sessionId/stream', async (c) => {
     const sessionId = c.req.param('sessionId');
     const streamId = c.req.query('streamId');
     const fromSeqStr = c.req.query('fromSeq') ?? '0';
@@ -463,7 +530,7 @@ app.get('/mimo-code/:sessionId/stream', async (c) => {
         }
     }
 
-    const registry = sessionManager.streamRegistry;
+    const registry = streamCoordinator.streamRegistry;
     const liveEntry = registry.get(streamId);
 
     const stream = new ReadableStream<UIMessageChunk<unknown, never>>({
@@ -479,7 +546,7 @@ app.get('/mimo-code/:sessionId/stream', async (c) => {
                     lastReplayedSeq = Math.max(lastReplayedSeq, row.chunkSeq);
                 }
             } catch (err) {
-                console.error('[mimo-code] replay failed:', err);
+                console.error('[vibe] replay failed:', err);
             }
 
             // Phase 2: if the stream has already ended, close after replay.
@@ -497,7 +564,7 @@ app.get('/mimo-code/:sessionId/stream', async (c) => {
                     try {
                         controller.enqueue(chunk as UIMessageChunk<unknown, never>);
                     } catch (err) {
-                        console.error('[mimo-code] live forward failed:', err);
+                        console.error('[vibe] live forward failed:', err);
                     }
                 },
                 () => {
@@ -529,7 +596,7 @@ app.get('/mimo-code/:sessionId/stream', async (c) => {
     });
 });
 
-app.post('/simple/stream', zValidator('json', mimoSchema), async (c) => {
+app.post('/simple/stream', zValidator('json', vibeSchema), async (c) => {
     try {
         const body = c.req.valid('json');
         const messages: ApiMessage[] = body.messages;
@@ -537,9 +604,9 @@ app.post('/simple/stream', zValidator('json', mimoSchema), async (c) => {
         // Use custom stream response that integrates with middleware writers
         // This enables onData callbacks and custom data streaming
         const sessionBackend = new SqliteBackend('workspace/vibes.db', 'default');
-        return createDeepAgentStreamResponse({
+        return createAgentStreamResponse({
             agent: simpleAgent,
-            uiMessages: messages as unknown as Parameters<typeof createDeepAgentStreamResponse>[0]['uiMessages'],
+            uiMessages: messages as unknown as Parameters<typeof createAgentStreamResponse>[0]['uiMessages'],
             backend: sessionBackend,
         });
 

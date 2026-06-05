@@ -15,7 +15,7 @@
     "@ai-sdk/openai": "^3.0.12",
     "@exalabs/ai-sdk": "^1.0.5",
     "@hono/zod-validator": "^0.7.6",
-    "@openrouter/ai-sdk-provider": "^1.5.4",
+    "@openrouter/ai-sdk-provider": "^2.9.0",
     "@studio-freight/react-lenis": "^0.0.47",
     "add": "^2.0.6",
     "ai": "^6.0.39",

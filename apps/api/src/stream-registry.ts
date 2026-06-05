@@ -1,7 +1,7 @@
 /**
  * In-memory registry for active streams. Per-stream entries track the
  * monotonic chunk sequence, completion state, and a fan-out subscriber
- * list so the reconnect endpoint (`GET /mimo-code/:sessionId/stream`) can
+ * list so the reconnect endpoint (`GET /vibe/:sessionId/stream`) can
  * hand off a live tail to clients that drop and reconnect mid-stream.
  *
  * Pairs with `SqliteBackend.{appendStreamChunk, endStream, readStreamChunks}`
