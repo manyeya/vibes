@@ -25,7 +25,7 @@ vibes/
 
 ## Architecture (Current)
 
-1. `apps/demo` sends chat messages to `/api/mimo-code/stream`.
+1. `apps/demo` sends chat messages to `/api/vibe/stream`.
 2. `apps/api` routes requests, resolves `session_id`, and gets/creates a session agent.
 3. `DeepAgent` (from `harness-vibes`) runs tool-loop generation with plugins.
 4. Streaming chunks and custom data parts are pushed to the UI.
@@ -34,7 +34,7 @@ vibes/
 Core runtime files:
 
 - API entry: `apps/api/src/index.ts`
-- API routes: `apps/api/src/routers/mimo-code.ts`
+- API routes: `apps/api/src/routers/vibe.ts`
 - API session management: `apps/api/src/session-manager.ts`
 - Agent core: `packages/harness-vibes/src/core/agent.ts`
 - Stream response helper: `packages/harness-vibes/src/core/agent-stream.ts`
@@ -131,8 +131,8 @@ Session management:
 
 Agent endpoints:
 
-- `POST /mimo-code` - non-streaming generation
-- `POST /mimo-code/stream` - streaming generation (main UI path)
+- `POST /vibe` - non-streaming generation
+- `POST /vibe/stream` - streaming generation (main UI path)
 - `POST /simple/stream` - streaming with the simplified agent config
 
 Common request shape:

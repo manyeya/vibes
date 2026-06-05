@@ -10,7 +10,7 @@ Vibes is a multi-agent AI coding orchestrator built on the Vercel AI SDK v6. It 
 - `apps/api` - Hono backend server with session management
 - `apps/tui` - Terminal UI (React + Ink)
 - `apps/demo` - Web demo app
-- `packages/harness-vibes` - Core DeepAgents framework
+- `packages/harness-vibes` - Core Vibes agent framework
 
 ## Development Commands
 
@@ -36,14 +36,23 @@ cd packages/harness-vibes && bun test
 
 ## Core Architecture
 
-### DeepAgent Framework
+### Agent layering & vocabulary
 
-The heart of the system is `VibeAgent` (in `packages/harness-vibes/src/core/agent.ts`), which extends AI SDK's `ToolLoopAgent`. This provides:
+There are three layers, each with one clear name:
+
+| Layer | Name | File | Role |
+|-------|------|------|------|
+| Engine | `AgentCore` | `src/core/agent-core.ts` | Low-level loop extending AI SDK's `ToolLoopAgent`; plugins + context engineering |
+| Flagship | `VibeAgent` (`createVibeAgent`) | `src/core/vibe-agent.ts` | Batteries-included `AgentCore` subclass with all default plugins + sub-agents |
+| Facade | `defineAgent` / `createHarness` / `Harness` / `Session` | `src/core/harness.ts` | Small Flue-like front door: declare → build → `session.prompt({ result })` |
+
+`AgentCore` (in `src/core/agent-core.ts`) provides:
 
 - **Plugin system** - Extensible capabilities via modular plugins
 - **Restorable compression** - Large content replaced with file/path references
 - **Error preservation** - Errors tracked separately, never summarized
 - **KV-cache awareness** - Stable prompt prefix for cache optimization
+- **Sandbox** - Filesystem + shell go through a `Sandbox` (`src/core/sandbox.ts`); the default `LocalSandbox` is Node-portable and path-contained
 
 ### Plugin System (not middleware!)
 
@@ -61,6 +70,7 @@ Plugins (in `packages/harness-vibes/src/plugins/`) provide tools and lifecycle h
 | `SkillsPlugin` | Skill management and discovery |
 | `FilesystemPlugin` | File read/write operations |
 | `BashPlugin` | Shell command execution |
+| `ArtifactPlugin` | Renderable artifacts (HTML sites, markdown docs, mermaid diagrams, charts) streamed to the web canvas panel and saved to `artifacts/` in the sandbox |
 
 **Plugin hooks** (defined in `src/core/types.ts`):
 - `prepareStep` - Modify settings before each model call
@@ -84,9 +94,9 @@ Sessions are persisted to SQLite (`workspace/vibes.db`) via `SqliteBackend`. The
 - `POST /api/sessions` - Create new session
 - `GET /api/sessions/:id` - Get session details
 - `GET /api/sessions/:id/messages` - Load chat history
-- `POST /api/mimo-code/stream` - Streaming agent endpoint
+- `POST /api/vibe/stream` - Streaming agent endpoint
 
-The `sessionManager` (in `apps/api/src/session-manager.ts`) manages agent instances per session.
+Sessions have a single owner: the harness `vibeHarness` (in `apps/api/src/vibe-coder.ts`) owns session lifecycle + agent instances (one cached agent per session id, via `vibeHarness.session(id)`). The API's `streamCoordinator` (in `apps/api/src/stream-coordinator.ts`) holds only HTTP streaming-transport state (abort controllers + the reconnect registry).
 
 ### Sub-Agent System
 
@@ -108,7 +118,7 @@ SKILLS_DIR=./skills        # Skills directory
 ## Key Patterns
 
 1. **Plugin-first architecture** - New capabilities should be added as plugins, not modifications to core
-2. **Streaming-first design** - All agent interactions should support streaming via `createDeepAgentStreamResponse`
+2. **Streaming-first design** - All agent interactions should support streaming via `createAgentStreamResponse`
 3. **Session isolation** - Each session has its own agent instance and state
 4. **Type safety** - The codebase uses TypeScript throughout; export types from `src/core/types.ts`
 
