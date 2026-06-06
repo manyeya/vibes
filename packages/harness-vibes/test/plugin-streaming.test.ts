@@ -7,6 +7,7 @@ import { createPluginStreamContext } from '../src/core/types';
 import BashPlugin from '../src/plugins/bash';
 import FilesystemPlugin from '../src/plugins/filesystem';
 import { PlanningPlugin } from '../src/plugins/planning';
+import MemoryPlugin from '../src/plugins/memory';
 import {
   createCapturingWriter,
   createTempWorkspace,
@@ -181,13 +182,15 @@ describe('Plugin streaming', () => {
       await (memory.tools.update_scratchpad as any).execute({
         content: 'Current goal: stabilize auth session handling.',
       });
-      await (memory.tools.save_reflection as any).execute({
-        lesson: 'Keep auth decisions recorded outside ephemeral session state.',
+      await (memory.tools.remember as any).execute({
+        title: 'Auth session decision',
+        content: 'Keep auth decisions recorded outside ephemeral session state.',
+        tags: ['auth'],
       });
 
       await access(join(sessionDir, 'tasks.json'));
       await access(join(sessionDir, 'scratchpad.md'));
-      await access(join(workspaceRoot, 'reflections.md'));
+      await access(join(workspaceRoot, 'memories.json'));
 
       const tasks = JSON.parse(await readFile(join(sessionDir, 'tasks.json'), 'utf8'));
       expect(tasks).toHaveLength(1);
@@ -196,10 +199,57 @@ describe('Plugin streaming', () => {
       const scratchpad = await readFile(join(sessionDir, 'scratchpad.md'), 'utf8');
       expect(scratchpad).toContain('stabilize auth session handling');
 
-      const reflections = await readFile(join(workspaceRoot, 'reflections.md'), 'utf8');
-      expect(reflections).toContain('Keep auth decisions recorded');
+      // Long-term notes are shared (workspace root), not session-local.
+      const memories = JSON.parse(await readFile(join(workspaceRoot, 'memories.json'), 'utf8'));
+      expect(memories).toHaveLength(1);
+      expect(memories[0].content).toContain('Keep auth decisions recorded');
     } finally {
       await removeTempWorkspace(workspaceRoot);
+    }
+  });
+
+  test('MemoryPlugin: remember/recall/forget round-trip + loads into the system prompt', async () => {
+    const dir = await createTempWorkspace('memory-plugin');
+    try {
+      const memory = new MemoryPlugin({
+        scratchpadPath: join(dir, 'scratchpad.md'),
+        notesPath: join(dir, 'memories.json'),
+      });
+      await memory.waitReady();
+
+      await (memory.tools.update_scratchpad as any).execute({ content: 'Working on the parser.' });
+      const saved = await (memory.tools.remember as any).execute({
+        title: 'Parser entry point',
+        content: 'The parser starts in src/parse/index.ts at parseProgram().',
+        tags: ['parser'],
+      });
+      expect(saved.success).toBe(true);
+      await (memory.tools.remember as any).execute({
+        title: 'DB choice',
+        content: 'We use SQLite via bun:sqlite.',
+        tags: ['db'],
+      });
+
+      // keyword search returns the right note in full
+      const hit = await (memory.tools.recall as any).execute({ query: 'parser entry' });
+      expect(hit.count).toBeGreaterThanOrEqual(1);
+      expect(hit.results[0].content).toContain('parseProgram');
+
+      // the async system prompt loads from disk: full scratchpad + a compact
+      // index of note titles, but NOT the full note bodies (no bloat).
+      const prompt = await memory.modifySystemPrompt('BASE');
+      expect(prompt).toContain('Working on the parser.');
+      expect(prompt).toContain('Parser entry point');
+      expect(prompt).toContain('DB choice');
+      expect(prompt).not.toContain('parseProgram');
+
+      const list = await (memory.tools.list_memories as any).execute({});
+      expect(list.count).toBe(2);
+      await (memory.tools.forget as any).execute({ id: saved.id });
+      const after = await (memory.tools.list_memories as any).execute({});
+      expect(after.count).toBe(1);
+    } finally {
+      await removeTempWorkspace(dir);
     }
   });
 });

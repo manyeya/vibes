@@ -63,7 +63,7 @@ Plugins (in `packages/harness-vibes/src/plugins/`) provide tools and lifecycle h
 | `PlanningPlugin` | Task management with persistence, plan save/load |
 | `SubAgentPlugin` | Delegation to sub-agents (`task`/`delegate`/`parallel_delegate`) + runtime agent deployment (`create_agent`/`spawn_agent`/`list_agents`) |
 | `SkillsPlugin` | Skill management and discovery |
-| `MemoryPlugin` | Scratchpad + reflections notes (plain markdown) |
+| `MemoryPlugin` | Working memory: a scratchpad (always in-prompt) + a searchable long-term note store (`remember`/`recall`/`update_memory`/`forget`/`list_memories`); injects a compact index, not full content |
 | `FilesystemPlugin` | File read/write operations |
 | `BashPlugin` | Shell command execution |
 | `ArtifactPlugin` | Renderable artifacts (HTML sites, markdown docs, mermaid diagrams, charts) streamed to the web canvas panel and saved to `artifacts/` in the sandbox |

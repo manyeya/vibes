@@ -85,7 +85,7 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
         new ArtifactPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
         new MemoryPlugin({
             scratchpadPath: path.join(config.workspaceDir, 'scratchpad.md'),
-            reflexionPath: path.join(sharedWorkspaceDir, 'reflections.md'),
+            notesPath: path.join(sharedWorkspaceDir, 'memories.json'),
         }),
         // Rolling-summary plugin: keeps long conversations within token
         // budget by summarising the oldest excess messages once we exceed
