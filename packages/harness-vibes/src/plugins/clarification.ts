@@ -48,7 +48,8 @@ export default class ClarificationPlugin implements Plugin {
                     "Make every question MULTIPLE CHOICE: give 2–4 concrete `options` (kind 'single' or 'multi'). " +
                     "The UI automatically appends a free-text \"Other\" as the LAST option, so the user can always " +
                     "write their own answer — you almost never need kind 'text' (reserve it for inherently open " +
-                    "answers like a name or a freeform description).",
+                    "answers like a name or a freeform description). Do NOT add your own \"Other\", \"Custom\", " +
+                    "\"(specify)\" or \"None of the above\" choice — the write-in is added for you; only provide the real options.",
                 inputSchema: z.object({
                     title: z.string().optional().describe('Optional short heading for the questionnaire.'),
                     questions: z
@@ -104,6 +105,6 @@ export default class ClarificationPlugin implements Plugin {
         return `${prompt}
 
 ## Asking the user
-For a genuinely ambiguous or high-stakes request — where guessing wrong would waste real work — call \`${ASK_USER_TOOL_NAME}\` with 1–6 focused questions instead of assuming. It shows the user a short questionnaire and your run pauses until they answer. Prefer sensible defaults and reading the codebase first; only ask when the answer truly changes what you build, and never ask more than you need. Make each question multiple-choice with 2–4 concrete options — the UI adds a free-text "Other" as the last option automatically, so the user can always write their own.`;
+For a genuinely ambiguous or high-stakes request — where guessing wrong would waste real work — call \`${ASK_USER_TOOL_NAME}\` with 1–6 focused questions instead of assuming. It shows the user a short questionnaire and your run pauses until they answer. Prefer sensible defaults and reading the codebase first; only ask when the answer truly changes what you build, and never ask more than you need. Make each question multiple-choice with 2–4 concrete options — the UI adds a free-text "Other" as the last option automatically, so the user can always write their own. Don't add your own "Other"/"Custom"/"(specify)" choice; just give the real options.`;
     }
 }

@@ -6,6 +6,20 @@ import type { ClarificationData } from '../data-parts/types';
 
 const OTHER = '__other__';
 
+// The form always provides its own free-text write-in, so drop any catch-all
+// option the agent tacked on ("Custom (specify)", "Other", "None of the above"…)
+// to avoid a dead duplicate next to the real write-in.
+const isWriteInLike = (o: string) => {
+  const s = o.trim().toLowerCase();
+  return (
+    s.includes('specify') ||
+    s.includes('write your own') ||
+    s.includes('write my own') ||
+    s.includes('something else') ||
+    ['other', 'custom', 'none', 'n/a', 'none of the above'].includes(s)
+  );
+};
+
 type Answers = Record<string, { choice?: string; choices?: string[]; text?: string; other?: string }>;
 
 /**
@@ -87,7 +101,7 @@ export const ClarificationForm = ({
                 />
               ) : (
                 <div className="space-y-1">
-                  {[...(q.options ?? []), OTHER].map((opt) => {
+                  {[...(q.options ?? []).filter((o) => !isWriteInLike(o)), OTHER].map((opt) => {
                     const isOther = opt === OTHER;
                     const checked =
                       q.kind === 'multi'
