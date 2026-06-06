@@ -170,16 +170,14 @@ Cross-session shared files include:
 
 ## Plugin System (`harness-vibes`)
 
-`DeepAgent` composes capabilities via plugins. Included plugins cover:
+`VibeAgent` composes capabilities via plugins. Included plugins cover:
 
 - planning/task management
-- reasoning modes (`react`, `tot`, `plan-execute`)
-- reflexion/lessons
-- semantic memory and procedural memory
-- swarm coordination
-- sub-agent delegation
+- sub-agent delegation (+ runtime agent deployment)
+- renderable canvas artifacts (HTML/markdown/mermaid/charts)
 - filesystem and bash tooling
 - skill activation
+- scratchpad memory and rolling summarization
 
 Plugin exports are in `packages/harness-vibes/src/plugins/index.ts`.
 

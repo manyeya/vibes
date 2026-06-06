@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Vibes is a multi-agent AI coding orchestrator built on the Vercel AI SDK v6. It features a sophisticated plugin-based architecture with deep reasoning capabilities, persistent memory, and both terminal (TUI) and web interfaces.
+Vibes is a multi-agent AI coding orchestrator built on the Vercel AI SDK v6. It features a lean plugin-based architecture with runtime sub-agent deployment, renderable canvas artifacts, and both terminal (TUI) and web interfaces.
 
 **Monorepo structure** (Bun workspaces):
 - `apps/api` - Hono backend server with session management
@@ -61,13 +61,9 @@ Plugins (in `packages/harness-vibes/src/plugins/`) provide tools and lifecycle h
 | Plugin | Purpose |
 |--------|---------|
 | `PlanningPlugin` | Task management with persistence, plan save/load |
-| `ReasoningPlugin` | ReAct, Tree-of-Thoughts, Plan-Execute modes |
-| `ReflexionPlugin` | Error analysis and lesson extraction |
-| `SemanticMemoryPlugin` | Vector-based fact storage (RAG-style) |
-| `ProceduralMemoryPlugin` | Pattern/workflow storage |
-| `SwarmPlugin` | Multi-agent coordination with shared state |
-| `SubAgentPlugin` | Delegation to specialized sub-agents |
+| `SubAgentPlugin` | Delegation to sub-agents (`task`/`delegate`/`parallel_delegate`) + runtime agent deployment (`create_agent`/`spawn_agent`/`list_agents`) |
 | `SkillsPlugin` | Skill management and discovery |
+| `MemoryPlugin` | Scratchpad + reflections notes (plain markdown) |
 | `FilesystemPlugin` | File read/write operations |
 | `BashPlugin` | Shell command execution |
 | `ArtifactPlugin` | Renderable artifacts (HTML sites, markdown docs, mermaid diagrams, charts) streamed to the web canvas panel and saved to `artifacts/` in the sandbox |
@@ -100,10 +96,26 @@ Sessions have a single owner: the harness `vibeHarness` (in `apps/api/src/vibe-c
 
 ### Sub-Agent System
 
-Specialized sub-agents can be defined and delegated to. Each sub-agent:
-- Has its own system prompt and tool allowlist/blocklist
-- Can inherit tools from the parent agent
-- Results are saved to `subagent_results/` directory
+Sub-agents are **lean workers**, not second brains. They run a minimal plugin
+set (`createSubAgentPlugins` in `vibe-agent.ts`: filesystem, shell, skills,
+artifacts, planning) — a subset of the main agent's defaults, without
+summarization/memory. That keeps delegation fast and avoids the nested model
+calls + prompt bloat that made it flaky on weaker models. (The old cognitive
+plugins — Reasoning/ToT, Reflexion, semantic/procedural memory, swarm — have
+been removed from the codebase entirely; modern models reason natively.)
+
+- Each sub-agent has its own system prompt and tool allowlist; it inherits the
+  parent's custom tools (e.g. `webSearch`).
+- **Natural completion**: a sub-agent finishes by giving a final answer — that
+  text is the result. An optional `report_result` tool adds a structured
+  summary + file list, but is never required. A delegation only fails if it
+  *threw* or produced literally nothing.
+- **Runtime deployment**: the main agent isn't limited to the baked-in roster
+  (`defaultSubAgents` in `apps/api/src/vibe-coder.ts`). It can `create_agent`
+  (define a specialist), `spawn_agent` (define + run a one-off), and
+  `list_agents` — the registry is mutable and delegation resolves against it
+  live.
+- Results are optionally saved to the `subagent_results/` directory.
 
 ## Environment Variables
 

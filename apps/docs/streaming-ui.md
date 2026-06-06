@@ -18,7 +18,6 @@ The current streaming contract relies on stable ids for long-running work:
 |-----------|-------------|-------------|
 | `data-notification` | System notifications (info/warning/error) | Transient only |
 | `data-status` | Operation milestones and heartbeats | Persistent for milestones, transient for heartbeats |
-| `data-reasoning_mode` | Current reasoning mode (react/tot/plan-execute) | Persistent |
 | `data-todo_update` | Todo item updates | Persistent |
 | `data-task_update` | Task status updates | Persistent |
 | `data-task_graph` | Task dependency graph | Persistent |
@@ -26,8 +25,9 @@ The current streaming contract relies on stable ids for long-running work:
 | `data-tool_progress` | Tool execution progress | Persistent |
 | `data-error` | Error notifications | Persistent |
 | `data-memory_update` | Memory system changes | Persistent |
-| `data-swarm_signal` | Swarm coordination signals | Persistent |
 | `data-delegation` | Sub-agent delegation updates | Persistent |
+| `data-artifact` | Renderable canvas artifacts | Persistent |
+| `data-agent_message` / `data-agent_thought` | Sub-agent live output / reasoning | Persistent |
 
 **Note:** Transient data parts, including `data-notification` and heartbeat `data-status` updates, are only available via the `onData` callback and will NOT appear in `message.parts`.
 
@@ -94,11 +94,6 @@ const { messages, sendMessage, onData } = useChat<VibesUIMessage>({
       case 'data-status':
         // General status updates
         console.log('Status:', dataPart.data.message);
-        break;
-
-      case 'data-reasoning_mode':
-        // Agent switched reasoning mode
-        setReasoningMode(dataPart.data.mode);
         break;
 
       case 'data-task_update':
@@ -233,24 +228,16 @@ import type { VibesUIMessage } from 'the-vibes';
 import { useState } from 'react';
 
 interface AgentStatus {
-  reasoningMode: 'react' | 'tot' | 'plan-execute';
   isProcessing: boolean;
   tokenCount: number;
   tasks: Task[];
-  lessonsLearned: number;
-  factsStored: number;
-  patternsCount: number;
 }
 
 export default function ChatPage() {
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({
-    reasoningMode: 'react',
     isProcessing: false,
     tokenCount: 0,
     tasks: [],
-    lessonsLearned: 0,
-    factsStored: 0,
-    patternsCount: 0,
   });
 
   const { messages, sendMessage } = useChat<VibesUIMessage>({
@@ -258,23 +245,6 @@ export default function ChatPage() {
 
     onData: (dataPart) => {
       switch (dataPart.type) {
-        case 'data-reasoning_mode':
-          setAgentStatus(prev => ({ ...prev, reasoningMode: dataPart.data.mode }));
-          break;
-
-        case 'data-status':
-          const msg = dataPart.data.message;
-          if (msg.includes('Lesson saved')) {
-            setAgentStatus(prev => ({ ...prev, lessonsLearned: prev.lessonsLearned + 1 }));
-          }
-          if (msg.includes('Fact remembered')) {
-            setAgentStatus(prev => ({ ...prev, factsStored: prev.factsStored + 1 }));
-          }
-          if (msg.includes('Pattern saved')) {
-            setAgentStatus(prev => ({ ...prev, patternsCount: prev.patternsCount + 1 }));
-          }
-          break;
-
         case 'data-task_update':
           setAgentStatus(prev => ({
             ...prev,
@@ -299,20 +269,6 @@ export default function ChatPage() {
       {/* Agent Status Panel */}
       <aside className="w-80 border-l p-4">
         <h2>Agent Status</h2>
-
-        <div className="mb-4">
-          <span className="text-sm">Reasoning Mode</span>
-          <span className="ml-2">{agentStatus.reasoningMode}</span>
-        </div>
-
-        <div className="mb-4">
-          <span className="text-sm">Memory</span>
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <div>{agentStatus.lessonsLearned} Lessons</div>
-            <div>{agentStatus.factsStored} Facts</div>
-            <div>{agentStatus.patternsCount} Patterns</div>
-          </div>
-        </div>
 
         <div>
           <span className="text-sm">Tasks</span>
@@ -346,9 +302,6 @@ interface VibesDataParts {
     message: string;
     step?: number;
     totalSteps?: number;
-  };
-  reasoning_mode: {
-    mode: 'react' | 'tot' | 'plan-execute';
   };
   todo_update: {
     id: string;
@@ -385,15 +338,9 @@ interface VibesDataParts {
     recoverable?: boolean;
   };
   memory_update: {
-    type: 'lesson' | 'fact' | 'pattern';
+    type: 'note';
     action: 'saved' | 'updated' | 'deleted';
     count?: number;
-  };
-  swarm_signal: {
-    from: string;
-    to?: string;
-    signal: string;
-    data?: Record<string, unknown>;
   };
   delegation: {
     agentName: string;
@@ -410,7 +357,7 @@ interface VibesDataParts {
 
 2. **Render persistent parts from `message.parts`**: Task updates, errors, and other important data should be rendered from the message parts array.
 
-3. **Track agent state separately**: Use local state to track reasoning mode, tasks, and memory stats. Update them via `onData` as data streams in.
+3. **Track agent state separately**: Use local state to track tasks and other live status. Update them via `onData` as data streams in.
 
 4. **Type filtering**: Use TypeScript's type guards to filter parts by type for type-safe rendering.
 
