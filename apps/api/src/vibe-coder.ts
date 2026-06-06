@@ -123,6 +123,7 @@ export const vibeHarness: Harness = createHarness(
             webSearch: webSearch() as any,
         },
         subAgents: defaultSubAgents,
+     
     },
     {
         dbPath: 'workspace/vibes.db',
