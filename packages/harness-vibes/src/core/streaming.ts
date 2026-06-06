@@ -199,6 +199,22 @@ export interface VibesDataParts extends Record<string, unknown> {
     };
 
     /**
+     * Live context-window usage so the UI can show how full the context is and
+     * how much room remains before the conversation is compressed. Emitted each
+     * step with a stable id so it updates in place.
+     */
+    context_usage: {
+        /** Estimated tokens currently in the model context. */
+        usedTokens: number;
+        /** The model's total context window in tokens. */
+        contextWindow: number;
+        /** Fraction of the window at which compression kicks in (0–1). */
+        threshold: number;
+        /** Convenience: tokens at which compression triggers (threshold × window). */
+        compressAt: number;
+    };
+
+    /**
      * A questionnaire the agent is asking the user to fill in (the
      * ClarificationPlugin's `ask_user`). Rendered as a form above the composer;
      * the user's answers come back as the next message. The agent's run stops
@@ -647,6 +663,16 @@ export class DataStreamWriter {
             type: 'data-artifact',
             id: `artifact-${artifact.id}`,
             data: artifact,
+        } as const);
+    }
+
+    /** Write/replace the live context-window usage gauge. */
+    writeContextUsage(usage: VibesDataParts['context_usage']): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-context_usage',
+            id: 'context-usage',
+            data: usage,
         } as const);
     }
 

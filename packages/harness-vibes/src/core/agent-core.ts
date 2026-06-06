@@ -77,6 +77,10 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
     protected model: LanguageModel;
     protected customSystemPrompt: string;
     protected maxContextMessages: number;
+    /** Model context window in tokens (token-based pruning). */
+    protected contextWindow: number;
+    /** Fraction of the window at which we start trimming context (0–1). */
+    protected contextCompressionRatio: number;
     protected maxRetries: number;
     protected customTools: Record<string, unknown>;
     protected toolsRequiringApproval: ToolsRequiringApprovalConfig = [];
@@ -199,6 +203,8 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
         this.model = config.model;
         this.customSystemPrompt = config.systemPrompt || '';
         this.maxContextMessages = config.maxContextMessages ?? 50;
+        this.contextWindow = config.contextWindow ?? 128000;
+        this.contextCompressionRatio = config.contextCompressionRatio ?? 0.7;
         this.maxRetries = config.maxRetries ?? 2;
         this.customTools = config.tools || {};
         this.toolsRequiringApproval = config.toolsRequiringApproval || [];
@@ -1016,34 +1022,41 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
      * 2. Second pass: Truncation to max messages if still over limit
      */
     protected async pruneMessages(messages: ModelMessage[]): Promise<ModelMessage[]> {
-        const maxMessages = this.maxContextMessages;
-
-        // Phase 1: Apply restorable compression
+        // Phase 1: lossless restorable compression of large tool outputs.
         const compressed = await this.compressLargeContent(messages);
 
-        // Calculate token estimate (rough approximation)
-        const estimateTokens = (msgs: ModelMessage[]) => {
-            return msgs.reduce((acc, msg) => acc + this.extractMessageContent(msg).length, 0) / 4;
-        };
+        // Token-based: the SummarizationPlugin handles compression at the
+        // configured ratio (e.g. 70% of the window). This hard truncation is a
+        // last-resort safety net only — it fires near the very top of the
+        // window so it doesn't pre-empt summarization or trim short
+        // conversations by message count.
+        const estimateTokens = (msgs: ModelMessage[]) =>
+            msgs.reduce((acc, msg) => acc + this.extractMessageContent(msg).length, 0) / 4;
 
-        const estimatedTokens = estimateTokens(compressed);
-
-        // If we're within reasonable bounds, return compressed messages
-        if (compressed.length <= maxMessages && estimatedTokens < 100000) {
+        const emergencyCeiling = this.contextWindow * 0.95;
+        if (estimateTokens(compressed) < emergencyCeiling) {
             return compressed;
         }
 
-        // Phase 2: Keep recent messages and truncate the rest
-        const keepCount = maxMessages;
-        const messagesToKeep = compressed.slice(-keepCount);
+        // Over the ceiling: keep the most recent messages that fit in ~85% of
+        // the window, dropping the oldest.
+        const keepBudget = this.contextWindow * 0.85;
+        let acc = 0;
+        let splitAt = compressed.length;
+        for (let i = compressed.length - 1; i >= 0; i--) {
+            acc += this.extractMessageContent(compressed[i]).length / 4;
+            if (acc > keepBudget) break;
+            splitAt = i;
+        }
+        const messagesToKeep = compressed.slice(splitAt);
 
-        // Remove leading tool messages to ensure we start with meaningful content
+        // Don't start the window on a dangling tool message.
         while (messagesToKeep.length > 0 && messagesToKeep[0].role === 'tool') {
             messagesToKeep.shift();
         }
 
         if (process.env.DEBUG_VIBES) {
-            console.log(`[AgentCore] Pruned ${messages.length} → ${messagesToKeep.length} messages`);
+            console.log(`[AgentCore] Emergency prune ${messages.length} → ${messagesToKeep.length} messages (>${Math.round(emergencyCeiling)} tok)`);
         }
 
         return messagesToKeep;

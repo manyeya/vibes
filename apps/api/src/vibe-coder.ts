@@ -16,7 +16,7 @@ import { wrapLanguageModel, hasToolCall, type LanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { webSearch } from '@exalabs/ai-sdk';
 import { vibePrompt } from './prompts/vibe';
-import { getModel } from './model-factory';
+import { getModel, getContextWindow, getDefaultModelId } from './model-factory';
 import { dotenvLoad } from 'dotenv-mono';
 
 // Load env (API keys, etc.) before the harness resolves its model below.
@@ -115,10 +115,11 @@ export const vibeHarness: Harness = createHarness(
     {
         model: buildVibeModel(),
         systemPrompt: vibePrompt,
-        // Verbatim window kept by the agent's pruneMessages fallback;
-        // SummarizationPlugin trims earlier history before this threshold.
         maxSteps: 60,
-        maxContextMessages: 50,
+        // Token-based context compression: summarize the oldest history once the
+        // conversation passes 70% of the model's real context window.
+        contextWindow: getContextWindow(getDefaultModelId()),
+        contextCompressionRatio: 0.7,
         // Hand control back to the user the moment the agent asks a question:
         // the run halts after `ask_user` so the questionnaire can be answered.
         stopWhen: hasToolCall(ASK_USER_TOOL_NAME),

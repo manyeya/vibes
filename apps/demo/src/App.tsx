@@ -45,7 +45,8 @@ import { ActivityStream, StatusStrip } from './components/chat/ActivityStream';
 import { ArtifactPanel } from './components/artifacts/ArtifactPanel';
 import { ArtifactsContext } from './components/artifacts/ArtifactsContext';
 import { ClarificationForm } from './components/chat/ClarificationForm';
-import type { ArtifactData, ClarificationData } from './components/data-parts/types';
+import { ContextGauge } from './components/chat/ContextGauge';
+import type { ArtifactData, ClarificationData, ContextUsageData } from './components/data-parts/types';
 
 // ============ TYPES ============
 interface SessionUsage {
@@ -439,6 +440,7 @@ const ChatMessage = ({ message, onApprove, onDeny, live = false }: ChatMessagePr
     if (part.type === 'data-status') return null;
     if (part.type === 'data-task_update' || part.type === 'data-task_graph') return null;
     if (part.type === 'data-clarification') return null; // shown as the form above the composer
+    if (part.type === 'data-context_usage') return null; // shown as the gauge in the composer footer
     if (isDataPart(part)) {
       // Sub-agent activity: parts carrying a delegationId are what a delegated
       // agent is *doing* (its commands, file ops, thoughts). Nest + label them
@@ -567,6 +569,7 @@ const SUPPRESSED_CHAT_PARTS = new Set([
   'data-task_update',
   'data-task_graph',
   'data-clarification', // rendered as the questionnaire form above the composer
+  'data-context_usage', // rendered as the context gauge in the composer footer
 ]);
 
 // ============ MAIN CHAT AREA ============
@@ -675,6 +678,7 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
         case 'data-agent_message':
         case 'data-agent_thought':
         case 'data-clarification':
+        case 'data-context_usage':
         case 'data-notification':
           updateLiveDataParts();
           break;
@@ -915,6 +919,20 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
     for (const p of dataParts) scan(p.type, p.data as any);
     return latest && !answeredClarifications.has((latest as ClarificationData).id) ? latest : null;
   }, [messages, dataParts, answeredClarifications]);
+
+  // Latest context-window usage (persisted in message parts + streamed live),
+  // for the gauge in the composer footer.
+  const contextUsage = useMemo<ContextUsageData | null>(() => {
+    let latest: ContextUsageData | null = null;
+    const scan = (type?: string, data?: any) => {
+      if (type === 'data-context_usage' && typeof data?.contextWindow === 'number') latest = data as ContextUsageData;
+    };
+    for (const m of messages as any[]) {
+      for (const p of (m?.parts ?? [])) scan(p?.type, p?.data);
+    }
+    for (const p of dataParts) scan(p.type, p.data as any);
+    return latest;
+  }, [messages, dataParts]);
 
   // Send a message; if a clarification is pending, mark it answered so the form
   // clears regardless of whether the user used the form or the composer.
@@ -1191,16 +1209,20 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
               }}
             />
             <div className="mt-2 flex items-center justify-between gap-2">
-              {/* session token usage + estimated cost */}
-              <div
-                className="flex items-center gap-1.5 font-mono text-[11px] text-[color:var(--color-ink-faint)]"
-                title="Session tokens · estimated cost"
-              >
-                <Coins className="h-3.5 w-3.5" />
-                <span className="text-[color:var(--color-ink-soft)]">{formatTokens(usage?.totalTokens ?? 0)}</span>
-                <span>tok</span>
-                <span className="opacity-40">·</span>
-                <span>{estimateCost(usage, models.find((m) => m.id === model))}</span>
+              <div className="flex items-center gap-3">
+                {/* session token usage + estimated cost */}
+                <div
+                  className="flex items-center gap-1.5 font-mono text-[11px] text-[color:var(--color-ink-faint)]"
+                  title="Session tokens · estimated cost"
+                >
+                  <Coins className="h-3.5 w-3.5" />
+                  <span className="text-[color:var(--color-ink-soft)]">{formatTokens(usage?.totalTokens ?? 0)}</span>
+                  <span>tok</span>
+                  <span className="opacity-40">·</span>
+                  <span>{estimateCost(usage, models.find((m) => m.id === model))}</span>
+                </div>
+                {/* live context-window fill + room before compression */}
+                {contextUsage && <ContextGauge usage={contextUsage} />}
               </div>
 
               {/* model selector + send */}

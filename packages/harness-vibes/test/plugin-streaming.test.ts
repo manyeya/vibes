@@ -8,6 +8,7 @@ import BashPlugin from '../src/plugins/bash';
 import FilesystemPlugin from '../src/plugins/filesystem';
 import { PlanningPlugin } from '../src/plugins/planning';
 import MemoryPlugin from '../src/plugins/memory';
+import SummarizationPlugin from '../src/plugins/summarization';
 import {
   createCapturingWriter,
   createTempWorkspace,
@@ -206,6 +207,42 @@ describe('Plugin streaming', () => {
     } finally {
       await removeTempWorkspace(workspaceRoot);
     }
+  });
+
+  test('SummarizationPlugin: token-based — emits context usage and compresses past the threshold', async () => {
+    const parts: any[] = [];
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => ({
+        finishReason: { type: 'stop', unified: 'stop' },
+        content: [{ type: 'text', text: '• earlier work summarised' }],
+        usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
+        warnings: [],
+        providerMetadata: undefined,
+      } as any),
+    });
+    // window 1000 tok, ratio 0.7 → compress at 700 tok (~2800 chars).
+    const plugin = new SummarizationPlugin(model as any, { contextWindow: 1000, compressionRatio: 0.7 });
+    plugin.onStreamContextReady(createPluginStreamContext(createCapturingWriter(parts)));
+
+    // Small conversation → under threshold → no compression, but usage emitted.
+    await (plugin.prepareStep as any)({ steps: [], stepNumber: 0, model, messages: [{ role: 'user', content: 'hi' }] });
+    const usage = parts.filter((p) => p.type === 'data-context_usage').pop();
+    expect(usage).toBeDefined();
+    expect(usage.data.contextWindow).toBe(1000);
+    expect(usage.data.compressAt).toBe(700);
+    expect(parts.some((p) => p.type === 'data-summarization')).toBe(false);
+
+    // Big conversation (~2000 tok) → over threshold → summarize oldest, keep recent.
+    const big = Array.from({ length: 20 }, (_, i) => ({
+      role: i % 2 ? 'assistant' : 'user',
+      content: 'x'.repeat(400),
+    }));
+    const result: any = await (plugin.prepareStep as any)({ steps: [], stepNumber: 1, model, messages: big });
+    expect(parts.some((p) => p.type === 'data-summarization' && p.data.stage === 'complete')).toBe(true);
+    // result prepends a summary system message, keeps a verbatim tail
+    expect(result?.messages?.[0]?.role).toBe('system');
+    expect(String(result.messages[0].content)).toContain('summarised');
+    expect(result.messages.length).toBeLessThan(big.length + 1);
   });
 
   test('MemoryPlugin: remember/recall/forget round-trip + loads into the system prompt', async () => {

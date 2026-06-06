@@ -382,6 +382,10 @@ export interface AgentCoreConfig {
     stopWhen?: StopCondition<ToolSet> | Array<StopCondition<ToolSet>>;
     /** Maximum messages before context compression kicks in (default: 30) */
     maxContextMessages?: number;
+    /** Model context window in tokens. Drives token-based compression. (default: 128000) */
+    contextWindow?: number;
+    /** Fraction of the context window at which compression kicks in, 0–1 (default: 0.7) */
+    contextCompressionRatio?: number;
     /** Model temperature for controlling randomness */
     temperature?: number;
     /** Maximum retries for API failures (default: 2) */

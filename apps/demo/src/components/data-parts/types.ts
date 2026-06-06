@@ -47,6 +47,7 @@ export type DelegationData = VibesDataParts['delegation'];
 export type ArtifactData = VibesDataParts['artifact'];
 export type ArtifactKind = ArtifactData['kind'];
 export type ClarificationData = VibesDataParts['clarification'];
+export type ContextUsageData = VibesDataParts['context_usage'];
 export type AgentMessageData = VibesDataParts['agent_message'];
 export type AgentThoughtData = VibesDataParts['agent_thought'];
 

@@ -8,11 +8,14 @@ import {
 } from '../core/types';
 
 export interface SummarizationConfig {
+    /** Model context window in tokens (default 128000). */
+    contextWindow?: number;
     /**
-     * Soft cap on verbatim messages kept after summarization. The plugin
-     * triggers once message count exceeds `maxContextMessages * 1.5`.
+     * Fraction of the context window at which summarization kicks in, 0–1
+     * (default 0.7). Compression triggers once the conversation's estimated
+     * tokens exceed `contextWindow * compressionRatio`.
      */
-    maxContextMessages?: number;
+    compressionRatio?: number;
     /**
      * Optional override model for the summarization call. Defaults to the
      * agent's primary model. Pointing this at a cheaper model is recommended.
@@ -25,35 +28,45 @@ export interface SummarizationConfig {
     perMessageCharCap?: number;
 }
 
-const DEFAULT_MAX_MESSAGES = 30;
+const DEFAULT_CONTEXT_WINDOW = 128000;
+const DEFAULT_COMPRESSION_RATIO = 0.7;
 const DEFAULT_PER_MESSAGE_CAP = 1200;
 
 /**
- * Rolling-summary plugin. Hooks `prepareStep` and, when the conversation
- * grows past `maxContextMessages * 1.5`, summarises the oldest excess
- * messages into a synthetic system message that is prepended to the
- * conversation. The running summary is cached on the plugin instance so
- * a single agent run does not re-summarise content it has already covered.
+ * Rolling-summary plugin (token-based). Hooks `prepareStep`, emits a live
+ * context-usage gauge every step, and once the conversation's estimated tokens
+ * pass `contextWindow * compressionRatio` (default 70%), summarises the oldest
+ * messages into a synthetic system message prepended to the recent tail. The
+ * running summary is cached so a run doesn't re-summarise covered content.
  *
- * Pairs with `AgentCore.pruneMessages` (which handles lossless compression
- * of large tool outputs). Configure the agent's `maxContextMessages` higher
- * than the plugin's so this summarisation triggers *before* the agent's
- * fallback truncation.
+ * Pairs with `AgentCore.pruneMessages`, which does lossless large-tool-output
+ * compression and only hard-truncates as a last resort near the very top of the
+ * window — so this token-based summarisation is the primary mechanism and short
+ * conversations are never trimmed by message count.
  */
 export default class SummarizationPlugin implements Plugin {
     name = 'SummarizationPlugin';
 
     private currentSummary = '';
     private summarizedFingerprints = new Set<string>();
-    private readonly maxContextMessages: number;
+    private readonly contextWindow: number;
+    private readonly compressionRatio: number;
     private readonly perMessageCharCap: number;
     private readonly model: LanguageModel;
     private writer?: DataStreamWriter;
 
     constructor(model: LanguageModel, config: SummarizationConfig = {}) {
         this.model = config.summarizationModel ?? model;
-        this.maxContextMessages = config.maxContextMessages ?? DEFAULT_MAX_MESSAGES;
+        this.contextWindow = config.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+        this.compressionRatio = config.compressionRatio ?? DEFAULT_COMPRESSION_RATIO;
         this.perMessageCharCap = config.perMessageCharCap ?? DEFAULT_PER_MESSAGE_CAP;
+    }
+
+    /** Rough token estimate (~4 chars/token). */
+    private estimateTokens(messages: ModelMessage[]): number {
+        let chars = 0;
+        for (const m of messages) chars += this.extractText(m).length;
+        return Math.round(chars / 4);
     }
 
     onStreamContextReady(context: PluginStreamContext) {
@@ -72,21 +85,47 @@ export default class SummarizationPlugin implements Plugin {
         experimental_context?: unknown;
     }) {
         const messages = options.messages;
-        const triggerThreshold = Math.floor(this.maxContextMessages * 1.5);
+        const used = this.estimateTokens(messages);
+        const compressAt = Math.round(this.contextWindow * this.compressionRatio);
 
-        if (messages.length <= triggerThreshold) {
+        // Always surface live usage so the UI can show how full the context is.
+        this.writer?.writeContextUsage({
+            usedTokens: used,
+            contextWindow: this.contextWindow,
+            threshold: this.compressionRatio,
+            compressAt,
+        });
+
+        // Below the threshold → leave the conversation intact (just carry any
+        // existing summary). This is the common case: no flow disruption.
+        if (used <= compressAt) {
             return this.maybePrependSummary(messages);
         }
 
-        const keepN = this.maxContextMessages;
-        const splitAt = messages.length - keepN;
+        // Over threshold → keep the most recent messages that fit in ~60% of
+        // the trigger budget verbatim, summarize everything older.
+        const keepBudget = compressAt * 0.6;
+        let acc = 0;
+        let splitAt = 0;
+        for (let i = messages.length - 1; i >= 0; i--) {
+            acc += this.estimateTokens([messages[i]]);
+            if (acc > keepBudget) {
+                splitAt = i + 1;
+                break;
+            }
+        }
+        splitAt = Math.min(splitAt, messages.length - 1); // always keep ≥1 recent message
         const oldest = messages.slice(0, splitAt);
         const recent = messages.slice(splitAt);
+
+        if (oldest.length === 0) {
+            return this.maybePrependSummary(messages);
+        }
 
         const newOldies = oldest.filter(m => !this.summarizedFingerprints.has(this.fingerprint(m)));
 
         if (newOldies.length > 0) {
-            this.writer?.writeSummarization('in_progress', messages.length, keepN);
+            this.writer?.writeSummarization('in_progress', messages.length, recent.length);
             try {
                 const delta = await this.summarize(newOldies);
                 this.currentSummary = this.currentSummary
@@ -95,9 +134,9 @@ export default class SummarizationPlugin implements Plugin {
                 for (const m of newOldies) {
                     this.summarizedFingerprints.add(this.fingerprint(m));
                 }
-                this.writer?.writeSummarization('complete', messages.length, keepN, newOldies.length);
+                this.writer?.writeSummarization('complete', messages.length, recent.length, newOldies.length);
             } catch (err) {
-                this.writer?.writeSummarization('failed', messages.length, keepN, undefined,
+                this.writer?.writeSummarization('failed', messages.length, recent.length, undefined,
                     err instanceof Error ? err.message : String(err));
                 // Summarisation is best-effort. On failure, fall through to
                 // the trimmed-without-summary case so the conversation can

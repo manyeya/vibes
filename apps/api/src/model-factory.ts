@@ -46,21 +46,33 @@ export interface AvailableModel {
     priceIn?: number;
     /** USD per 1M output tokens. */
     priceOut?: number;
+    /** Total context window in tokens (drives compression threshold). */
+    contextWindow?: number;
 }
 
+/** Fallback window when a model isn't in the table / is unknown. */
+export const DEFAULT_CONTEXT_WINDOW = 128_000;
+
 export const AVAILABLE_MODELS: AvailableModel[] = [
-    { id: 'openai/gpt-oss-120b:free', label: 'GPT-OSS 120B', free: true, note: 'Strong tool use', priceIn: 0, priceOut: 0 },
-    { id: 'google/gemma-4-31b-it:free', label: 'Gemma 4 31B', free: true, priceIn: 0, priceOut: 0 },
-    { id: 'google/gemma-4-26b-a4b-it:free', label: 'Gemma 4 26B', free: true, priceIn: 0, priceOut: 0 },
-    { id: 'nvidia/nemotron-3-super-120b-a12b:free', label: 'Nemotron 3 Super', free: true, note: '1M context', priceIn: 0, priceOut: 0 },
-    { id: 'qwen/qwen3-coder:free', label: 'Qwen3 Coder', free: true, note: 'Often rate-limited', priceIn: 0, priceOut: 0 },
-    { id: 'moonshotai/kimi-k2.6:free', label: 'Kimi K2.6', free: true, note: 'Reasoning; can rate-limit', priceIn: 0, priceOut: 0 },
-    { id: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet', free: false, note: 'Paid, most reliable', priceIn: 3, priceOut: 15 },
+    { id: 'openai/gpt-oss-120b:free', label: 'GPT-OSS 120B', free: true, note: 'Strong tool use', priceIn: 0, priceOut: 0, contextWindow: 131_072 },
+    { id: 'google/gemma-4-31b-it:free', label: 'Gemma 4 31B', free: true, priceIn: 0, priceOut: 0, contextWindow: 131_072 },
+    { id: 'google/gemma-4-26b-a4b-it:free', label: 'Gemma 4 26B', free: true, priceIn: 0, priceOut: 0, contextWindow: 131_072 },
+    { id: 'nvidia/nemotron-3-super-120b-a12b:free', label: 'Nemotron 3 Super', free: true, note: '1M context', priceIn: 0, priceOut: 0, contextWindow: 1_000_000 },
+    { id: 'qwen/qwen3-coder:free', label: 'Qwen3 Coder', free: true, note: 'Often rate-limited', priceIn: 0, priceOut: 0, contextWindow: 262_144 },
+    { id: 'moonshotai/kimi-k2.6:free', label: 'Kimi K2.6', free: true, note: 'Reasoning; can rate-limit', priceIn: 0, priceOut: 0, contextWindow: 200_000 },
+    { id: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet', free: false, note: 'Paid, most reliable', priceIn: 3, priceOut: 15, contextWindow: 200_000 },
 ];
 
 /** The model id the backend defaults to (env override, else the first listed). */
 export function getDefaultModelId(): string {
     return process.env.OPENROUTER_MODEL || AVAILABLE_MODELS[0].id;
+}
+
+/** Context window (tokens) for a model id, with a safe default. */
+export function getContextWindow(modelId?: string): number {
+    if (!modelId) return DEFAULT_CONTEXT_WINDOW;
+    const match = AVAILABLE_MODELS.find((m) => m.id === modelId);
+    return match?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
 }
 
 function resolveDefaultSpec(): ModelSpec {

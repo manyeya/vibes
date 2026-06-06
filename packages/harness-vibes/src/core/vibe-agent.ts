@@ -55,6 +55,10 @@ export interface DefaultPluginFactoryOptions {
     swarmId?: string;
     /** Sandbox shared by the filesystem + bash plugins for this agent. */
     sandbox?: Sandbox;
+    /** Model context window (tokens) — drives token-based summarization. */
+    contextWindow?: number;
+    /** Fraction of the window at which summarization triggers (0–1). */
+    compressionRatio?: number;
 }
 
 function resolveSharedWorkspaceDir(workspaceDir: string): string {
@@ -94,7 +98,10 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
         // budget by summarising the oldest excess messages once we exceed
         // 1.5x its threshold. Triggers before the agent's pruneMessages
         // fallback truncation.
-        new SummarizationPlugin(config.model, { maxContextMessages: 30 }),
+        new SummarizationPlugin(config.model, {
+            contextWindow: config.contextWindow,
+            compressionRatio: config.compressionRatio,
+        }),
     ];
 }
 
@@ -211,6 +218,8 @@ export class VibeAgent extends AgentCore {
                 sessionId: config.sessionId,
                 swarmId: config.swarmId,
                 sandbox: config.sandbox,
+                contextWindow: this.contextWindow,
+                compressionRatio: this.contextCompressionRatio,
             }));
         }
 
