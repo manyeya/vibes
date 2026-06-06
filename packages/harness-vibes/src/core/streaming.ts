@@ -199,6 +199,25 @@ export interface VibesDataParts extends Record<string, unknown> {
     };
 
     /**
+     * A questionnaire the agent is asking the user to fill in (the
+     * ClarificationPlugin's `ask_user`). Rendered as a form above the composer;
+     * the user's answers come back as the next message. The agent's run stops
+     * after asking (via stopWhen) so control returns to the user.
+     */
+    clarification: {
+        id: string;
+        title?: string;
+        questions: Array<{
+            id: string;
+            question: string;
+            /** single = pick one, multi = pick many, text = free input. */
+            kind: 'single' | 'multi' | 'text';
+            /** Choices for single/multi questions. */
+            options?: string[];
+        }>;
+    };
+
+    /**
      * A sub-agent's LIVE narration/output (its streamed final answer), forwarded
      * from the delegated run so the UI can show what the sub-agent is actually
      * doing under its own tab. Accumulating: re-emitted with a stable id as text
@@ -612,6 +631,16 @@ export class DataStreamWriter {
             type: 'data-artifact',
             id: `artifact-${artifact.id}`,
             data: artifact,
+        } as const);
+    }
+
+    /** Write a clarification questionnaire for the user to fill in. */
+    writeClarification(clarification: VibesDataParts['clarification']): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-clarification',
+            id: `clarification-${clarification.id}`,
+            data: clarification,
         } as const);
     }
 

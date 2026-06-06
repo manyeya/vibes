@@ -17,6 +17,8 @@ import {
     ArtifactPlugin,
     type ArtifactKind,
     type ArtifactPluginConfig,
+    ClarificationPlugin,
+    ASK_USER_TOOL_NAME,
     type SummarizationConfig,
     type ParallelDelegationResult,
 } from './src/plugins';
@@ -101,6 +103,8 @@ export {
     ArtifactPlugin,
     type ArtifactKind,
     type ArtifactPluginConfig,
+    ClarificationPlugin,
+    ASK_USER_TOOL_NAME,
     type ParallelDelegationResult,
     SqliteBackend,
     StateBackend,

@@ -8,6 +8,7 @@ import SubAgentPlugin, { type ParallelDelegationResult } from "./sub-agent";
 import MemoryPlugin from "./memory";
 import SummarizationPlugin, { type SummarizationConfig } from "./summarization";
 import ArtifactPlugin, { type ArtifactKind, type ArtifactPluginConfig } from "./artifact";
+import ClarificationPlugin, { ASK_USER_TOOL_NAME } from "./clarification";
 
 export {
     type Plugin,
@@ -24,4 +25,6 @@ export {
     ArtifactPlugin,
     type ArtifactKind,
     type ArtifactPluginConfig,
+    ClarificationPlugin,
+    ASK_USER_TOOL_NAME,
 }

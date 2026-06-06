@@ -10,9 +10,9 @@
  *   - Workspace setup for new sessions
  */
 
-import { createHarness, type Harness } from '../../../packages/harness-vibes/index';
+import { createHarness, type Harness, ASK_USER_TOOL_NAME } from '../../../packages/harness-vibes/index';
 import type { SubAgent } from '../../../packages/harness-vibes/index';
-import { wrapLanguageModel, type LanguageModel } from 'ai';
+import { wrapLanguageModel, hasToolCall, type LanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { webSearch } from '@exalabs/ai-sdk';
 import { vibePrompt } from './prompts/vibe';
@@ -119,11 +119,14 @@ export const vibeHarness: Harness = createHarness(
         // SummarizationPlugin trims earlier history before this threshold.
         maxSteps: 60,
         maxContextMessages: 50,
+        // Hand control back to the user the moment the agent asks a question:
+        // the run halts after `ask_user` so the questionnaire can be answered.
+        stopWhen: hasToolCall(ASK_USER_TOOL_NAME),
         tools: {
             webSearch: webSearch() as any,
         },
         subAgents: defaultSubAgents,
-     
+
     },
     {
         dbPath: 'workspace/vibes.db',

@@ -9,6 +9,7 @@ import {
     SubAgentPlugin,
     SummarizationPlugin,
     ArtifactPlugin,
+    ClarificationPlugin,
 } from '../plugins';
 import MemoryPlugin from '../plugins/memory';
 import {
@@ -83,6 +84,8 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
         new BashPlugin(config.sandbox ? { sandbox: config.sandbox } : config.workspaceDir),
         // Renderable artifacts (websites, docs, diagrams, charts) → canvas panel.
         new ArtifactPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
+        // Ask the user structured clarifying questions (questionnaire above the composer).
+        new ClarificationPlugin(),
         new MemoryPlugin({
             scratchpadPath: path.join(config.workspaceDir, 'scratchpad.md'),
             notesPath: path.join(sharedWorkspaceDir, 'memories.json'),

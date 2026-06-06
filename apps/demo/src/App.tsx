@@ -44,7 +44,8 @@ import { AgentTabs, type AgentTabInfo } from './components/chat/AgentTabs';
 import { ActivityStream, StatusStrip } from './components/chat/ActivityStream';
 import { ArtifactPanel } from './components/artifacts/ArtifactPanel';
 import { ArtifactsContext } from './components/artifacts/ArtifactsContext';
-import type { ArtifactData } from './components/data-parts/types';
+import { ClarificationForm } from './components/chat/ClarificationForm';
+import type { ArtifactData, ClarificationData } from './components/data-parts/types';
 
 // ============ TYPES ============
 interface SessionUsage {
@@ -437,6 +438,7 @@ const ChatMessage = ({ message, onApprove, onDeny, live = false }: ChatMessagePr
     // now live in the sticky checklist above the composer.
     if (part.type === 'data-status') return null;
     if (part.type === 'data-task_update' || part.type === 'data-task_graph') return null;
+    if (part.type === 'data-clarification') return null; // shown as the form above the composer
     if (isDataPart(part)) {
       // Sub-agent activity: parts carrying a delegationId are what a delegated
       // agent is *doing* (its commands, file ops, thoughts). Nest + label them
@@ -564,6 +566,7 @@ const SUPPRESSED_CHAT_PARTS = new Set([
   'data-status',
   'data-task_update',
   'data-task_graph',
+  'data-clarification', // rendered as the questionnaire form above the composer
 ]);
 
 // ============ MAIN CHAT AREA ============
@@ -601,6 +604,9 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
   const [panelOpen, setPanelOpen] = useState(false);
   // Live activity rail: which agent's work is shown ('main' or a delegationId).
   const [activeAgent, setActiveAgent] = useState<string>('main');
+  // Clarification questionnaires the user has already answered (by id), so the
+  // form clears once submitted.
+  const [answeredClarifications, setAnsweredClarifications] = useState<Set<string>>(() => new Set());
 
   // Keep the selected model in a ref so the transport (created once) always
   // reads the latest value — including on automatic tool-approval resends.
@@ -668,6 +674,7 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
         case 'data-artifact':
         case 'data-agent_message':
         case 'data-agent_thought':
+        case 'data-clarification':
         case 'data-notification':
           updateLiveDataParts();
           break;
@@ -894,12 +901,37 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
     [dataParts, effectiveAgent],
   );
 
+  // The latest clarification the agent asked that the user hasn't answered yet —
+  // drives the questionnaire form above the composer. (The agent's run stops
+  // after asking, so this is shown while idle.)
+  const activeClarification = useMemo<ClarificationData | null>(() => {
+    let latest: ClarificationData | null = null;
+    const scan = (type?: string, data?: any) => {
+      if (type === 'data-clarification' && data?.id) latest = data as ClarificationData;
+    };
+    for (const m of messages as any[]) {
+      for (const p of (m?.parts ?? [])) scan(p?.type, p?.data);
+    }
+    for (const p of dataParts) scan(p.type, p.data as any);
+    return latest && !answeredClarifications.has((latest as ClarificationData).id) ? latest : null;
+  }, [messages, dataParts, answeredClarifications]);
+
+  // Send a message; if a clarification is pending, mark it answered so the form
+  // clears regardless of whether the user used the form or the composer.
+  const sendUserMessage = (text: string) => {
+    if (!text.trim()) return;
+    if (activeClarification) {
+      setAnsweredClarifications((prev) => new Set(prev).add(activeClarification.id));
+    }
+    setDataParts([]);
+    setActiveAgent('main');
+    sendMessage({ text });
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (input.trim()) {
-      setDataParts([]); // Clear previous data parts
-      setActiveAgent('main'); // new turn starts on the main agent's view
-      sendMessage({ text: input });
+      sendUserMessage(input);
       setInput('');
     }
   };
@@ -1134,6 +1166,12 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
 
       {/* Composer */}
       <div className="shrink-0 px-4 pb-5 pt-3">
+        {activeClarification && !isLoading && (
+          <ClarificationForm
+            clarification={activeClarification}
+            onSubmit={(text) => sendUserMessage(text)}
+          />
+        )}
         <AgentTabs agents={agents} active={effectiveAgent} onSelect={setActiveAgent} />
         <TaskChecklist tasks={tasks} />
         <form onSubmit={handleSubmit} className="mx-auto max-w-3xl">
