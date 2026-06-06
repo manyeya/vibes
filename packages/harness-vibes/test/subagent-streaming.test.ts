@@ -91,7 +91,7 @@ describe('SubAgentPlugin streaming', () => {
         60 * 60 * 1000,
         4,
         () => ({
-          // No completion call AND no output → a genuine failure.
+          // No report, no final text, no tool actions → a genuine failure.
           stream: async () => createStreamResult('   ', []),
         } as any)
       );
@@ -102,8 +102,8 @@ describe('SubAgentPlugin streaming', () => {
       const delegationParts = parts.filter(part => part.type === 'data-delegation');
       expect(delegationParts).toHaveLength(3);
       expect(delegationParts[2].data.status).toBe('failed');
-      expect(delegationParts[2].data.error).toContain('no result');
-      expect(delegationParts[2].data.summary).toContain('did not call task_completion');
+      expect(delegationParts[2].data.error).toContain('took no actions');
+      expect(delegationParts[2].data.summary).toContain('without producing any output');
     } finally {
       await removeTempWorkspace(workspaceDir);
     }

@@ -80,50 +80,6 @@ export interface VibesDataParts extends Record<string, unknown> {
         phase?: string;
     };
 
-    /** Reasoning mode updates */
-    reasoning_mode: {
-        mode: 'react' | 'tot' | 'plan-execute';
-    };
-
-    /** Optional structured reasoning updates */
-    reasoning: {
-        problem: string;
-        count: number;
-        context?: string;
-    };
-
-    /**
-     * Tree-of-Thoughts: the explored branches. Emitted with a stable id per
-     * reasoning cycle so the UI updates the same set in place as branches go
-     * proposed → evaluated (scored) → selected/discarded.
-     */
-    reasoning_thoughts: {
-        cycle: number;
-        thoughts: Array<{
-            id: string;
-            thought: string;
-            expectedOutcome: string;
-            confidence: number;
-            effort: 'low' | 'medium' | 'high';
-            status: 'proposed' | 'evaluated' | 'selected' | 'discarded';
-            /** Overall evaluation score (0-10), present once evaluated. */
-            score?: number;
-            /** Evaluator's reasoning, present once evaluated. */
-            reasoning?: string;
-        }>;
-    };
-
-    /** Tree-of-Thoughts: which branch was ultimately selected. */
-    reasoning_selection: {
-        cycle: number;
-        selectedId: string;
-        thought: string;
-        expectedOutcome?: string;
-        score?: number;
-        reasoning?: string;
-        discardedIds: string[];
-    };
-
     /** Updates to specific todo items for UI synchronization */
     todo_update: {
         id: string;
@@ -204,14 +160,6 @@ export interface VibesDataParts extends Record<string, unknown> {
         detail?: string;
     };
 
-    /** Swarm coordination signals */
-    swarm_signal: {
-        from: string;
-        to?: string;
-        signal: string;
-        data?: Record<string, unknown>;
-    };
-
     /** Sub-agent delegation updates */
     delegation: {
         delegationId: string;
@@ -255,6 +203,25 @@ export interface VibesDataParts extends Record<string, unknown> {
         name?: string;
         /** Available skill names (list). */
         skills?: string[];
+    };
+
+    /**
+     * A sub-agent's LIVE narration/output (its streamed final answer), forwarded
+     * from the delegated run so the UI can show what the sub-agent is actually
+     * doing under its own tab. Accumulating: re-emitted with a stable id as text
+     * grows. Carries delegationId/agentName attribution via the scoped writer.
+     */
+    agent_message: {
+        text: string;
+        delegationId?: string;
+        agentName?: string;
+    };
+
+    /** A sub-agent's LIVE reasoning/thinking, forwarded the same way. */
+    agent_thought: {
+        text: string;
+        delegationId?: string;
+        agentName?: string;
     };
 
     /**
@@ -471,57 +438,6 @@ export class DataStreamWriter {
         } as const);
     }
 
-    /** Write reasoning mode update */
-    writeReasoningMode(mode: 'react' | 'tot' | 'plan-execute'): void {
-        if (!this.writer) return;
-        this.writer.write({
-            type: 'data-reasoning_mode',
-            id: 'reasoning-mode',
-            data: { mode },
-        } as const);
-    }
-
-    writeReasoning(
-        problem: string,
-        count: number,
-        context?: string
-    ): void {
-        if (!this.writer) return;
-        this.writer.write({
-            type: 'data-reasoning',
-            data: { problem, count, context },
-        } as const);
-    }
-
-    /**
-     * Write/replace the Tree-of-Thoughts branch set for a reasoning cycle.
-     * Uses a stable id per cycle so the UI updates the same card in place as
-     * branches are proposed, then scored, then selected/discarded.
-     */
-    writeReasoningThoughts(
-        cycle: number,
-        thoughts: VibesDataParts['reasoning_thoughts']['thoughts']
-    ): void {
-        if (!this.writer) return;
-        this.writer.write({
-            type: 'data-reasoning_thoughts',
-            id: `reasoning-thoughts-${cycle}`,
-            data: { cycle, thoughts },
-        } as const);
-    }
-
-    /** Write the selected Tree-of-Thoughts branch for a reasoning cycle. */
-    writeReasoningSelection(
-        selection: VibesDataParts['reasoning_selection']
-    ): void {
-        if (!this.writer) return;
-        this.writer.write({
-            type: 'data-reasoning_selection',
-            id: `reasoning-selection-${selection.cycle}`,
-            data: selection,
-        } as const);
-    }
-
     /** Write todo update */
     writeTodoUpdate(
         id: string,
@@ -637,19 +553,6 @@ export class DataStreamWriter {
         this.writer.write({
             type: 'data-memory_update',
             data: { type, action, count, ...options },
-        } as const);
-    }
-
-    /** Write swarm signal */
-    writeSwarmSignal(
-        from: string,
-        signal: string,
-        options: { to?: string; data?: Record<string, unknown> } = {}
-    ): void {
-        if (!this.writer) return;
-        this.writer.write({
-            type: 'data-swarm_signal',
-            data: { from, signal, ...options },
         } as const);
     }
 

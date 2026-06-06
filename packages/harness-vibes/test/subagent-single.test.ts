@@ -7,7 +7,6 @@ import type { Plugin, AgentCoreConfig } from '../src/core/types';
 import {
   completionSteps,
   completionThenTextSteps,
-  completionThenToolCallSteps,
   createStreamResult,
   createTempWorkspace,
   createTool,
@@ -93,11 +92,12 @@ describe('SubAgentPlugin single delegation', () => {
       expect(result.status).toBe('completed');
       expect(result.completionConfirmed).toBe(true);
       expect(capturedConfigs).toHaveLength(1);
-      expect(capturedConfigs[0].maxSteps).toBe(30);
-      expect(capturedConfigs[0].stopWhen).toBeDefined();
+      expect(capturedConfigs[0].maxSteps).toBe(25);
+      // Natural completion: no forced stopWhen on the report tool anymore.
+      expect(capturedConfigs[0].stopWhen).toBeUndefined();
       expect(capturedConfigs[0].allowedTools).toContain('readFile');
       expect(capturedConfigs[0].allowedTools).toContain('list_files');
-      expect(capturedConfigs[0].allowedTools).toContain('task_completion');
+      expect(capturedConfigs[0].allowedTools).toContain('report_result');
       expect(capturedConfigs[0].allowedTools).not.toContain('webSearch');
     } finally {
       await removeTempWorkspace(workspaceDir);
@@ -170,7 +170,7 @@ describe('SubAgentPlugin single delegation', () => {
 
       expect(result.status).toBe('completed');
       expect(capturedConfigs).toHaveLength(1);
-      expect(Object.keys(capturedConfigs[0].tools ?? {})).toEqual(['custom_tool', 'task_completion']);
+      expect(Object.keys(capturedConfigs[0].tools ?? {})).toEqual(['custom_tool', 'report_result']);
       expect(capturedConfigs[0].plugins).toEqual([explicitPlugin]);
       expect(capturedConfigs[0].blockedTools).toEqual(expect.arrayContaining(['task', 'delegate', 'parallel_delegate']));
     } finally {
@@ -193,7 +193,7 @@ describe('SubAgentPlugin single delegation', () => {
             allowedTools: ['readFile'],
           }],
         ]),
-        // Produces output but never calls task_completion.
+        // Produces a final answer but never calls report_result.
         stream: async () => createStreamResult('I inspected the auth flow and found two issues.', []),
       });
 
@@ -211,7 +211,7 @@ describe('SubAgentPlugin single delegation', () => {
     }
   });
 
-  test('a run that produces no output at all still fails as missing_completion', async () => {
+  test('a run that produces no output at all fails as no_output', async () => {
     const workspaceDir = await createTempWorkspace('subagent-empty');
 
     try {
@@ -235,7 +235,7 @@ describe('SubAgentPlugin single delegation', () => {
       });
 
       expect(result.status).toBe('error');
-      expect(result.errorCode).toBe('missing_completion');
+      expect(result.errorCode).toBe('no_output');
       expect(result.savedTo).toBeDefined();
       expect(existsSync(join(workspaceDir, result.savedTo))).toBe(true);
     } finally {
@@ -276,8 +276,8 @@ describe('SubAgentPlugin single delegation', () => {
     }
   });
 
-  test('a tool call after completion is a real violation (post_completion_activity)', async () => {
-    const workspaceDir = await createTempWorkspace('subagent-post-toolcall');
+  test('a run with only tool actions (no final text/report) succeeds with a step summary', async () => {
+    const workspaceDir = await createTempWorkspace('subagent-steps-only');
 
     try {
       const plugin = createPlugin({
@@ -291,10 +291,10 @@ describe('SubAgentPlugin single delegation', () => {
             allowedTools: ['readFile'],
           }],
         ]),
-        stream: async (config) => {
-          await recordCompletion(config, 'done', ['src/example.ts']);
-          return createStreamResult('done then acted', completionThenToolCallSteps('done', ['src/example.ts']));
-        },
+        // No final text and no report — but it did call a tool.
+        stream: async () => createStreamResult('', [
+          { content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'readFile', input: { path: 'a.ts' } }] },
+        ]),
       });
 
       const result = await (plugin.tools.delegate as any).execute({
@@ -302,8 +302,77 @@ describe('SubAgentPlugin single delegation', () => {
         task: 'Inspect the auth flow',
       });
 
-      expect(result.status).toBe('error');
-      expect(result.errorCode).toBe('post_completion_activity');
+      expect(result.status).toBe('completed');
+      expect(result.inferred).toBe(true);
+      expect(result.summary).toContain('readFile');
+    } finally {
+      await removeTempWorkspace(workspaceDir);
+    }
+  });
+
+  test('create_agent registers a runtime sub-agent that delegate can then use', async () => {
+    const workspaceDir = await createTempWorkspace('subagent-create');
+
+    try {
+      const plugin = createPlugin({
+        workspaceDir,
+        subAgents: new Map(),
+        stream: async () => createStreamResult('Investigated and wrote the report.', []),
+      });
+
+      // No agents to start with.
+      const before = await (plugin.tools.list_agents as any).execute({});
+      expect(before.agents).toHaveLength(0);
+
+      const created = await (plugin.tools.create_agent as any).execute({
+        name: 'MigrationWriter',
+        description: 'Writes DB migrations',
+        system_prompt: 'You write careful migrations.',
+        allowed_tools: ['readFile', 'writeFile_does_not_exist'],
+      });
+      expect(created.ok).toBe(true);
+      expect(created.availableTools).toContain('readFile');
+      // Unknown tools are reported but don't crash.
+      expect(created.ignoredUnknownTools).toContain('writeFile_does_not_exist');
+
+      const after = await (plugin.tools.list_agents as any).execute({});
+      expect(after.agents.map((a: any) => a.name)).toContain('MigrationWriter');
+
+      const result = await (plugin.tools.delegate as any).execute({
+        agent_name: 'MigrationWriter',
+        task: 'Add a users table migration',
+      });
+      expect(result.status).toBe('completed');
+      expect(result.summary).toContain('Investigated');
+    } finally {
+      await removeTempWorkspace(workspaceDir);
+    }
+  });
+
+  test('spawn_agent defines and runs a one-off agent in a single call', async () => {
+    const workspaceDir = await createTempWorkspace('subagent-spawn');
+    const capturedConfigs: AgentCoreConfig[] = [];
+
+    try {
+      const plugin = createPlugin({
+        workspaceDir,
+        capturedConfigs,
+        subAgents: new Map(),
+        stream: async () => createStreamResult('One-off task done.', []),
+      });
+
+      const result = await (plugin.tools.spawn_agent as any).execute({
+        task: 'Summarize the README',
+        system_prompt: 'You summarize docs.',
+        allowed_tools: ['readFile'],
+      });
+
+      expect(result.status).toBe('completed');
+      expect(result.summary).toContain('One-off task done');
+      expect(capturedConfigs).toHaveLength(1);
+      // The spawned agent is registered and listable.
+      const listed = await (plugin.tools.list_agents as any).execute({});
+      expect(listed.agents).toHaveLength(1);
     } finally {
       await removeTempWorkspace(workspaceDir);
     }

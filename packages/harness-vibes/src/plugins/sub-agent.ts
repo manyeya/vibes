@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { hasToolCall, type LanguageModel, type Tool, type UIMessageStreamWriter, tool } from 'ai';
+import { type LanguageModel, type Tool, type UIMessageStreamWriter, tool } from 'ai';
 import z from 'zod';
 import {
     VibesUIMessage,
@@ -16,8 +16,11 @@ import {
 } from '../core/types';
 import { AgentCore } from '../core/agent-core';
 
-const COMPLETION_TOOL_NAME = 'task_completion';
-const DELEGATION_TOOL_NAMES = ['task', 'delegate', 'parallel_delegate'] as const;
+// Optional structured-handoff tool. Sub-agents are NOT required to call it —
+// a normal final answer is a perfectly good result. Calling it just lets a
+// sub-agent hand back a clean summary + the files it touched.
+const COMPLETION_TOOL_NAME = 'report_result';
+const DELEGATION_TOOL_NAMES = ['task', 'delegate', 'parallel_delegate', 'create_agent', 'spawn_agent', 'list_agents'] as const;
 const DELEGATION_TOOL_NAME_SET = new Set<string>(DELEGATION_TOOL_NAMES);
 
 const completionSchema = z.object({
@@ -36,7 +39,7 @@ const delegationInputSchema = z.object({
 
 export type CompletionPayload = z.infer<typeof completionSchema>;
 
-type DelegationErrorCode = 'missing_completion' | 'post_completion_activity' | 'invalid_config' | 'subagent_failed';
+type DelegationErrorCode = 'no_output' | 'invalid_config' | 'subagent_failed';
 type ArtifactMode = 'always' | 'errors-only' | 'never';
 
 type BuiltInPluginFactory = (options: {
@@ -53,7 +56,7 @@ interface DelegationSuccessResult {
     delegationId: string;
     summary: string;
     cached: boolean;
-    /** True when the summary was inferred from the sub-agent's final output rather than a structured task_completion call. */
+    /** True when the summary was inferred from the sub-agent's final output rather than a structured report_result call. */
     inferred?: boolean;
     savedTo?: string;
     filesCreated?: string[];
@@ -252,14 +255,14 @@ function buildDelegationMessage(request: DelegationInput): string {
     }
 
     sections.push(
-        `## Completion Requirement\nWhen the task is complete, call ${COMPLETION_TOOL_NAME} exactly once with a concise summary and any files you created or modified.`
+        `## When you're done\nFinish by giving a short, direct answer describing what you did and what you found. If you created or modified files, optionally call ${COMPLETION_TOOL_NAME} with a summary and the file list — but a plain final answer is fine.`
     );
 
     return sections.join('\n\n');
 }
 
 function buildSubAgentSystemPrompt(subAgent: NormalizedSubAgent): string {
-    return `${subAgent.systemPrompt}\n\n## Delegation Contract\n- Complete only the delegated task.\n- You must call ${COMPLETION_TOOL_NAME} when the work is done.\n- After calling ${COMPLETION_TOOL_NAME}, stop. Do not make additional tool calls or continue reasoning.\n- Return concise, actionable summaries. Put file paths in the files array when relevant.`;
+    return `${subAgent.systemPrompt}\n\n## Delegation Contract\n- Focus only on the delegated task; use your tools to actually do the work.\n- When finished, give a concise final answer summarizing the outcome and any file paths.\n- You MAY call ${COMPLETION_TOOL_NAME} to hand back a structured summary + file list, but it is optional — do not loop or stall waiting to call it.`;
 }
 
 function buildSuccessArtifactContent(options: {
@@ -287,40 +290,29 @@ function buildErrorArtifactContent(options: {
     return `# ${options.agentName} Task Failure\n\n## Task\n${options.request.task}\n\n## Error Code\n${options.errorCode}\n\n## Summary\n${options.summary}\n\n## Error\n${options.error}\n\n## Raw Output\n${options.rawText?.trim() ? options.rawText : 'None'}`;
 }
 
-/**
- * Detect real side-effecting actions AFTER the sub-agent reported completion.
- * Only a fresh tool CALL counts as a violation — trailing text/reasoning (a
- * harmless "Done.") and the completion tool's own result are allowed. This
- * keeps the safety intent (catch "done, now delete files") without failing a
- * delegation over a closing sentence.
- */
-function hasPostCompletionToolCalls(rawResult: ExecutionResult): boolean {
-    let completionSeen = false;
-
-    for (const step of rawResult.steps ?? []) {
-        for (const part of step.content ?? []) {
-            const isCompletionPart =
-                (part.type === 'tool-call' || part.type === 'tool-result' || part.type === 'tool-error') &&
-                part.toolName === COMPLETION_TOOL_NAME;
-
-            if (isCompletionPart) {
-                completionSeen = true;
-                continue;
-            }
-
-            if (completionSeen && part.type === 'tool-call') {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
 /** Cap an inferred summary so it stays a summary, not a transcript. */
 function inferSummary(rawText: string): string {
     const trimmed = rawText.trim();
     return trimmed.length > 800 ? `${trimmed.slice(0, 800)}…` : trimmed;
+}
+
+/**
+ * Last-resort summary when a sub-agent did real work (tool calls) but produced
+ * no final text and no structured report — describe what it ran so the result
+ * isn't an empty string.
+ */
+function summarizeFromSteps(steps: ExecutionResult['steps']): string {
+    const tools = new Set<string>();
+    for (const step of steps ?? []) {
+        for (const part of step.content ?? []) {
+            if (part.type === 'tool-call' && part.toolName && part.toolName !== COMPLETION_TOOL_NAME) {
+                tools.add(part.toolName);
+            }
+        }
+    }
+    return tools.size > 0
+        ? `Completed the task using: ${Array.from(tools).join(', ')}.`
+        : '';
 }
 
 export default class SubAgentPlugin implements Plugin {
@@ -328,7 +320,7 @@ export default class SubAgentPlugin implements Plugin {
     private writer?: DataStreamWriter;
     private streamContext?: PluginStreamContext;
     private readonly registry: DelegationRegistry;
-    private readonly normalizedSubAgents: Map<string, NormalizedSubAgent>;
+    private normalizedSubAgents: Map<string, NormalizedSubAgent>;
     private readonly generalPurposeToolNames: Set<string>;
 
     constructor(
@@ -466,10 +458,13 @@ export default class SubAgentPlugin implements Plugin {
                 continue;
             }
 
-            for (const toolName of subAgent.allowedTools) {
-                if (!this.generalPurposeToolNames.has(toolName)) {
-                    throw new DelegationConfigError(`Sub-agent ${subAgent.name} references unknown general-purpose tool \"${toolName}\".`);
-                }
+            const unknown = subAgent.allowedTools.filter(
+                toolName => toolName !== COMPLETION_TOOL_NAME && !this.generalPurposeToolNames.has(toolName)
+            );
+            if (unknown.length > 0) {
+                // Don't crash the whole agent over a typo'd tool name — the
+                // unknown tools simply won't be available to the sub-agent.
+                console.warn(`[SubAgentPlugin] Sub-agent "${subAgent.name}" references unknown tool(s): ${unknown.join(', ')}. They will be ignored.`);
             }
         }
     }
@@ -489,19 +484,57 @@ export default class SubAgentPlugin implements Plugin {
             return;
         }
 
-        for (const toolName of allowedTools) {
-            if (toolName === COMPLETION_TOOL_NAME) {
-                continue;
-            }
-            if (!availableToolNames.has(toolName)) {
-                throw new DelegationConfigError(`Sub-agent ${agentName} references unknown tool \"${toolName}\".`);
-            }
+        const unknown = allowedTools.filter(
+            toolName => toolName !== COMPLETION_TOOL_NAME && !availableToolNames.has(toolName)
+        );
+        if (unknown.length > 0) {
+            console.warn(`[SubAgentPlugin] Sub-agent "${agentName}" references unknown tool(s): ${unknown.join(', ')}. They will be ignored.`);
         }
+    }
+
+    /** Split requested tool names into the ones we can provide and the rest. */
+    private partitionTools(allowedTools?: string[]): { available: string[]; unknown: string[] } {
+        if (!allowedTools) return { available: Array.from(this.generalPurposeToolNames), unknown: [] };
+        const available: string[] = [];
+        const unknown: string[] = [];
+        for (const toolName of allowedTools) {
+            (this.generalPurposeToolNames.has(toolName) ? available : unknown).push(toolName);
+        }
+        return { available, unknown };
+    }
+
+    /**
+     * Register a sub-agent defined at runtime by the parent agent. Dynamic
+     * agents are always general-purpose (lean plugin set + a tool whitelist).
+     */
+    registerDynamicAgent(spec: {
+        name: string;
+        description: string;
+        systemPrompt: string;
+        allowedTools?: string[];
+        allowSubdelegation?: boolean;
+        maxSteps?: number;
+        artifactMode?: ArtifactMode;
+    }): NormalizedGeneralPurposeSubAgent {
+        const normalized: NormalizedGeneralPurposeSubAgent = {
+            name: spec.name,
+            description: spec.description,
+            systemPrompt: spec.systemPrompt,
+            model: undefined,
+            allowSubdelegation: spec.allowSubdelegation ?? false,
+            artifactMode: spec.artifactMode ?? 'errors-only',
+            maxSteps: spec.maxSteps,
+            mode: 'general-purpose',
+            allowedTools: spec.allowedTools,
+            blockedTools: undefined,
+        };
+        this.normalizedSubAgents.set(spec.name, normalized);
+        return normalized;
     }
 
     private buildCompletionTool(tracker: CompletionTracker) {
         return tool({
-            description: `Report that the delegated task is complete. Call this exactly once when your work is finished.`,
+            description: `Optional: hand back a structured summary of the completed task plus the files you created or modified. Not required — a normal final answer also works. Call at most once.`,
             inputSchema: completionSchema,
             execute: async (payload) => {
                 tracker.callCount += 1;
@@ -541,8 +574,9 @@ export default class SubAgentPlugin implements Plugin {
             return {
                 model,
                 instructions: buildSubAgentSystemPrompt(subAgent),
-                maxSteps: 30,
-                stopWhen: hasToolCall(COMPLETION_TOOL_NAME),
+                // Run the normal agent loop; the model stops when it gives a
+                // final answer. maxSteps is the only runaway guard.
+                maxSteps: subAgent.maxSteps ?? 25,
                 plugins: this.createBuiltInPluginsForSubagent({ model, workspaceDir: this.workspaceDir }),
                 tools,
                 allowedTools: subAgent.allowedTools
@@ -560,8 +594,7 @@ export default class SubAgentPlugin implements Plugin {
         return {
             model,
             instructions: buildSubAgentSystemPrompt(subAgent),
-            maxSteps: subAgent.maxSteps ?? 30,
-            stopWhen: hasToolCall(COMPLETION_TOOL_NAME),
+            maxSteps: subAgent.maxSteps ?? 25,
             plugins: [...subAgent.plugins],
             tools: {
                 ...subAgent.tools,
@@ -585,15 +618,56 @@ export default class SubAgentPlugin implements Plugin {
     ): Promise<ExecutionResult> {
         const tracker: CompletionTracker = { callCount: 0, payload: null };
         const agent = this.createAgent(this.buildAgentConfig(subAgent, this.buildCompletionTool(tracker)));
-        const rawResult = await agent.stream({
+        const rawResult: any = await agent.stream({
             messages: [{ role: 'user', content: buildDelegationMessage(request) }],
             ...(writer ? { writer } : {}),
             // Propagate the parent's abort so stopping the top-level run also
             // cancels in-flight sub-agents instead of leaving them running.
             ...(abortSignal ? { abortSignal } : {}),
         });
+
+        // Forward the sub-agent's LIVE thinking + narration to the parent stream
+        // (via the delegation-scoped writer, which tags everything with this
+        // agent's delegationId/agentName) so the UI can show what it's actually
+        // doing under its tab — not just lifecycle dots. Best-effort and only
+        // when a real stream is present; mock results have no `fullStream`.
+        let liveText = '';
+        let liveReasoning = '';
+        const consumedFullStream = !!(writer && rawResult?.fullStream?.[Symbol.asyncIterator]);
+        if (consumedFullStream) {
+            let lastEmit = 0;
+            const flush = (text: string, reasoning: boolean, force = false) => {
+                const now = Date.now();
+                if (!force && now - lastEmit < 60) return; // throttle high-frequency deltas
+                lastEmit = now;
+                writer!.write({
+                    type: reasoning ? 'data-agent_thought' : 'data-agent_message',
+                    id: reasoning ? 'agent-thought' : 'agent-message',
+                    data: { text },
+                } as any);
+            };
+            try {
+                for await (const part of rawResult.fullStream) {
+                    const piece = typeof part?.text === 'string' ? part.text : '';
+                    if (part?.type === 'text-delta' && piece) {
+                        liveText += piece;
+                        flush(liveText, false);
+                    } else if (part?.type === 'reasoning-delta' && piece) {
+                        liveReasoning += piece;
+                        flush(liveReasoning, true);
+                    }
+                }
+            } catch {
+                // Forwarding is best-effort; the resolved result below is authoritative.
+            }
+            if (liveText) flush(liveText, false, true);
+            if (liveReasoning) flush(liveReasoning, true, true);
+        }
+
         const [rawText, steps] = await Promise.all([
-            rawResult.text,
+            // When we drained fullStream ourselves, `liveText` is the answer; don't
+            // also await `.text` (avoids any second-consumption edge cases).
+            consumedFullStream ? Promise.resolve(liveText) : Promise.resolve(rawResult.text),
             rawResult.steps,
             rawResult.response,
         ]).then(([text, resolvedSteps]) => [text, resolvedSteps] as const);
@@ -751,47 +825,34 @@ export default class SubAgentPlugin implements Plugin {
         try {
             const execution = await this.executeSubAgent(subAgent, request, scopedWriter, abortSignal);
             const completion = execution.completionPayload;
-            const inferredSummary = execution.rawText?.trim() ?? '';
+            const finalText = execution.rawText?.trim() ?? '';
+            const stepSummary = summarizeFromSteps(execution.steps);
 
-            // No structured completion AND no output: genuinely nothing to report.
-            if (!completion && !inferredSummary) {
+            // The result is whatever the sub-agent gave back, in order of
+            // richness: a structured report → its final answer → a description
+            // of the tools it ran. A delegation only FAILS when it threw (catch
+            // below) or produced literally nothing of any kind. No more failing
+            // a finished task just because it skipped the report tool.
+            const resolvedSummary = completion?.summary || finalText || stepSummary;
+            if (!resolvedSummary) {
                 const failure = await this.createErrorResult({
                     delegationId,
                     subAgent,
                     request,
-                    errorCode: 'missing_completion',
-                    summary: `${subAgent.name} produced no output and did not call ${COMPLETION_TOOL_NAME}.`,
-                    error: `Delegated task finished with no result.`,
+                    errorCode: 'no_output',
+                    summary: `${subAgent.name} finished without producing any output.`,
+                    error: `The sub-agent ran but returned no answer, no report, and took no actions.`,
                     rawText: execution.rawText,
                 });
                 emitFailure(failure);
                 return failure;
             }
 
-            // Only NEW tool calls after completion are a real violation — a
-            // trailing "Done." is fine and shouldn't discard the work.
-            if (completion && hasPostCompletionToolCalls(execution)) {
-                const failure = await this.createErrorResult({
-                    delegationId,
-                    subAgent,
-                    request,
-                    errorCode: 'post_completion_activity',
-                    summary: `${subAgent.name} kept taking actions after calling ${COMPLETION_TOOL_NAME}.`,
-                    error: `Delegated task issued more tool calls after completion was reported.`,
-                    rawText: execution.rawText,
-                });
-                emitFailure(failure);
-                return failure;
-            }
-
-            // Graceful fallback: no structured completion, but the sub-agent
-            // produced output — use its final text as the summary rather than
-            // throwing the work away (common with weaker models).
             const inferred = !completion;
             const success: DelegationSuccessResult = {
                 status: 'completed',
                 delegationId,
-                summary: completion ? completion.summary : inferSummary(inferredSummary),
+                summary: completion ? completion.summary : inferSummary(resolvedSummary),
                 cached: false,
                 inferred: inferred || undefined,
                 filesCreated: completion?.files.length ? completion.files : undefined,
@@ -952,13 +1013,17 @@ export default class SubAgentPlugin implements Plugin {
         };
     }
 
-    get tools() {
-        const availableAgents = Array.from(this.normalizedSubAgents.values())
+    private describeAgents(): string {
+        return Array.from(this.normalizedSubAgents.values())
             .map(agent => `- ${agent.name}: ${agent.description}`)
             .join('\n');
+    }
+
+    get tools() {
+        const toolHint = `\n\nAvailable tools for sub-agents: ${Array.from(this.generalPurposeToolNames).join(', ')}.`;
 
         const delegateTool = tool({
-            description: `Delegate a focused task to a specialized sub-agent.\n\nAvailable sub-agents:\n${availableAgents}`,
+            description: `Delegate a focused task to a sub-agent (built-in or one you created). Call list_agents to see who's available, or create_agent / spawn_agent to deploy a new specialist.`,
             inputSchema: delegationInputSchema,
             execute: async (input, options) => {
                 const subAgent = this.normalizedSubAgents.get(input.agent_name);
@@ -967,7 +1032,7 @@ export default class SubAgentPlugin implements Plugin {
                         status: 'error',
                         delegationId: `missing-${Date.now()}`,
                         summary: `Unknown sub-agent: ${input.agent_name}`,
-                        error: `Sub-agent not found: ${input.agent_name}`,
+                        error: `Sub-agent not found: ${input.agent_name}. Call list_agents to see available agents, or create_agent to make one.`,
                         errorCode: 'invalid_config' as const,
                     };
                 }
@@ -977,7 +1042,7 @@ export default class SubAgentPlugin implements Plugin {
         });
 
         const parallelDelegateTool = tool({
-            description: `Delegate multiple independent tasks to sub-agents in parallel.\n\nAvailable sub-agents:\n${availableAgents}`,
+            description: `Delegate multiple independent tasks to sub-agents in parallel. Each task names an existing agent (see list_agents).`,
             inputSchema: z.object({
                 tasks: z.array(delegationInputSchema).min(1).max(10).describe('Tasks to execute in parallel.'),
                 continueOnError: z.boolean().default(false).describe('If true, continue scheduling tasks after a failure.'),
@@ -989,18 +1054,84 @@ export default class SubAgentPlugin implements Plugin {
             },
         });
 
+        const createAgentTool = tool({
+            description: `Define a NEW sub-agent at runtime that you can then delegate to. Use this to deploy a specialist tailored to the task instead of relying only on the built-in roster.${toolHint}`,
+            inputSchema: z.object({
+                name: z.string().describe('Unique short name, e.g. "MigrationWriter".'),
+                description: z.string().describe('What this agent specializes in (shown in list_agents).'),
+                system_prompt: z.string().describe('The persona and operating rules for the sub-agent.'),
+                allowed_tools: z.array(z.string()).optional().describe('Tools the agent may use. Omit to allow all available tools.'),
+                allow_subdelegation: z.boolean().optional().describe('Whether this agent may itself delegate further (default false).'),
+            }),
+            execute: async (input) => {
+                const { available, unknown } = this.partitionTools(input.allowed_tools);
+                this.registerDynamicAgent({
+                    name: input.name,
+                    description: input.description,
+                    systemPrompt: input.system_prompt,
+                    allowedTools: input.allowed_tools,
+                    allowSubdelegation: input.allow_subdelegation,
+                });
+                this.writer?.writeStatus(`Created sub-agent "${input.name}"`, undefined, undefined, { transient: true });
+                return {
+                    ok: true,
+                    name: input.name,
+                    availableTools: available,
+                    ignoredUnknownTools: unknown.length ? unknown : undefined,
+                    message: `Sub-agent "${input.name}" is ready. Delegate with task(agent_name: "${input.name}", task: "…").`,
+                };
+            },
+        });
+
+        const spawnAgentTool = tool({
+            description: `Define AND run a one-off sub-agent in a single call — for quick specialist work you don't need to reuse.${toolHint}`,
+            inputSchema: z.object({
+                task: z.string().describe('The task for the spawned agent.'),
+                system_prompt: z.string().describe('Persona / instructions for the spawned agent.'),
+                allowed_tools: z.array(z.string()).optional().describe('Tools it may use. Omit to allow all available tools.'),
+                name: z.string().optional().describe('Optional name to reuse it later; otherwise an ephemeral one is generated.'),
+                context: z.record(z.string(), z.unknown()).optional(),
+                relevant_files: z.array(z.string()).optional(),
+            }),
+            execute: async (input, options) => {
+                const name = input.name ?? `spawned-${Date.now().toString(36)}`;
+                const subAgent = this.registerDynamicAgent({
+                    name,
+                    description: `Spawned for: ${truncateTask(input.task)}`,
+                    systemPrompt: input.system_prompt,
+                    allowedTools: input.allowed_tools,
+                });
+                return this.runDelegationTask(
+                    subAgent,
+                    { agent_name: name, task: input.task, context: input.context, relevantFiles: input.relevant_files, fresh: true },
+                    options?.abortSignal,
+                );
+            },
+        });
+
+        const listAgentsTool = tool({
+            description: `List the sub-agents available for delegation (built-in and ones you created at runtime).`,
+            inputSchema: z.object({}),
+            execute: async () => ({
+                agents: Array.from(this.normalizedSubAgents.values()).map(agent => ({
+                    name: agent.name,
+                    description: agent.description,
+                    tools: agent.mode === 'general-purpose' ? (agent.allowedTools ?? 'all') : 'custom',
+                })),
+            }),
+        });
+
         return {
             task: delegateTool,
             delegate: delegateTool,
             parallel_delegate: parallelDelegateTool,
+            create_agent: createAgentTool,
+            spawn_agent: spawnAgentTool,
+            list_agents: listAgentsTool,
         };
     }
 
     modifySystemPrompt(prompt: string): string {
-        const agentList = Array.from(this.normalizedSubAgents.values())
-            .map(agent => `- ${agent.name}: ${agent.description}`)
-            .join('\n');
-
-        return `${prompt}\n\n## Sub-Agent Delegation\n\nAvailable sub-agents:\n${agentList}\n\nUse \`task()\` or \`delegate()\` for one focused delegation and \`parallel_delegate()\` for independent tasks that can run concurrently.\n\nDelegation contract:\n- Treat the structured delegation result as the primary handoff.\n- Read the saved artifact only when the summary is insufficient or you need audit/debug detail.\n- Do not re-delegate the same task unless the requirements changed materially.\n- A successful delegation returns \`status: \"completed\"\` with \`completionConfirmed: true\`.\n- A failed delegation returns \`status: \"error\"\` with an explicit error code.`;
+        return `${prompt}\n\n## Sub-Agent Delegation\n\nYou can offload focused work to sub-agents — lean workers with their own tools that report back a result. Built-in sub-agents:\n${this.describeAgents()}\n\nHow to use them:\n- \`task()\` / \`delegate()\` — run one focused task on a named agent.\n- \`parallel_delegate()\` — run several independent tasks at once.\n- \`create_agent()\` — define a NEW specialist on the fly (name, description, system prompt, allowed tools), then delegate to it. You are not limited to the built-in roster.\n- \`spawn_agent()\` — define AND run a one-off agent in a single call.\n- \`list_agents()\` — see everyone currently available.\n\nGuidance:\n- Delegate genuinely separable work (research, a self-contained file/module, parallel investigations). Keep the orchestration and final synthesis yourself.\n- A successful delegation returns \`status: "completed"\` with a \`summary\`; a failed one returns \`status: "error"\` with an error code and any partial output.\n- Treat the returned summary as the handoff; only read the saved artifact for audit/debug detail.\n- Don't re-delegate an identical task unless requirements changed.`;
     }
 }

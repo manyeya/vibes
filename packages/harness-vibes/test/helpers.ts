@@ -30,9 +30,9 @@ export async function removeTempWorkspace(workspaceDir: string): Promise<void> {
 }
 
 export async function recordCompletion(config: { tools?: Record<string, any> }, summary = 'done', files: string[] = ['src/example.ts'], metadata?: Record<string, unknown>) {
-  const completionTool = config.tools?.task_completion;
+  const completionTool = config.tools?.report_result;
   if (!completionTool?.execute) {
-    throw new Error('task_completion tool not available');
+    throw new Error('report_result tool not available');
   }
 
   await completionTool.execute({ summary, files, metadata }, {});
@@ -45,13 +45,13 @@ export function completionSteps(summary = 'done', files: string[] = ['src/exampl
         {
           type: 'tool-call',
           toolCallId: 'completion-call',
-          toolName: 'task_completion',
+          toolName: 'report_result',
           input: { summary, files },
         },
         {
           type: 'tool-result',
           toolCallId: 'completion-call',
-          toolName: 'task_completion',
+          toolName: 'report_result',
           input: { summary, files },
           output: { status: 'recorded' },
         },
@@ -67,47 +67,19 @@ export function completionThenTextSteps(summary = 'done', files: string[] = ['sr
         {
           type: 'tool-call',
           toolCallId: 'completion-call',
-          toolName: 'task_completion',
+          toolName: 'report_result',
           input: { summary, files },
         },
         {
           type: 'tool-result',
           toolCallId: 'completion-call',
-          toolName: 'task_completion',
+          toolName: 'report_result',
           input: { summary, files },
           output: { status: 'recorded' },
         },
         {
           type: 'text',
           text: 'extra output after completion',
-        },
-      ],
-    },
-  ];
-}
-
-export function completionThenToolCallSteps(summary = 'done', files: string[] = ['src/example.ts']) {
-  return [
-    {
-      content: [
-        {
-          type: 'tool-call',
-          toolCallId: 'completion-call',
-          toolName: 'task_completion',
-          input: { summary, files },
-        },
-        {
-          type: 'tool-result',
-          toolCallId: 'completion-call',
-          toolName: 'task_completion',
-          input: { summary, files },
-          output: { status: 'recorded' },
-        },
-        {
-          type: 'tool-call',
-          toolCallId: 'post-call',
-          toolName: 'readFile',
-          input: { path: 'src/sneaky.ts' },
         },
       ],
     },

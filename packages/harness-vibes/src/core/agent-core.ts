@@ -11,7 +11,6 @@ import {
     type StepResult,
 } from 'ai';
 import {
-    VibesUIMessage,
     AgentCoreConfig,
     AgentCoreGenerateResult,
     AgentCoreStreamResult,
@@ -247,21 +246,11 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
     }
 
     /**
-     * Set up plugin dependencies after all plugins are added.
-     * This wires up plugins that need references to other plugins.
+     * Set up cross-plugin dependencies after all plugins are added. No default
+     * plugins currently need wiring; kept as an extension point for subclasses.
      */
     protected setupPluginDependencies(): void {
-        // Find TasksPlugin
-        const tasksPlugin = this.plugins.find((p: any) => p.name === 'TasksPlugin' || p.constructor?.name === 'TasksPlugin');
-
-        // Wire up ReflexionPlugin with TasksPlugin
-        for (const plugin of this.plugins) {
-            if ((plugin as any).name === 'ReflexionPlugin' && tasksPlugin) {
-                if ((plugin as any).setTasksPlugin) {
-                    (plugin as any).setTasksPlugin(tasksPlugin);
-                }
-            }
-        }
+        // intentionally empty
     }
 
     /**

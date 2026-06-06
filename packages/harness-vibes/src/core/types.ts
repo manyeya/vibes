@@ -52,7 +52,7 @@ export enum TaskType {
     UserRequest = 'user_request',
     /** Subtasks created by the agent during task execution */
     SubTask = 'subtask',
-    /** Error analysis tasks from ReflexionPlugin */
+    /** Error analysis tasks (e.g. from an error-handling flow) */
     ErrorAnalysis = 'error_analysis',
     /** Delegation tasks from SubAgentPlugin */
     Delegation = 'delegation',
@@ -313,7 +313,7 @@ export interface Plugin {
     /**
      * Optional hook executed when a tool fails after all retries.
      * This is called after the tool execution fails and has exhausted all retry attempts.
-     * Plugins can use this to trigger error analysis tasks (e.g., ReflexionPlugin).
+     * Plugins can use this to react to tool failures (e.g. error analysis).
      */
     onError?: (error: Error) => void | Promise<void>;
 

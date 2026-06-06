@@ -4,11 +4,6 @@ import { openai } from '@ai-sdk/openai';
 import {
     SkillsPlugin,
     PlanningPlugin,
-    ReasoningPlugin,
-    ReflexionPlugin,
-    SemanticMemoryPlugin,
-    ProceduralMemoryPlugin,
-    SwarmPlugin,
     FilesystemPlugin,
     BashPlugin,
     SubAgentPlugin,
@@ -81,39 +76,6 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
             tasksPath: path.join(config.workspaceDir, 'tasks.json'),
             maxRecitationTasks: 10,
         }),
-        new ReasoningPlugin(config.model, {
-            initialMode: 'tot',
-            maxBranches: 5,
-            autoExplore: true,
-            complexityThreshold: 5,
-        }),
-        new ReflexionPlugin(config.model, {
-            maxLessons: 100,
-            lessonsPath: path.join(sharedWorkspaceDir, 'lessons.json'),
-            autoAnalyzeErrors: true,
-            analysisThreshold: 2,
-            autoSuggestLessons: true,
-        }),
-        new SemanticMemoryPlugin(undefined, {
-            maxFacts: 200,
-            factsPath: path.join(sharedWorkspaceDir, 'facts.json'),
-            similarityThreshold: 0.3,
-            autoExtract: true,
-        }),
-        new ProceduralMemoryPlugin(config.model, {
-            maxPatterns: 50,
-            patternsPath: path.join(sharedWorkspaceDir, 'patterns.json'),
-            autoSuggest: true,
-        }),
-        new SwarmPlugin(
-            config.swarmId || config.sessionId || 'default',
-            {
-                maxStateEntries: 100,
-                maxSignalHistory: 50,
-                statePath: path.join(sharedWorkspaceDir, 'swarm-state.json'),
-                persistState: true,
-            }
-        ),
         new SkillsPlugin(),
         // Filesystem + Bash run through the shared Sandbox when provided,
         // otherwise each constructs a LocalSandbox rooted at workspaceDir.
@@ -130,6 +92,31 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
         // 1.5x its threshold. Triggers before the agent's pruneMessages
         // fallback truncation.
         new SummarizationPlugin(config.model, { maxContextMessages: 30 }),
+    ];
+}
+
+/**
+ * Plugins for a **sub-agent** — a focused worker, not a second brain.
+ *
+ * Deliberately lean: filesystem, shell, skills, artifacts and planning only.
+ * The heavy cognitive/orchestration plugins (Reasoning's auto tree-of-thoughts,
+ * procedural memory, rolling summarization) are intentionally excluded — on a
+ * delegated sub-task they bloat the system prompt and fire extra nested model
+ * calls, which is exactly what made delegation slow and flaky. A sub-agent
+ * should *do the task* with real tools and report back, not re-run the whole
+ * planning stack.
+ */
+export function createSubAgentPlugins(config: DefaultPluginFactoryOptions): Plugin[] {
+    return [
+        new PlanningPlugin(config.model, {
+            planPath: path.join(config.workspaceDir, 'plan.md'),
+            tasksPath: path.join(config.workspaceDir, 'tasks.json'),
+            maxRecitationTasks: 10,
+        }),
+        new SkillsPlugin(),
+        new FilesystemPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
+        new BashPlugin(config.sandbox ? { sandbox: config.sandbox } : config.workspaceDir),
+        new ArtifactPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
     ];
 }
 
@@ -156,9 +143,6 @@ export class VibeAgent extends AgentCore {
 <mindset>
     - **Plan First**: Never code blindly. Use \`generate_tasks\` to build a roadmap for complex requests.
     - **Incremental Progress**: Tackle one task at a time. Mark it \`in_progress\`, complete it, then move on.
-    - **Deep Reasoning**: For complex problems, use \`reasoning_mode\` to explore multiple paths or decouple strategy from action.
-    - **Self-Correction**: Use \`reflexion_analyze_errors\` to learn from failures. Apply learned lessons to avoid repeating mistakes.
-    - **Memory-Augmented**: Use \`store_fact\` for persistent knowledge and \`store_pattern\` for reusable workflows.
 </mindset>
 
 <extensible_capabilities>
@@ -170,23 +154,6 @@ export class VibeAgent extends AgentCore {
         - use \`get_next_tasks\` and \`list_tasks\` to maintain focus.
     </capability>
 
-    <capability name="Reasoning Modes">
-        - \`react\`: Standard Think-Act-Observe loop.
-        - \`tot\`: Tree-of-Thoughts for parallel exploration of solutions.
-        - \`plan-execute\`: Strategic planning followed by batch execution.
-    </capability>
-
-    <capability name="Reflexion & Learning">
-        - Analyze errors with \`reflexion_analyze_errors\`.
-        - Extract insights with \`reflexion_add_lesson\`.
-        - View history with \`reflexion_summarize_session\`.
-    </capability>
-
-    <capability name="Memory Systems">
-        - Semantic (Facts): \`store_fact\`, \`search_facts\`, \`list_facts\`.
-        - Procedural (Patterns): \`store_pattern\`, \`search_patterns\`, \`analyze_successful_approach\`.
-    </capability>
-
     <capability name="OS & Environment">
         - \`bash\`: Full shell access for exploration, searching (grep, find), and advanced commands.
         - \`readFile\` / \`writeFile\`: Direct workspace filesystem management.
@@ -194,7 +161,6 @@ export class VibeAgent extends AgentCore {
     </capability>
 
     <capability name="Multi-Agent Collaboration">
-        - \`swarm\`: Share state and signal other agents via \`swarm_set_state\`, \`swarm_send_signal\`, and \`swarm_propose_task\`.
         - \`delegate\` / \`parallel_delegate\`: Spawn specialized sub-agents for parallel or complex work.
     </capability>
 </extensible_capabilities>
@@ -205,10 +171,8 @@ export class VibeAgent extends AgentCore {
     3. **Execute**:
         - Pick the next available task; mark it \`in_progress\` via \`update_task\`.
         - Perform work (code edits, shell commands).
-        - If stuck, use \`reasoning_mode('tot')\` or \`search_patterns\`.
     4. **Verify**: Use \`bash\` to run tests or \`readFile\` to confirm your changes are correct.
     5. **Complete**: Mark task \`completed\` via \`update_task\`.
-    6. **Reflect**: If errors occurred, use \`reflexion_analyze_errors\` before proceeding.
 </standard_workflow>
 
 <rules>
@@ -216,7 +180,7 @@ export class VibeAgent extends AgentCore {
     - **Read Before Write**: Always read a file before modifying it to ensure context is accurate.
     - **Sub-Agent Results**: Use the structured delegation result first. Read the artifact in \`subagent_results/\` only when the summary is insufficient or you need audit/debug detail.
     - **Minimalism**: Make direct, necessary changes. Avoid over-engineering or unnecessary refactors.
-    - **Learning from Error**: If a tool fails twice with the same error, you MUST stop and use \`reflexion_analyze_errors\`.
+    - **Learning from Error**: If a tool fails twice with the same error, stop and rethink your approach instead of retrying blindly.
 </rules>`;
 
         super({
@@ -262,7 +226,8 @@ export class VibeAgent extends AgentCore {
         this.addPlugin(new SubAgentPlugin(
             subAgentMap,
             this.model,
-            ({ model, workspaceDir: subAgentWorkspaceDir }) => createDefaultPlugins({
+            // Sub-agents run the LEAN plugin set, not the full default stack.
+            ({ model, workspaceDir: subAgentWorkspaceDir }) => createSubAgentPlugins({
                 model: model || this.model,
                 workspaceDir: subAgentWorkspaceDir || workspaceDir,
                 sessionId: this.vibeAgentConfig.sessionId,
