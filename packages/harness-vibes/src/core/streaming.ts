@@ -210,10 +210,26 @@ export interface VibesDataParts extends Record<string, unknown> {
         questions: Array<{
             id: string;
             question: string;
-            /** single = pick one, multi = pick many, text = free input. */
-            kind: 'single' | 'multi' | 'text';
+            /** Optional helper/context shown under the question. */
+            description?: string;
+            /**
+             * single = pick one · multi = pick several · text = free input ·
+             * boolean = yes/no · number = numeric input.
+             */
+            kind: 'single' | 'multi' | 'text' | 'boolean' | 'number';
             /** Choices for single/multi questions. */
             options?: string[];
+            /** Whether single/multi also offer a free-text write-in (default true). */
+            allowCustom?: boolean;
+            /** multi → min/max selections; number → min/max value. */
+            min?: number;
+            max?: number;
+            /** number → unit suffix (e.g. "$", "items"). */
+            unit?: string;
+            /** text/number → input placeholder. */
+            placeholder?: string;
+            /** Whether the question must be answered (default true). */
+            required?: boolean;
         }>;
     };
 

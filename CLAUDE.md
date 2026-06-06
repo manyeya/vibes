@@ -63,7 +63,7 @@ Plugins (in `packages/harness-vibes/src/plugins/`) provide tools and lifecycle h
 | `PlanningPlugin` | Task management with persistence, plan save/load |
 | `SubAgentPlugin` | Delegation to sub-agents (`task`/`delegate`/`parallel_delegate`) + runtime agent deployment (`create_agent`/`spawn_agent`/`list_agents`) |
 | `SkillsPlugin` | Skill management and discovery |
-| `ClarificationPlugin` | `ask_user` — streams a `data-clarification` questionnaire rendered as a form above the composer; the agent halts (`stopWhen: hasToolCall('ask_user')`) until the user's answers arrive as the next message |
+| `ClarificationPlugin` | `ask_user` — streams a `data-clarification` questionnaire (single / multi w/ min–max / boolean / number / text questions, optional, with auto write-in) rendered as a form above the composer; the agent halts (`stopWhen: hasToolCall('ask_user')`) until the user's answers arrive as the next message |
 | `MemoryPlugin` | Working memory: a scratchpad (always in-prompt) + a searchable long-term note store (`remember`/`recall`/`update_memory`/`forget`/`list_memories`); injects a compact index, not full content |
 | `FilesystemPlugin` | File read/write operations |
 | `BashPlugin` | Shell command execution |

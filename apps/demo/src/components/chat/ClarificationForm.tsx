@@ -5,6 +5,7 @@ import { cn } from '../../lib/utils';
 import type { ClarificationData } from '../data-parts/types';
 
 const OTHER = '__other__';
+type Question = ClarificationData['questions'][number];
 
 // The form always provides its own free-text write-in, so drop any catch-all
 // option the agent tacked on ("Custom (specify)", "Other", "None of the above"…)
@@ -20,13 +21,22 @@ const isWriteInLike = (o: string) => {
   );
 };
 
-type Answers = Record<string, { choice?: string; choices?: string[]; text?: string; other?: string }>;
+const multiHint = (q: Question) => {
+  if (q.min && q.max) return `Select ${q.min}–${q.max}`;
+  if (q.min) return `Select at least ${q.min}`;
+  if (q.max) return `Select up to ${q.max}`;
+  return 'Select all that apply';
+};
+
+type QA = { choice?: string; choices?: string[]; other?: string; text?: string; bool?: boolean; num?: string };
+type Answers = Record<string, QA>;
 
 /**
- * A questionnaire the agent asked, rendered above the composer. The user fills
- * it in; on submit it produces a formatted answer string that's sent back as
- * the next message. Supports single-select, multi-select and free-text, and
- * every choice question also offers a custom "Other" answer.
+ * A questionnaire the agent asked, rendered above the composer. Supports
+ * single / multi (with min–max) / yes-no / number / free-text questions, each
+ * optionally with a description, and choice questions get a free-text "Other"
+ * write-in (unless `allowCustom` is false). On submit it formats the answers
+ * and hands them back as the next message.
  */
 export const ClarificationForm = ({
   clarification,
@@ -38,34 +48,179 @@ export const ClarificationForm = ({
   disabled?: boolean;
 }) => {
   const [answers, setAnswers] = useState<Answers>({});
-
-  const set = (qid: string, patch: Partial<Answers[string]>) =>
+  const set = (qid: string, patch: Partial<QA>) =>
     setAnswers((a) => ({ ...a, [qid]: { ...a[qid], ...patch } }));
 
-  const answerFor = (q: ClarificationData['questions'][number]): string | null => {
+  const realOptions = (q: Question) => (q.options ?? []).filter((o) => !isWriteInLike(o));
+  const allowsCustom = (q: Question) => (q.kind === 'single' || q.kind === 'multi') && q.allowCustom !== false;
+
+  const multiTotal = (q: Question) => {
     const a = answers[q.id] ?? {};
-    if (q.kind === 'text') return a.text?.trim() || null;
-    if (q.kind === 'multi') {
-      const picked = (a.choices ?? []).filter((c) => c !== OTHER);
-      const other = a.choices?.includes(OTHER) ? a.other?.trim() : '';
-      const all = [...picked, ...(other ? [other] : [])];
-      return all.length ? all.join(', ') : null;
+    const picks = (a.choices ?? []).filter((c) => c !== OTHER).length;
+    const other = (a.choices ?? []).includes(OTHER) && a.other?.trim() ? 1 : 0;
+    return picks + other;
+  };
+
+  const answerText = (q: Question): string => {
+    const a = answers[q.id] ?? {};
+    switch (q.kind) {
+      case 'text':
+        return a.text?.trim() ?? '';
+      case 'boolean':
+        return a.bool === true ? 'Yes' : a.bool === false ? 'No' : '';
+      case 'number':
+        return a.num?.trim() ? `${a.num.trim()}${q.unit ? ` ${q.unit}` : ''}` : '';
+      case 'multi': {
+        const picks = (a.choices ?? []).filter((c) => c !== OTHER);
+        const other = (a.choices ?? []).includes(OTHER) ? a.other?.trim() : '';
+        return [...picks, ...(other ? [other] : [])].join(', ');
+      }
+      default: // single
+        return a.choice === OTHER ? (a.other?.trim() ?? '') : (a.choice ?? '');
     }
-    // single
-    if (a.choice === OTHER) return a.other?.trim() || null;
-    return a.choice || null;
+  };
+
+  const isComplete = (q: Question): boolean => {
+    if (q.required === false) return true;
+    if (q.kind === 'multi') {
+      const total = multiTotal(q);
+      return total >= (q.min ?? 1) && (q.max == null || total <= q.max);
+    }
+    if (q.kind === 'number') {
+      const n = Number((answers[q.id] ?? {}).num);
+      if (!Number.isFinite(n) || !(answers[q.id]?.num ?? '').trim()) return false;
+      if (q.min != null && n < q.min) return false;
+      if (q.max != null && n > q.max) return false;
+      return true;
+    }
+    return answerText(q) !== '';
   };
 
   const complete = useMemo(
-    () => clarification.questions.every((q) => answerFor(q) !== null),
+    () => clarification.questions.every(isComplete),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [answers, clarification],
   );
 
   const submit = () => {
     if (!complete || disabled) return;
-    const lines = clarification.questions.map((q) => `- ${q.question}\n  → ${answerFor(q)}`);
+    const lines = clarification.questions.map((q) => {
+      const ans = answerText(q) || (q.required === false ? '(no preference)' : '');
+      return `- ${q.question}\n  → ${ans}`;
+    });
     onSubmit(`Here are my answers:\n${lines.join('\n')}`);
+  };
+
+  const renderChoices = (q: Question) => {
+    const a = answers[q.id] ?? {};
+    const atMax = q.kind === 'multi' && q.max != null && multiTotal(q) >= q.max;
+    const list = [...realOptions(q), ...(allowsCustom(q) ? [OTHER] : [])];
+    return (
+      <div className="space-y-1">
+        {list.map((opt) => {
+          const isOther = opt === OTHER;
+          const checked = q.kind === 'multi' ? (a.choices ?? []).includes(opt) : a.choice === opt;
+          const lockedOut = q.kind === 'multi' && !checked && atMax;
+          return (
+            <label
+              key={opt}
+              className={cn(
+                'flex items-center gap-2.5 rounded-lg border px-2.5 py-1.5 text-[13px] transition-colors',
+                checked
+                  ? 'border-[color:var(--color-amber)]/60 bg-[rgba(224,164,88,0.08)] text-[color:var(--color-ink)]'
+                  : 'border-[color:var(--color-line)] text-[color:var(--color-ink-soft)] hover:border-[color:var(--color-line-strong)]',
+                lockedOut ? 'cursor-not-allowed opacity-40' : 'cursor-pointer',
+              )}
+            >
+              <input
+                type={q.kind === 'multi' ? 'checkbox' : 'radio'}
+                name={q.id}
+                checked={checked}
+                disabled={lockedOut}
+                onChange={() => {
+                  if (q.kind === 'multi') {
+                    const cur = new Set(a.choices ?? []);
+                    cur.has(opt) ? cur.delete(opt) : cur.add(opt);
+                    set(q.id, { choices: Array.from(cur) });
+                  } else {
+                    set(q.id, { choice: opt });
+                  }
+                }}
+                className="accent-[color:var(--color-amber)]"
+              />
+              {isOther ? (
+                <input
+                  value={a.other ?? ''}
+                  onChange={(e) => set(q.id, { other: e.target.value })}
+                  onFocus={() =>
+                    q.kind === 'multi'
+                      ? set(q.id, { choices: Array.from(new Set([...(a.choices ?? []), OTHER])) })
+                      : set(q.id, { choice: OTHER })
+                  }
+                  placeholder="Other — write your own…"
+                  className="min-w-0 flex-1 bg-transparent text-[13px] text-[color:var(--color-ink)] placeholder:text-[color:var(--color-ink-faint)] focus:outline-none"
+                />
+              ) : (
+                <span className="min-w-0 flex-1">{opt}</span>
+              )}
+            </label>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderInput = (q: Question) => {
+    const a = answers[q.id] ?? {};
+    if (q.kind === 'text') {
+      return (
+        <textarea
+          rows={2}
+          value={a.text ?? ''}
+          onChange={(e) => set(q.id, { text: e.target.value })}
+          placeholder={q.placeholder ?? 'Type your answer…'}
+          className="w-full resize-none rounded-lg border border-[color:var(--color-line)] bg-[color:var(--color-ground)] px-3 py-2 text-[13px] text-[color:var(--color-ink)] placeholder:text-[color:var(--color-ink-faint)] focus:border-[color:var(--color-amber)]/60 focus:outline-none"
+        />
+      );
+    }
+    if (q.kind === 'number') {
+      return (
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            value={a.num ?? ''}
+            min={q.min}
+            max={q.max}
+            onChange={(e) => set(q.id, { num: e.target.value })}
+            placeholder={q.placeholder ?? 'Enter a number…'}
+            className="w-44 rounded-lg border border-[color:var(--color-line)] bg-[color:var(--color-ground)] px-3 py-1.5 text-[13px] text-[color:var(--color-ink)] placeholder:text-[color:var(--color-ink-faint)] focus:border-[color:var(--color-amber)]/60 focus:outline-none"
+          />
+          {q.unit && <span className="text-[12px] text-[color:var(--color-ink-soft)]">{q.unit}</span>}
+        </div>
+      );
+    }
+    if (q.kind === 'boolean') {
+      return (
+        <div className="flex gap-2">
+          {([['Yes', true], ['No', false]] as const).map(([label, val]) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => set(q.id, { bool: val })}
+              className={cn(
+                'rounded-lg border px-4 py-1.5 text-[13px] transition-colors',
+                a.bool === val
+                  ? 'border-[color:var(--color-amber)]/60 bg-[rgba(224,164,88,0.1)] text-[color:var(--color-ink)]'
+                  : 'border-[color:var(--color-line)] text-[color:var(--color-ink-soft)] hover:border-[color:var(--color-line-strong)]',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      );
+    }
+    return renderChoices(q);
   };
 
   return (
@@ -82,79 +237,26 @@ export const ClarificationForm = ({
         </span>
       </div>
 
-      <div className="max-h-[44vh] space-y-4 overflow-y-auto px-4 py-3">
-        {clarification.questions.map((q, i) => {
-          const a = answers[q.id] ?? {};
-          return (
-            <div key={q.id}>
-              <p className="mb-1.5 text-[13px] text-[color:var(--color-ink)]">
-                <span className="text-[color:var(--color-ink-faint)]">{i + 1}.</span> {q.question}
-              </p>
-
-              {q.kind === 'text' ? (
-                <textarea
-                  rows={2}
-                  value={a.text ?? ''}
-                  onChange={(e) => set(q.id, { text: e.target.value })}
-                  placeholder="Type your answer…"
-                  className="w-full resize-none rounded-lg border border-[color:var(--color-line)] bg-[color:var(--color-ground)] px-3 py-2 text-[13px] text-[color:var(--color-ink)] placeholder:text-[color:var(--color-ink-faint)] focus:border-[color:var(--color-amber)]/60 focus:outline-none"
-                />
-              ) : (
-                <div className="space-y-1">
-                  {[...(q.options ?? []).filter((o) => !isWriteInLike(o)), OTHER].map((opt) => {
-                    const isOther = opt === OTHER;
-                    const checked =
-                      q.kind === 'multi'
-                        ? (a.choices ?? []).includes(opt)
-                        : a.choice === opt;
-                    return (
-                      <label
-                        key={opt}
-                        className={cn(
-                          'flex cursor-pointer items-center gap-2.5 rounded-lg border px-2.5 py-1.5 text-[13px] transition-colors',
-                          checked
-                            ? 'border-[color:var(--color-amber)]/60 bg-[rgba(224,164,88,0.08)] text-[color:var(--color-ink)]'
-                            : 'border-[color:var(--color-line)] text-[color:var(--color-ink-soft)] hover:border-[color:var(--color-line-strong)]',
-                        )}
-                      >
-                        <input
-                          type={q.kind === 'multi' ? 'checkbox' : 'radio'}
-                          name={q.id}
-                          checked={checked}
-                          onChange={() => {
-                            if (q.kind === 'multi') {
-                              const cur = new Set(a.choices ?? []);
-                              cur.has(opt) ? cur.delete(opt) : cur.add(opt);
-                              set(q.id, { choices: Array.from(cur) });
-                            } else {
-                              set(q.id, { choice: opt });
-                            }
-                          }}
-                          className="accent-[color:var(--color-amber)]"
-                        />
-                        {isOther ? (
-                          <input
-                            value={a.other ?? ''}
-                            onChange={(e) => set(q.id, { other: e.target.value })}
-                            onFocus={() =>
-                              q.kind === 'multi'
-                                ? set(q.id, { choices: Array.from(new Set([...(a.choices ?? []), OTHER])) })
-                                : set(q.id, { choice: OTHER })
-                            }
-                            placeholder="Other — write your own…"
-                            className="min-w-0 flex-1 bg-transparent text-[13px] text-[color:var(--color-ink)] placeholder:text-[color:var(--color-ink-faint)] focus:outline-none"
-                          />
-                        ) : (
-                          <span className="min-w-0 flex-1">{opt}</span>
-                        )}
-                      </label>
-                    );
-                  })}
-                </div>
+      <div className="max-h-[46vh] space-y-4 overflow-y-auto px-4 py-3">
+        {clarification.questions.map((q, i) => (
+          <div key={q.id}>
+            <p className="text-[13px] text-[color:var(--color-ink)]">
+              <span className="text-[color:var(--color-ink-faint)]">{i + 1}.</span> {q.question}
+              {q.required === false && (
+                <span className="ml-1.5 font-mono text-[10px] uppercase tracking-wide text-[color:var(--color-ink-faint)]">optional</span>
               )}
-            </div>
-          );
-        })}
+            </p>
+            {q.description && (
+              <p className="mt-0.5 text-[12px] text-[color:var(--color-ink-soft)]">{q.description}</p>
+            )}
+            {q.kind === 'multi' && (
+              <p className="mb-1 mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[color:var(--color-ink-faint)]">
+                {multiHint(q)}
+              </p>
+            )}
+            <div className={cn(q.kind === 'multi' ? '' : 'mt-1.5')}>{renderInput(q)}</div>
+          </div>
+        ))}
       </div>
 
       <div className="flex items-center justify-between gap-2 border-t border-[color:var(--color-line)] px-4 py-2">
