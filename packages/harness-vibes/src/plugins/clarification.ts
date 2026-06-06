@@ -44,7 +44,11 @@ export default class ClarificationPlugin implements Plugin {
                     "Renders a short questionnaire above the composer; the user's answers return as their next " +
                     "message. Use sparingly — only when the answer materially changes what you build. Do NOT " +
                     "ask about things you can decide with a sensible default, look up in the code, or figure out " +
-                    "yourself. After calling this, stop and wait for the answers.",
+                    "yourself. After calling this, stop and wait for the answers.\n\n" +
+                    "Make every question MULTIPLE CHOICE: give 2–4 concrete `options` (kind 'single' or 'multi'). " +
+                    "The UI automatically appends a free-text \"Other\" as the LAST option, so the user can always " +
+                    "write their own answer — you almost never need kind 'text' (reserve it for inherently open " +
+                    "answers like a name or a freeform description).",
                 inputSchema: z.object({
                     title: z.string().optional().describe('Optional short heading for the questionnaire.'),
                     questions: z
@@ -54,11 +58,12 @@ export default class ClarificationPlugin implements Plugin {
                                 kind: z
                                     .enum(['single', 'multi', 'text'])
                                     .default('single')
-                                    .describe("single = pick one option, multi = pick several, text = free-form answer."),
+                                    .describe("single = pick one option (default), multi = pick several, text = free-form only. Prefer single/multi."),
                                 options: z
                                     .array(z.string())
+                                    .min(2)
                                     .optional()
-                                    .describe('Choices for single/multi questions. Omit for free-text. The UI always also allows a custom answer.'),
+                                    .describe("2–4 concrete choices for single/multi questions. The UI auto-adds a free-text 'Other' as the last option, so the user can always write their own — provide options for almost every question."),
                             }),
                         )
                         .min(1)
@@ -99,6 +104,6 @@ export default class ClarificationPlugin implements Plugin {
         return `${prompt}
 
 ## Asking the user
-For a genuinely ambiguous or high-stakes request — where guessing wrong would waste real work — call \`${ASK_USER_TOOL_NAME}\` with 1–6 focused questions instead of assuming. It shows the user a short questionnaire and your run pauses until they answer. Prefer sensible defaults and reading the codebase first; only ask when the answer truly changes what you build, and never ask more than you need.`;
+For a genuinely ambiguous or high-stakes request — where guessing wrong would waste real work — call \`${ASK_USER_TOOL_NAME}\` with 1–6 focused questions instead of assuming. It shows the user a short questionnaire and your run pauses until they answer. Prefer sensible defaults and reading the codebase first; only ask when the answer truly changes what you build, and never ask more than you need. Make each question multiple-choice with 2–4 concrete options — the UI adds a free-text "Other" as the last option automatically, so the user can always write their own.`;
     }
 }

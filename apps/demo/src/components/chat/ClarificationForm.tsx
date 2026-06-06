@@ -127,7 +127,7 @@ export const ClarificationForm = ({
                                 ? set(q.id, { choices: Array.from(new Set([...(a.choices ?? []), OTHER])) })
                                 : set(q.id, { choice: OTHER })
                             }
-                            placeholder="Other…"
+                            placeholder="Other — write your own…"
                             className="min-w-0 flex-1 bg-transparent text-[13px] text-[color:var(--color-ink)] placeholder:text-[color:var(--color-ink-faint)] focus:outline-none"
                           />
                         ) : (
