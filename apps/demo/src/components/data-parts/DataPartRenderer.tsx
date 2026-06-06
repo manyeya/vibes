@@ -2,9 +2,6 @@ import React from 'react';
 import {
   NotificationPart,
   StatusPart,
-  ReasoningModePart,
-  ReasoningThoughtsPart,
-  ReasoningSelectionPart,
   CommandPart,
   FileOperationPart,
   SkillPart,
@@ -15,9 +12,10 @@ import {
   ToolProgressPart,
   ErrorPart,
   MemoryUpdatePart,
-  SwarmSignalPart,
   DelegationPart,
   ArtifactPart,
+  AgentMessagePart,
+  AgentThoughtPart,
 } from './index';
 
 // Type for data part wrapper that comes from the stream
@@ -30,9 +28,6 @@ export interface DataPartWrapper {
 const dataPartRenderers: Record<string, React.FC<{ data: unknown }>> = {
   'data-notification': NotificationPart as React.FC<{ data: unknown }>,
   'data-status': StatusPart as React.FC<{ data: unknown }>,
-  'data-reasoning_mode': ReasoningModePart as React.FC<{ data: unknown }>,
-  'data-reasoning_thoughts': ReasoningThoughtsPart as React.FC<{ data: unknown }>,
-  'data-reasoning_selection': ReasoningSelectionPart as React.FC<{ data: unknown }>,
   'data-command': CommandPart as React.FC<{ data: unknown }>,
   'data-file_operation': FileOperationPart as React.FC<{ data: unknown }>,
   'data-skill': SkillPart as React.FC<{ data: unknown }>,
@@ -43,9 +38,10 @@ const dataPartRenderers: Record<string, React.FC<{ data: unknown }>> = {
   'data-tool_progress': ToolProgressPart as React.FC<{ data: unknown }>,
   'data-error': ErrorPart as React.FC<{ data: unknown }>,
   'data-memory_update': MemoryUpdatePart as React.FC<{ data: unknown }>,
-  'data-swarm_signal': SwarmSignalPart as React.FC<{ data: unknown }>,
   'data-delegation': DelegationPart as React.FC<{ data: unknown }>,
   'data-artifact': ArtifactPart as React.FC<{ data: unknown }>,
+  'data-agent_message': AgentMessagePart as React.FC<{ data: unknown }>,
+  'data-agent_thought': AgentThoughtPart as React.FC<{ data: unknown }>,
 };
 
 export interface DataPartRendererProps {

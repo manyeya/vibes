@@ -40,6 +40,7 @@ import { TypingIndicator } from './components/chat/TypingIndicator';
 import { SessionCard } from './components/chat/SessionCard';
 import { ModelSelector, type ModelOption } from './components/chat/ModelSelector';
 import { TaskChecklist, type ChecklistTask } from './components/chat/TaskChecklist';
+import { AgentTabs, type AgentTabInfo } from './components/chat/AgentTabs';
 import { ActivityStream, StatusStrip } from './components/chat/ActivityStream';
 import { ArtifactPanel } from './components/artifacts/ArtifactPanel';
 import { ArtifactsContext } from './components/artifacts/ArtifactsContext';
@@ -598,6 +599,8 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
   // Canvas panel: which artifact is focused, and whether the panel is open.
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
+  // Live activity rail: which agent's work is shown ('main' or a delegationId).
+  const [activeAgent, setActiveAgent] = useState<string>('main');
 
   // Keep the selected model in a ref so the transport (created once) always
   // reads the latest value — including on automatic tool-approval resends.
@@ -655,8 +658,6 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
 
       switch (type) {
         // All data parts go to the chat display
-        case 'data-reasoning_mode':
-        case 'data-reasoning':
         case 'data-task_update':
         case 'data-task_graph':
         case 'data-todo_update':
@@ -664,9 +665,10 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
         case 'data-tool_progress':
         case 'data-error':
         case 'data-memory_update':
-        case 'data-swarm_signal':
         case 'data-delegation':
         case 'data-artifact':
+        case 'data-agent_message':
+        case 'data-agent_thought':
         case 'data-notification':
           updateLiveDataParts();
           break;
@@ -853,10 +855,51 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
     setPanelOpen(true);
   }, []);
 
+  // Deployed sub-agents, derived from the live delegation stream. Each becomes a
+  // tab above the composer so its own work can be viewed in isolation.
+  const agents = useMemo<AgentTabInfo[]>(() => {
+    const toStatus = (s?: string): AgentTabInfo['status'] =>
+      s === 'complete' ? 'complete' : s === 'failed' ? 'failed' : 'active';
+    const subs = new Map<string, AgentTabInfo>();
+    for (const p of dataParts) {
+      const d = p.data as any;
+      if (p.type === 'data-delegation' && d?.delegationId) {
+        subs.set(d.delegationId, { id: d.delegationId, name: d.agentName ?? 'Sub-agent', status: toStatus(d.status), task: d.task });
+      }
+    }
+    // Fallback: a sub-agent that streamed work before its delegation card.
+    for (const p of dataParts) {
+      const d = p.data as any;
+      if (p.type !== 'data-delegation' && d?.delegationId && !subs.has(d.delegationId)) {
+        subs.set(d.delegationId, { id: d.delegationId, name: d.agentName ?? 'Sub-agent', status: 'active' });
+      }
+    }
+    return [{ id: 'main', name: 'Main agent', status: 'active' }, ...subs.values()];
+  }, [dataParts]);
+
+  // Fall back to main if the selected agent is gone (e.g. the turn ended).
+  const effectiveAgent = agents.some((a) => a.id === activeAgent) ? activeAgent : 'main';
+  const viewingMain = effectiveAgent === 'main';
+  const activeSubAgent = viewingMain ? undefined : agents.find((a) => a.id === effectiveAgent);
+
+  // Which agent a live part belongs to: a delegation card is the MAIN agent's
+  // orchestration; anything else carrying a delegationId is the sub-agent's own
+  // work; everything else is the main agent.
+  const partAgentId = (p: LiveDataPart): string => {
+    if (p.type === 'data-delegation') return 'main';
+    const d = p.data as { delegationId?: string } | undefined;
+    return d?.delegationId ?? 'main';
+  };
+  const visibleParts = useMemo(
+    () => dataParts.filter((p) => partAgentId(p) === effectiveAgent),
+    [dataParts, effectiveAgent],
+  );
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (input.trim()) {
       setDataParts([]); // Clear previous data parts
+      setActiveAgent('main'); // new turn starts on the main agent's view
       sendMessage({ text: input });
       setInput('');
     }
@@ -892,7 +935,9 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
       {/* Chat messages */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-4 py-6">
-          {isLoadingHistory ? (
+          {/* The main conversation only renders on the Main agent tab — a
+              sub-agent tab is an isolated view of just that agent's work. */}
+          {viewingMain && (isLoadingHistory ? (
             <div className="flex items-center justify-center py-20">
               <Loader2 className="w-5 h-5 text-zinc-400 dark:text-zinc-600 animate-spin mr-2" />
               <span className="text-sm text-zinc-600 dark:text-zinc-500">Loading...</span>
@@ -983,22 +1028,49 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
                 );
               })}
             </AnimatePresence>
+          ))}
+
+          {/* Isolated sub-agent view: a header naming the agent + its task. */}
+          {!viewingMain && activeSubAgent && (
+            <div className="mb-3 rounded-xl border border-[color:var(--color-line-strong)] bg-[color:var(--color-surface)] px-4 py-3">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-amber)]">
+                  sub-agent
+                </span>
+                <span className="text-[14px] font-medium text-[color:var(--color-ink)]">{activeSubAgent.name}</span>
+                <span
+                  className={cn(
+                    'font-mono text-[10px] uppercase tracking-[0.14em]',
+                    activeSubAgent.status === 'complete'
+                      ? 'text-[color:var(--color-moss)]'
+                      : activeSubAgent.status === 'failed'
+                        ? 'text-[color:var(--color-ember)]'
+                        : 'text-[color:var(--color-amber)]',
+                  )}
+                >
+                  {activeSubAgent.status === 'complete' ? 'done' : activeSubAgent.status === 'failed' ? 'failed' : 'working'}
+                </span>
+              </div>
+              {activeSubAgent.task && (
+                <p className="mt-1.5 text-[13px] leading-relaxed text-[color:var(--color-ink-soft)]">{activeSubAgent.task}</p>
+              )}
+            </div>
           )}
 
           {/* Streaming data parts — tool runs collapse into a single
               activity rail (one row per operationId) so the chat doesn't
               fill with `bash complete` cards. Other live parts (errors,
               task updates, summaries, …) render through the legacy path. */}
-          {dataParts.length > 0 && (
+          {visibleParts.length > 0 && (
             <div className="flex items-start gap-3 py-3">
               <Avatar type="bot" size="md" />
               <div className="flex-1 space-y-3">
-                <StatusStrip parts={dataParts} />
-                <ActivityStream parts={dataParts} />
-                {dataParts.some(p => !SUPPRESSED_CHAT_PARTS.has(p.type)) && (
+                <StatusStrip parts={visibleParts} />
+                <ActivityStream parts={visibleParts} />
+                {visibleParts.some(p => !SUPPRESSED_CHAT_PARTS.has(p.type)) && (
                   <div className="space-y-2">
                     <AnimatePresence mode="popLayout">
-                      {dataParts
+                      {visibleParts
                         .filter(p => !SUPPRESSED_CHAT_PARTS.has(p.type))
                         .map((part) => (
                           <motion.div
@@ -1018,10 +1090,17 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
             </div>
           )}
 
+          {/* Sub-agent tab with nothing streamed yet. */}
+          {!viewingMain && visibleParts.length === 0 && (
+            <div className="py-10 text-center font-mono text-[12px] text-[color:var(--color-ink-faint)]">
+              Waiting for {activeSubAgent?.name ?? 'the sub-agent'}…
+            </div>
+          )}
+
           {/* The in-flight assistant answer, rendered AFTER its activity rail so
               the turn reads process → answer instead of answer-on-top. `live`
               keeps it to text/reasoning — the rail above owns the tool log. */}
-          {answerReady && (
+          {viewingMain && answerReady && (
             <ChatMessage
               key={activeAssistant!.id}
               message={activeAssistant}
@@ -1033,7 +1112,7 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
 
           {/* Thinking indicator — only at the very start, before the rail or any
               answer has appeared (otherwise the rail already signals progress). */}
-          {isLoading && !isLoadingHistory && messages.length > 0 &&
+          {viewingMain && isLoading && !isLoadingHistory && messages.length > 0 &&
             !answerReady && dataParts.length === 0 && (
             <TypingIndicator />
           )}
@@ -1056,6 +1135,7 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
 
       {/* Composer */}
       <div className="shrink-0 px-4 pb-5 pt-3">
+        <AgentTabs agents={agents} active={effectiveAgent} onSelect={setActiveAgent} />
         <TaskChecklist tasks={tasks} />
         <form onSubmit={handleSubmit} className="mx-auto max-w-3xl">
           <div className="rounded-2xl border border-[color:var(--color-line-strong)] bg-[color:var(--color-surface)] px-3.5 pt-3 pb-2 transition-all focus-within:border-[color:var(--color-amber)]/70 focus-within:shadow-[0_0_0_3px_rgba(240,184,108,0.08)]">

@@ -1,9 +1,6 @@
 // Export all data part components
 export { NotificationPart } from './NotificationPart';
 export { StatusPart } from './StatusPart';
-export { ReasoningModePart } from './ReasoningModePart';
-export { ReasoningThoughtsPart } from './ReasoningThoughtsPart';
-export { ReasoningSelectionPart } from './ReasoningSelectionPart';
 export { CommandPart } from './CommandPart';
 export { FileOperationPart } from './FileOperationPart';
 export { SkillPart } from './SkillPart';
@@ -14,9 +11,10 @@ export { SummarizationPart } from './SummarizationPart';
 export { ToolProgressPart } from './ToolProgressPart';
 export { ErrorPart } from './ErrorPart';
 export { MemoryUpdatePart } from './MemoryUpdatePart';
-export { SwarmSignalPart } from './SwarmSignalPart';
 export { DelegationPart } from './DelegationPart';
 export { ArtifactPart } from './ArtifactPart';
+export { AgentMessagePart } from './AgentMessagePart';
+export { AgentThoughtPart } from './AgentThoughtPart';
 export { DataPartRenderer, isDataPart, supportedDataPartTypes } from './DataPartRenderer';
 export type { DataPartWrapper, DataPartRendererProps } from './DataPartRenderer';
 

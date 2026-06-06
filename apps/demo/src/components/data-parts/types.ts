@@ -18,9 +18,6 @@ export type StatusData = VibesDataParts['status'] & {
   parentOperationId?: string;
   phase?: string;
 };
-export type ReasoningModeData = VibesDataParts['reasoning_mode'];
-export type ReasoningThoughtsData = VibesDataParts['reasoning_thoughts'];
-export type ReasoningSelectionData = VibesDataParts['reasoning_selection'];
 export type CommandData = VibesDataParts['command'];
 export type FileOperationData = VibesDataParts['file_operation'];
 export type SkillData = VibesDataParts['skill'];
@@ -47,10 +44,11 @@ export type ErrorData = VibesDataParts['error'] & {
   attempt?: number;
 };
 export type MemoryUpdateData = VibesDataParts['memory_update'];
-export type SwarmSignalData = VibesDataParts['swarm_signal'];
 export type DelegationData = VibesDataParts['delegation'];
 export type ArtifactData = VibesDataParts['artifact'];
 export type ArtifactKind = ArtifactData['kind'];
+export type AgentMessageData = VibesDataParts['agent_message'];
+export type AgentThoughtData = VibesDataParts['agent_thought'];
 
 // Configuration objects for consistent styling
 export const notificationConfig = {
@@ -71,30 +69,6 @@ export const notificationConfig = {
     color: 'text-red-600 dark:text-red-400',
     bg: 'bg-red-50 dark:bg-red-950/30',
     border: 'border-red-200 dark:border-red-900/50',
-  },
-} as const;
-
-export const reasoningConfig = {
-  react: {
-    icon: 'RefreshCw',
-    label: 'ReAct',
-    color: 'text-blue-600 dark:text-blue-400',
-    bg: 'bg-blue-50 dark:bg-blue-950/30',
-    border: 'border-blue-200 dark:border-blue-900/50',
-  },
-  tot: {
-    icon: 'TreePine',
-    label: 'Tree-of-Thoughts',
-    color: 'text-purple-600 dark:text-purple-400',
-    bg: 'bg-purple-50 dark:bg-purple-950/30',
-    border: 'border-purple-200 dark:border-purple-900/50',
-  },
-  'plan-execute': {
-    icon: 'ClipboardList',
-    label: 'Plan-Execute',
-    color: 'text-amber-600 dark:text-amber-400',
-    bg: 'bg-amber-50 dark:bg-amber-950/30',
-    border: 'border-amber-200 dark:border-amber-900/50',
   },
 } as const;
 
