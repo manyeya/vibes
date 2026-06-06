@@ -21,7 +21,6 @@ export type StatusData = VibesDataParts['status'] & {
 export type CommandData = VibesDataParts['command'];
 export type FileOperationData = VibesDataParts['file_operation'];
 export type SkillData = VibesDataParts['skill'];
-export type TodoUpdateData = VibesDataParts['todo_update'];
 export type TaskUpdateData = VibesDataParts['task_update'];
 export type TaskGraphData = VibesDataParts['task_graph'];
 export type SummarizationData = VibesDataParts['summarization'];
@@ -69,24 +68,6 @@ export const notificationConfig = {
     color: 'text-red-600 dark:text-red-400',
     bg: 'bg-red-50 dark:bg-red-950/30',
     border: 'border-red-200 dark:border-red-900/50',
-  },
-} as const;
-
-export const todoStatusConfig = {
-  pending: {
-    icon: 'Clock',
-    color: 'text-zinc-500 dark:text-zinc-400',
-    spin: false,
-  },
-  in_progress: {
-    icon: 'Loader2',
-    color: 'text-amber-600 dark:text-amber-400',
-    spin: true,
-  },
-  completed: {
-    icon: 'CheckCircle2',
-    color: 'text-emerald-600 dark:text-emerald-400',
-    spin: false,
   },
 } as const;
 

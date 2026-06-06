@@ -660,7 +660,6 @@ const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpd
         // All data parts go to the chat display
         case 'data-task_update':
         case 'data-task_graph':
-        case 'data-todo_update':
         case 'data-summarization':
         case 'data-tool_progress':
         case 'data-error':

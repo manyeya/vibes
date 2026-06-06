@@ -80,13 +80,6 @@ export interface VibesDataParts extends Record<string, unknown> {
         phase?: string;
     };
 
-    /** Updates to specific todo items for UI synchronization */
-    todo_update: {
-        id: string;
-        status: 'pending' | 'in_progress' | 'completed';
-        title?: string;
-    };
-
     /** Updates to specific task items for UI synchronization */
     task_update: {
         id: string;
@@ -435,20 +428,6 @@ export class DataStreamWriter {
                 ...metadata,
             },
             ...(options.transient ? { transient: true } : {}),
-        } as const);
-    }
-
-    /** Write todo update */
-    writeTodoUpdate(
-        id: string,
-        status: 'pending' | 'in_progress' | 'completed',
-        title?: string
-    ): void {
-        if (!this.writer) return;
-        this.writer.write({
-            type: 'data-todo_update',
-            id: `todo-${id}`,
-            data: { id, status, title },
         } as const);
     }
 

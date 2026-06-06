@@ -1,5 +1,4 @@
 import { type Plugin } from "../core/types";
-import TodosPlugin from "./todos";
 import TasksPlugin from "./tasks";
 import PlanningPlugin from "./planning";
 import SkillsPlugin from "./skills";
@@ -12,7 +11,6 @@ import ArtifactPlugin, { type ArtifactKind, type ArtifactPluginConfig } from "./
 
 export {
     type Plugin,
-    TodosPlugin,
     TasksPlugin,
     PlanningPlugin,
     SkillsPlugin,
