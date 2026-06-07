@@ -56,7 +56,9 @@ export const LiveActivity: React.FC<{ parts: ActivityStreamPart[] }> = ({ parts 
         const d = p.data as { toolName?: string; stage?: string; message?: string } | undefined;
         const toolName = d?.toolName ?? 'tool';
         const detail = meaningfulMessage(toolName, d?.message);
-        if (detail) return detail;
+        // Keep the tool name for context — "webSearch · 10 results" beats a
+        // bare "10 results" you can't trace back to a tool.
+        if (detail) return `${toolName} · ${detail}`;
         const stage = d?.stage === 'in_progress' ? 'running' : d?.stage ?? 'running';
         return `${toolName} ${stage}`;
       }
