@@ -17,11 +17,7 @@
  *   └── subagent_results/ - Sub-agent outputs
  *
  * Cross-session shared files remain in workspace/:
- *   ├── lessons.json     - Reflexion lessons
- *   ├── facts.json       - Semantic memory
- *   ├── patterns.json    - Procedural memory
- *   ├── swarm-state.json - Swarm coordination
- *   └── reflections.md   - Appended reflections
+ *   └── memories.json    - Long-term memory notes
  */
 
 import * as path from 'path';

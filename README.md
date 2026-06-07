@@ -161,11 +161,7 @@ Session-only files may include:
 
 Cross-session shared files include:
 
-- `facts.json`
-- `patterns.json`
-- `lessons.json`
-- `swarm-state.json`
-- `reflections.md`
+- `memories.json`
 - `subagent_results/`
 
 ## Plugin System (`harness-vibes`)

@@ -46,10 +46,9 @@ export default class MemoryPlugin implements Plugin {
     private readonly notesPath: string;
     private readonly maxNotes: number;
 
-    constructor(config: { scratchpadPath?: string; notesPath?: string; reflexionPath?: string; maxNotes?: number } = {}) {
+    constructor(config: { scratchpadPath?: string; notesPath?: string; maxNotes?: number } = {}) {
         this.scratchpadPath = config.scratchpadPath || 'workspace/scratchpad.md';
-        // `reflexionPath` kept as a back-compat alias for the long-term store.
-        this.notesPath = config.notesPath || config.reflexionPath?.replace(/\.md$/, '.json') || 'workspace/memories.json';
+        this.notesPath = config.notesPath || 'workspace/memories.json';
         this.maxNotes = config.maxNotes ?? 200;
     }
 

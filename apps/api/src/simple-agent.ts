@@ -76,7 +76,7 @@ const deepAgentPrompt = `<identity>
 
     <step name="6. Reflection & Closure">
         - **Completion**: Mark task \`completed\` via \`update_task\`.
-        - **Post-Mortem**: If a tool failed or a bug was found during verification, use \`reflexion_analyze_errors\` to internalize the lesson.
+        - **Post-Mortem**: If a tool failed or a bug surfaced during verification, name what went wrong and adjust your approach before retrying.
     </step>
 </granular_technical_workflow>
 

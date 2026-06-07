@@ -37,8 +37,6 @@ export interface VibeAgentConfig extends Partial<Omit<AgentCoreConfig, 'instruct
     sessionId?: string;
     /** Path to the SQLite database file (default: workspace/vibes.db) */
     dbPath?: string;
-    /** Unique identifier for this agent in a swarm (used for swarm coordination) */
-    swarmId?: string;
     /**
      * Optional {@link Sandbox} backing the filesystem + shell plugins. When
      * omitted, those plugins fall back to a LocalSandbox rooted at
@@ -52,7 +50,6 @@ export interface DefaultPluginFactoryOptions {
     model: LanguageModel;
     workspaceDir: string;
     sessionId?: string;
-    swarmId?: string;
     /** Sandbox shared by the filesystem + bash plugins for this agent. */
     sandbox?: Sandbox;
     /** Model context window (tokens) — drives token-based summarization. */
@@ -216,7 +213,6 @@ export class VibeAgent extends AgentCore {
                 model: this.model,
                 workspaceDir,
                 sessionId: config.sessionId,
-                swarmId: config.swarmId,
                 sandbox: config.sandbox,
                 contextWindow: this.contextWindow,
                 compressionRatio: this.contextCompressionRatio,
@@ -243,7 +239,6 @@ export class VibeAgent extends AgentCore {
                 model: model || this.model,
                 workspaceDir: subAgentWorkspaceDir || workspaceDir,
                 sessionId: this.vibeAgentConfig.sessionId,
-                swarmId: this.vibeAgentConfig.swarmId,
             }),
             () => ({ ...this.parentCustomTools }),
             this.parentApprovalConfig,
