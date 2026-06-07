@@ -3,7 +3,7 @@ import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { Send, Square, Bot } from 'lucide-react';
 import { cn } from './lib/utils';
-import { Streamdown } from 'streamdown';
+import { Markdown } from './components/Markdown';
 import { Button, Textarea } from './components/ui';
 import { Avatar, TypingIndicator } from './components/chat';
 import { Card } from './components/ui';
@@ -103,7 +103,7 @@ export default function SimpleChat() {
                           : 'bg-transparent text-zinc-800 dark:text-zinc-200'
                       )}
                     >
-                      <Streamdown>{content || (message.role === 'user' ? input : '...')}</Streamdown>
+                      <Markdown>{content || (message.role === 'user' ? input : '...')}</Markdown>
                     </div>
                   </div>
                 );

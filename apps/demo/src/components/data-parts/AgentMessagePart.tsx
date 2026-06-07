@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Streamdown } from 'streamdown';
+import { Markdown } from '../Markdown';
 import { animationProps, type AgentMessageData } from './types';
 
 /**
@@ -15,7 +15,7 @@ export const AgentMessagePart: React.FC<{ data: AgentMessageData }> = ({ data })
       className="rounded-lg border border-[color:var(--color-line)] bg-[color:var(--color-surface)] px-3 py-2"
     >
       <div className="streamdown text-[13.5px] leading-relaxed text-[color:var(--color-ink-soft)]">
-        <Streamdown>{data.text}</Streamdown>
+        <Markdown>{data.text}</Markdown>
       </div>
     </motion.div>
   );
