@@ -9,6 +9,7 @@ import type {
     UIMessage,
     UIMessageStreamWriter,
 } from 'ai';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 // ============ DATA PART SCHEMAS ============
 
@@ -299,8 +300,36 @@ export interface PluginStreamContext {
     rawWriter: UIMessageStreamWriter<VibesUIMessage>;
     writer: DataStreamWriter;
     streamId: string;
+    /**
+     * Create (or reuse) an operation. When called from inside a
+     * {@link PluginStreamContext.runToolOperation} body — i.e. from a plugin
+     * tool's `execute` that the agent invoked — this returns the *current* tool
+     * operation so a plugin's milestones and completion message land on the same
+     * activity row the wrapper already started, instead of spawning a duplicate.
+     * Outside any tool run it creates a fresh operation as before.
+     */
     createOperation(scope: DataStreamOperationScope): DataStreamOperation;
+    /**
+     * Run `fn` inside a fresh operation that becomes the "current" one for any
+     * nested {@link PluginStreamContext.createOperation} calls. Used by the
+     * auto-instrumentation wrapper to establish exactly one operation per tool
+     * call. Nested agents (sub-agents) shadow the parent's operation with their
+     * own, so their rows stay distinct.
+     */
+    runToolOperation<T>(
+        scope: DataStreamOperationScope,
+        fn: (operation: DataStreamOperation) => Promise<T>,
+    ): Promise<T>;
 }
+
+/**
+ * Tracks the operation that the current tool execution belongs to, so plugin
+ * code running inside that execution can enrich the same operation rather than
+ * create a parallel one. Process-wide singleton, but scoped per async context
+ * by AsyncLocalStorage, which keeps parallel tool calls (and nested sub-agents)
+ * independent.
+ */
+const currentOperationStore = new AsyncLocalStorage<DataStreamOperation>();
 
 const DEFAULT_HEARTBEAT_START_MS = 2000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 2000;
@@ -732,6 +761,15 @@ export class DataStreamOperation {
         this.scheduleHeartbeat();
     }
 
+    /**
+     * True once this operation has reached a terminal stage (complete/failed).
+     * The auto-instrumentation wrapper checks this so it doesn't overwrite a
+     * richer completion message a plugin already wrote to the shared operation.
+     */
+    get isClosed(): boolean {
+        return this.closed;
+    }
+
     private now(): number {
         return this.config.now?.() ?? Date.now();
     }
@@ -892,7 +930,13 @@ export function createPluginStreamContext(
         writer,
         streamId,
         createOperation(scope: DataStreamOperationScope) {
+            const active = currentOperationStore.getStore();
+            if (active && !active.isClosed) return active;
             return writer.createOperation(scope);
+        },
+        runToolOperation(scope, fn) {
+            const operation = writer.createOperation(scope);
+            return currentOperationStore.run(operation, () => fn(operation));
         },
     };
 }

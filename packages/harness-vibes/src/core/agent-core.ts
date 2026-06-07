@@ -20,10 +20,59 @@ import {
     ToolsRequiringApprovalConfig,
     ToolApprovalPolicy,
     createPluginStreamContext,
+    type DataStreamOperation,
 } from './types';
 
 // Re-export ErrorEntry for convenience
 export type { ErrorEntry };
+
+/**
+ * Turn a tool's return value into a short, human-readable completion line for
+ * the activity feed (e.g. "12 results", "Wrote src/app.ts"). Plugins that
+ * self-instrument set their own richer message; this is the fallback the
+ * auto-instrumentation wrapper uses for tools that don't, so the feed shows
+ * what happened instead of a generic "<tool> complete". Returns undefined when
+ * nothing meaningful can be derived.
+ */
+function summarizeToolResult(result: unknown): string | undefined {
+    if (result == null) return undefined;
+
+    if (typeof result === 'string') {
+        const line = result.trim().split('\n')[0]?.trim();
+        if (!line) return undefined;
+        return line.length > 80 ? `${line.slice(0, 79)}…` : line;
+    }
+
+    if (typeof result !== 'object') return undefined;
+    const r = result as Record<string, unknown>;
+
+    // Collections — surface the count ("8 files", "3 results").
+    for (const [key, noun] of [
+        ['files', 'file'],
+        ['results', 'result'],
+        ['matches', 'match'],
+        ['items', 'item'],
+        ['entries', 'entry'],
+    ] as const) {
+        const value = r[key];
+        if (Array.isArray(value)) {
+            const plural = noun === 'match' ? 'matches' : noun === 'entry' ? 'entries' : `${noun}s`;
+            return `${value.length} ${value.length === 1 ? noun : plural}`;
+        }
+    }
+
+    if (typeof r.savedTo === 'string') return `Wrote ${r.savedTo}`;
+    if (typeof r.path === 'string' && r.path.length <= 80) return r.path;
+    if (typeof r.summary === 'string' && r.summary.trim()) return r.summary.trim().split('\n')[0];
+    if (typeof r.message === 'string' && r.message.trim()) return r.message.trim().split('\n')[0];
+    if (typeof r.count === 'number') return `${r.count} ${r.count === 1 ? 'result' : 'results'}`;
+    if (typeof r.content === 'string') {
+        const len = r.content.length;
+        return `${len} char${len === 1 ? '' : 's'}`;
+    }
+
+    return undefined;
+}
 
 // ============ TYPE DEFINITIONS ============
 
@@ -603,76 +652,90 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
                 ...(toolDef as Record<string, unknown>),
                 ...(resolvedNeedsApproval !== undefined ? { needsApproval: resolvedNeedsApproval } : {}),
                 execute: originalExecute ? async (args: unknown, options: unknown) => {
-                    const operation = this.activeStreamContext?.createOperation({
-                        name: toolName,
-                        toolName,
-                        plugin: ownerName,
-                    });
-                    operation?.progress('starting', {
-                        phase: 'starting',
-                        message: `Starting ${toolName}`,
-                        attempt: 1,
-                    });
+                    // One operation per tool call. Established as the "current"
+                    // operation (see runToolOperation) so a self-instrumenting
+                    // plugin's milestones + completion message enrich THIS row
+                    // instead of spawning a duplicate. `operation` is undefined
+                    // only when there's no active stream (e.g. non-streaming).
+                    const runBody = async (operation?: DataStreamOperation): Promise<unknown> => {
+                        operation?.progress('starting', {
+                            phase: 'starting',
+                            message: `Starting ${toolName}`,
+                            attempt: 1,
+                        });
 
-                    // Trigger lifecycle hooks.
-                    // NOTE: Plugin.onInputDelta is declared but not invoked
-                    // here — execute() only sees the FINAL tool input. Partial
-                    // input deltas surface inside AI SDK's streamText `onChunk`
-                    // event (search for `tool-input-delta` in
-                    // node_modules/ai/src/generate-text/stream-text.ts). Wiring
-                    // that path is tracked as a follow-up.
-                    for (const plugin of this.plugins) {
-                        plugin.onInputStart?.({ toolName, args });
-                        plugin.onInputAvailable?.({ toolName, args });
-                    }
+                        // Trigger lifecycle hooks.
+                        // NOTE: Plugin.onInputDelta is declared but not invoked
+                        // here — execute() only sees the FINAL tool input. Partial
+                        // input deltas surface inside AI SDK's streamText `onChunk`
+                        // event (search for `tool-input-delta` in
+                        // node_modules/ai/src/generate-text/stream-text.ts). Wiring
+                        // that path is tracked as a follow-up.
+                        for (const plugin of this.plugins) {
+                            plugin.onInputStart?.({ toolName, args });
+                            plugin.onInputAvailable?.({ toolName, args });
+                        }
 
-                    // Retry logic for tool execution
-                    let lastError: Error | undefined;
-                    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-                        try {
-                            operation?.progress('in_progress', {
-                                phase: attempt === 0 ? 'running' : 'retry',
-                                message: attempt === 0
-                                    ? `Running ${toolName}`
-                                    : `Retrying ${toolName} (${attempt + 1}/${this.maxRetries + 1})`,
-                                attempt: attempt + 1,
-                            });
+                        // Retry logic for tool execution
+                        let lastError: Error | undefined;
+                        for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+                            try {
+                                operation?.progress('in_progress', {
+                                    phase: attempt === 0 ? 'running' : 'retry',
+                                    message: attempt === 0
+                                        ? `Running ${toolName}`
+                                        : `Retrying ${toolName} (${attempt + 1}/${this.maxRetries + 1})`,
+                                    attempt: attempt + 1,
+                                });
 
-                            const result = await originalExecute(args, options);
-                            operation?.complete(`${toolName} complete`, {
-                                phase: 'complete',
-                                attempt: attempt + 1,
-                            });
-                            return result;
-                        } catch (error) {
-                            lastError = error instanceof Error ? error : new Error(String(error));
-                            if (attempt < this.maxRetries) {
-                                // Exponential backoff before retry
-                                await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 100));
-                                console.warn(`[AgentCore] Tool ${toolName} failed (attempt ${attempt + 1}/${this.maxRetries + 1}), retrying...`);
+                                const result = await originalExecute(args, options);
+                                // If a plugin already closed the shared operation
+                                // with its own richer message, keep it; otherwise
+                                // surface a summary of the result.
+                                if (operation && !operation.isClosed) {
+                                    operation.complete(
+                                        summarizeToolResult(result) ?? `${toolName} complete`,
+                                        { phase: 'complete', attempt: attempt + 1 },
+                                    );
+                                }
+                                return result;
+                            } catch (error) {
+                                lastError = error instanceof Error ? error : new Error(String(error));
+                                if (attempt < this.maxRetries) {
+                                    // Exponential backoff before retry
+                                    await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 100));
+                                    console.warn(`[AgentCore] Tool ${toolName} failed (attempt ${attempt + 1}/${this.maxRetries + 1}), retrying...`);
+                                }
                             }
                         }
-                    }
 
-                    this.logError(toolName, lastError!.message, `Plugin: ${ownerName}`);
-                    operation?.fail(lastError!.message, {
-                        toolName,
-                        phase: 'failed',
-                        attempt: this.maxRetries + 1,
-                        context: `Plugin: ${ownerName}`,
-                        message: `${toolName} failed`,
-                    });
-
-                    // Notify plugins of final failure after all retries exhausted
-                    for (const plugin of this.plugins) {
-                        try {
-                            await plugin.onError?.(lastError!);
-                        } catch (hookError) {
-                            console.error(`[AgentCore] Plugin onError hook error:`, hookError);
+                        this.logError(toolName, lastError!.message, `Plugin: ${ownerName}`);
+                        if (operation && !operation.isClosed) {
+                            operation.fail(lastError!.message, {
+                                toolName,
+                                phase: 'failed',
+                                attempt: this.maxRetries + 1,
+                                context: `Plugin: ${ownerName}`,
+                                message: `${toolName} failed`,
+                            });
                         }
-                    }
 
-                    throw lastError;
+                        // Notify plugins of final failure after all retries exhausted
+                        for (const plugin of this.plugins) {
+                            try {
+                                await plugin.onError?.(lastError!);
+                            } catch (hookError) {
+                                console.error(`[AgentCore] Plugin onError hook error:`, hookError);
+                            }
+                        }
+
+                        throw lastError;
+                    };
+
+                    const ctx = this.activeStreamContext;
+                    return ctx
+                        ? ctx.runToolOperation({ name: toolName, toolName, plugin: ownerName }, runBody)
+                        : runBody(undefined);
                 } : undefined
             };
         }

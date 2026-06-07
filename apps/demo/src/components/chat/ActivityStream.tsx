@@ -71,6 +71,28 @@ function formatElapsed(ms?: number): string | null {
     return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 }
 
+/**
+ * The wrapper emits generic lifecycle text ("Running list_files", "list_files
+ * complete") to drive the row's state — that's noise next to the tool name. A
+ * message is only worth showing if it carries real outcome ("Found 0 files",
+ * "Wrote src/app.ts"). Strip the boilerplate so completed rows show the result,
+ * not "<tool> complete".
+ */
+export function meaningfulMessage(toolName: string, message?: string): string | null {
+    const m = message?.trim();
+    if (!m) return null;
+    const boilerplate = new Set([
+        `Starting ${toolName}`,
+        `Running ${toolName}`,
+        `${toolName} complete`,
+        `${toolName} failed`,
+        `Failed: ${toolName}`,
+    ]);
+    if (boilerplate.has(m)) return null;
+    if (m.startsWith(`Retrying ${toolName}`)) return null;
+    return m;
+}
+
 const STAGE_DOT: Record<Stage, { color: string; pulse: boolean; ring?: string }> = {
     starting: { color: 'bg-[color:var(--color-amber)]', pulse: true, ring: 'ring-[color:var(--color-amber)]/30' },
     in_progress: { color: 'bg-[color:var(--color-amber)]', pulse: true, ring: 'ring-[color:var(--color-amber)]/30' },
@@ -128,6 +150,7 @@ export const ActivityStream: React.FC<ActivityStreamProps> = ({ parts }) => {
                     {head.map((row) => {
                         const dot = STAGE_DOT[row.stage];
                         const elapsed = formatElapsed(row.elapsedMs);
+                        const detail = meaningfulMessage(row.toolName, row.message);
                         const agentTag = row.agentName && row.agentName !== 'vibe-agent'
                             ? row.agentName.toLowerCase()
                             : null;
@@ -157,9 +180,9 @@ export const ActivityStream: React.FC<ActivityStreamProps> = ({ parts }) => {
                                             ↳ {agentTag}
                                         </span>
                                     )}
-                                    {row.message && row.stage !== 'complete' && (
+                                    {detail && (
                                         <span className="truncate text-[12.5px] text-[color:var(--color-ink-soft)]">
-                                            {row.message}
+                                            {detail}
                                         </span>
                                     )}
                                     {row.attempt && row.attempt > 1 && (
