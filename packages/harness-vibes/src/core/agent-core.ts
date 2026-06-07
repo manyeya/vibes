@@ -442,7 +442,10 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
 
         for (const plugin of this.plugins) {
             if (!plugin.prepareStep) continue;
-            const pluginResult = await plugin.prepareStep(pluginStepOptions);
+            const pluginResult = await plugin.prepareStep({
+                ...pluginStepOptions,
+                system: merged.system ?? this.currentBaseInstructions,
+            });
             if (!pluginResult) continue;
 
             if (pluginResult.model !== undefined) merged.model = pluginResult.model;

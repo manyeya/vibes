@@ -7,6 +7,7 @@ import { createPluginStreamContext } from '../src/core/types';
 import BashPlugin from '../src/plugins/bash';
 import FilesystemPlugin from '../src/plugins/filesystem';
 import { PlanningPlugin } from '../src/plugins/planning';
+import TasksPlugin from '../src/plugins/tasks';
 import MemoryPlugin from '../src/plugins/memory';
 import SummarizationPlugin from '../src/plugins/summarization';
 import {
@@ -206,6 +207,89 @@ describe('Plugin streaming', () => {
       expect(memories[0].content).toContain('Keep auth decisions recorded');
     } finally {
       await removeTempWorkspace(workspaceRoot);
+    }
+  });
+
+  test('TasksPlugin generated tasks use real dependency IDs and unblock sequentially', async () => {
+    const workspaceDir = await createTempWorkspace('tasks-sequential');
+    const originalNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now++;
+
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => ({
+        finishReason: { type: 'stop', unified: 'stop' },
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              tasks: [
+                { title: 'Create package manifest', description: 'Create package.json', fileReferences: ['package.json'] },
+                { title: 'Create server entry', description: 'Create src/index.ts', fileReferences: ['src/index.ts'] },
+                { title: 'Run verification', description: 'Run the test/build command', fileReferences: [] },
+              ],
+            }),
+          },
+        ],
+        usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
+        warnings: [],
+        providerMetadata: undefined,
+      } as any),
+    });
+
+    try {
+      const plugin = new TasksPlugin(model as any, { tasksPath: join(workspaceDir, 'tasks.json') });
+      await plugin.waitReady();
+
+      await (plugin.tools.generate_tasks as any).execute({ request: 'Scaffold a Hono API' });
+      let tasks = JSON.parse(await readFile(join(workspaceDir, 'tasks.json'), 'utf8'));
+      expect(tasks[1].blockedBy).toEqual([tasks[0].id]);
+      expect(tasks[2].blockedBy).toEqual([tasks[1].id]);
+
+      await (plugin.tools.update_task as any).execute({ id: tasks[0].id, status: 'completed' });
+      tasks = JSON.parse(await readFile(join(workspaceDir, 'tasks.json'), 'utf8'));
+      expect(tasks[1].status).toBe('pending');
+      expect(tasks[2].status).toBe('blocked');
+    } finally {
+      Date.now = originalNow;
+      await removeTempWorkspace(workspaceDir);
+    }
+  });
+
+  test('PlanningPlugin recites active tasks into the per-step system prompt', async () => {
+    const workspaceDir = await createTempWorkspace('planning-recitation');
+
+    try {
+      const plugin = new PlanningPlugin(undefined, {
+        planPath: join(workspaceDir, 'plan.md'),
+        tasksPath: join(workspaceDir, 'tasks.json'),
+      });
+      await plugin.waitReady();
+
+      await (plugin.tools.create_tasks as any).execute({
+        tasks: [
+          {
+            title: 'Patch task lifecycle',
+            description: 'Update the task plugin so models can follow and finish tasks.',
+            fileReferences: ['packages/harness-vibes/src/plugins/tasks.ts'],
+          },
+        ],
+      });
+
+      const result = await plugin.prepareStep({
+        steps: [],
+        stepNumber: 0,
+        model: {} as any,
+        messages: [],
+        system: 'BASE SYSTEM',
+      });
+
+      expect(result?.system).toContain('BASE SYSTEM');
+      expect(result?.system).toContain('Current Plan');
+      expect(result?.system).toContain('Patch task lifecycle');
+      expect(result?.system).toContain('update_task');
+    } finally {
+      await removeTempWorkspace(workspaceDir);
     }
   });
 

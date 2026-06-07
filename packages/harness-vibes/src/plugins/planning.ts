@@ -175,9 +175,16 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
         stepNumber: number;
         model: LanguageModel;
         messages: ModelMessage[];
+        system?: string;
         experimental_context?: unknown;
-    }): Promise<void> {
+    }): Promise<{ system?: string } | void> {
         await this.refreshRecitationCache();
+        if (this.lastRecitedTasks.length === 0) return;
+
+        const system = _options.system ?? '';
+        return {
+            system: `${system}\n\n${this.formatPlanForRecitation(this.lastRecitedTasks)}`,
+        };
     }
 
     /**
@@ -700,13 +707,15 @@ The planReference field should be a clear path to the plan section so you can tr
                     // Create tasks with plan metadata
                     const now = new Date().toISOString();
                     const createdTasks: TaskItem[] = [];
+                    const batchId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+                    const taskIds = tasksData.tasks.map((_, i) => `${batchId}_${i}`);
 
                     for (let i = 0; i < tasksData.tasks.length; i++) {
                         const taskDef = tasksData.tasks[i];
-                        const id = `task_${Date.now()}_${i}`;
+                        const id = taskIds[i];
 
                         // Handle dependencies (previous tasks)
-                        const blockedBy = i > 0 ? [`task_${Date.now()}_${i - 1}`] : [];
+                        const blockedBy = i > 0 ? [taskIds[i - 1]] : [];
 
                         const newTask: TaskItem = {
                             id,

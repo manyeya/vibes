@@ -248,7 +248,7 @@ export interface Plugin {
     /**
      * Hook to modify settings for each step (runs before model call).
      * This receives the AI SDK's prepareStep options and can return modifications.
-     * The options include: steps, stepNumber, model, messages, experimental_context
+     * The options include: steps, stepNumber, model, messages, system, experimental_context
      *
      * Can return either:
      * - void/undefined for side effects only
@@ -259,6 +259,7 @@ export interface Plugin {
         stepNumber: number;
         model: LanguageModel;
         messages: ModelMessage[];
+        system?: string | any;
         experimental_context?: unknown;
     }) => (
             | void
@@ -274,6 +275,14 @@ export interface Plugin {
             }
             | undefined
             | Promise<{
+                model?: LanguageModel;
+                toolChoice?: any;
+                activeTools?: string[];
+                system?: string | any;
+                messages?: ModelMessage[];
+                experimental_context?: unknown;
+            } | undefined>
+            | Promise<void | {
                 model?: LanguageModel;
                 toolChoice?: any;
                 activeTools?: string[];

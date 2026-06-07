@@ -16,6 +16,25 @@ import {
     type DataStreamWriter,
 } from '../core/types';
 
+type TaskStatus = TaskItem['status'];
+
+const TASK_STATUS_VALUES = ['pending', 'blocked', 'in_progress', 'completed', 'failed'] as const;
+
+function createTaskBatchId(): string {
+    return `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function summarizeTask(task: TaskItem) {
+    return {
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        priority: task.priority,
+        blockedBy: task.blockedBy,
+        fileReferences: task.fileReferences,
+    };
+}
+
 /**
  * Plugin that provides task management with dependencies.
  * Tasks are created by an LLM to break down work into specific, actionable steps.
@@ -88,7 +107,7 @@ export default class TasksPlugin implements Plugin {
                     tasks: z.array(z.object({
                         title: z.string().describe('Short, specific task title'),
                         description: z.string().describe('Detailed description of what to do'),
-                        status: z.enum(['pending', 'in_progress', 'completed', 'failed']).optional(),
+                        status: z.enum(TASK_STATUS_VALUES).optional(),
                         priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
                         blockedBy: z.array(z.string()).optional().describe('Task IDs this task depends on'),
                         fileReferences: z.array(z.string()).optional().describe('Relevant file paths'),
@@ -99,6 +118,7 @@ export default class TasksPlugin implements Plugin {
                     const operation = this.createOperation('create-tasks', 'create_tasks');
                     const now = new Date().toISOString();
                     const createdTasks: TaskItem[] = [];
+                    const batchId = createTaskBatchId();
                     const taskIds = new Map<string, string>();
 
                     operation?.milestone(`Creating ${tasks.length} task${tasks.length === 1 ? '' : 's'}`, {
@@ -107,7 +127,7 @@ export default class TasksPlugin implements Plugin {
 
                     // Generate task IDs
                     tasks.forEach((_task, index) => {
-                        taskIds.set(index.toString(), `task_${Date.now()}_${index}`);
+                        taskIds.set(index.toString(), `${batchId}_${index}`);
                     });
 
                     // Create tasks with proper IDs
@@ -123,12 +143,14 @@ export default class TasksPlugin implements Plugin {
                             return ref;
                         });
 
+                        const status = taskDef.status || (resolvedBlockedBy.length > 0 ? 'blocked' : 'pending');
+
                         const newTask: TaskItem = {
                             id,
                             type: TaskType.SubTask,
                             title: taskDef.title,
                             description: taskDef.description,
-                            status: taskDef.status || 'pending',
+                            status,
                             priority: taskDef.priority || 'medium',
                             createdAt: now,
                             updatedAt: now,
@@ -167,7 +189,8 @@ export default class TasksPlugin implements Plugin {
                     return {
                         success: true,
                         message: `Created ${createdTasks.length} tasks`,
-                        tasks: createdTasks,
+                        tasks: createdTasks.map(summarizeTask),
+                        nextTasks: (await this.getAvailableTasks()).map(summarizeTask),
                     };
                 },
             }),
@@ -260,16 +283,18 @@ Output ONLY valid JSON, no markdown:
                     // Create the tasks using create_tasks logic
                     const now = new Date().toISOString();
                     const createdTasks: TaskItem[] = [];
+                    const batchId = createTaskBatchId();
+                    const taskIds = tasksData.tasks.map((_, i) => `${batchId}_${i}`);
                     operation?.milestone(`Parsed ${tasksData.tasks.length} generated task${tasksData.tasks.length === 1 ? '' : 's'}`, {
                         phase: 'parse',
                     });
 
                     for (let i = 0; i < tasksData.tasks.length; i++) {
                         const taskDef = tasksData.tasks[i];
-                        const id = `task_${Date.now()}_${i}`;
+                        const id = taskIds[i];
 
                         // Handle dependencies (previous tasks)
-                        const blockedBy = i > 0 ? [`task_${Date.now()}_${i - 1}`] : [];
+                        const blockedBy = i > 0 ? [taskIds[i - 1]] : [];
 
                         const newTask: TaskItem = {
                             id,
@@ -312,7 +337,8 @@ Output ONLY valid JSON, no markdown:
                     return {
                         success: true,
                         message: `Generated ${createdTasks.length} tasks`,
-                        tasks: createdTasks,
+                        tasks: createdTasks.map(summarizeTask),
+                        nextTasks: (await this.getAvailableTasks()).map(summarizeTask),
                     };
                 },
             }),
@@ -321,7 +347,7 @@ Output ONLY valid JSON, no markdown:
                 description: `Update task status or properties. Use this to mark tasks in_progress or completed.`,
                 inputSchema: z.object({
                     id: z.string(),
-                    status: z.enum(['pending', 'in_progress', 'completed', 'failed']).optional(),
+                    status: z.enum(TASK_STATUS_VALUES).optional(),
                     priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
                     description: z.string().optional(),
                     error: z.string().optional(),
@@ -349,30 +375,55 @@ Output ONLY valid JSON, no markdown:
                         updates.fileReferences = [...new Set([...current.fileReferences, ...input.addFileReferences])];
                     }
 
-                    await this.updateTask(input.id, updates);
+                    const { task: updatedTask, unblocked } = await this.updateTask(input.id, updates);
                     await this.persistTasks();
 
-                    this.writer?.writeTaskUpdate(
-                        input.id,
-                        input.status || current.status,
-                        current.title
-                    );
+                    this.writer?.writeTaskUpdate(input.id, updatedTask.status, updatedTask.title);
+                    for (const task of unblocked) {
+                        this.writer?.writeTaskUpdate(task.id, task.status, task.title);
+                    }
                     this.emitTaskGraph();
                     operation?.complete(`Updated task ${current.title}`, { phase: 'complete' });
 
-                    return { success: true, message: `Task ${input.id} updated` };
+                    const nextTasks = await this.getAvailableTasks();
+                    const activeTasks = this.tasks.filter(task => task.status === 'in_progress').map(summarizeTask);
+                    const remainingTasks = this.tasks.filter(task => task.status !== 'completed' && task.status !== 'failed');
+                    return {
+                        success: true,
+                        message: `Task ${input.id} updated to ${updatedTask.status}`,
+                        task: summarizeTask(updatedTask),
+                        unblocked: unblocked.map(summarizeTask),
+                        currentTasks: activeTasks,
+                        nextTasks: nextTasks.map(summarizeTask),
+                        remainingCount: remainingTasks.length,
+                        allDone: remainingTasks.length === 0,
+                        guidance: remainingTasks.length === 0
+                            ? 'All tracked tasks are complete. Finalize the user-facing answer.'
+                            : activeTasks.length > 0
+                                ? 'Continue the in-progress task and mark it completed when the work is actually done.'
+                                : 'Pick one nextTasks item, mark it in_progress, do the work, then mark it completed.',
+                    };
                 },
             }),
 
             get_next_tasks: tool({
-                description: `Get the next task to work on. Returns pending tasks that aren't blocked.`,
+                description: `Get the current task to continue, or pending tasks that are not blocked.`,
                 inputSchema: z.object({}),
                 execute: async () => {
                     const availableTasks = await this.getAvailableTasks();
+                    const currentTasks = availableTasks.filter(task => task.status === 'in_progress');
+                    const nextTasks = availableTasks.filter(task => task.status === 'pending');
                     return {
                         success: true,
-                        tasks: availableTasks,
+                        currentTasks: currentTasks.map(summarizeTask),
+                        nextTasks: nextTasks.map(summarizeTask),
+                        tasks: availableTasks.map(summarizeTask),
                         count: availableTasks.length,
+                        guidance: currentTasks.length > 0
+                            ? 'Continue the in-progress task before starting a new one.'
+                            : nextTasks.length > 0
+                                ? 'Pick one nextTasks item and mark it in_progress before doing the work.'
+                                : 'No unblocked tasks are available. If blocked tasks remain, complete their dependencies first.',
                     };
                 },
             }),
@@ -383,8 +434,9 @@ Output ONLY valid JSON, no markdown:
                 execute: async () => {
                     return {
                         success: true,
-                        tasks: this.tasks,
+                        tasks: this.tasks.map(summarizeTask),
                         count: this.tasks.length,
+                        activeCount: this.tasks.filter(task => task.status !== 'completed' && task.status !== 'failed').length,
                     };
                 },
             }),
@@ -420,9 +472,9 @@ Output ONLY valid JSON, no markdown:
         this.tasks.push(task);
     }
 
-    async updateTask(id: string, updates: Partial<TaskItem>): Promise<void> {
+    async updateTask(id: string, updates: Partial<TaskItem>): Promise<{ task: TaskItem; unblocked: TaskItem[] }> {
         const index = this.tasks.findIndex(t => t.id === id);
-        if (index === -1) return;
+        if (index === -1) throw new Error(`Task not found: ${id}`);
 
         const current = this.tasks[index];
         const updated = {
@@ -438,13 +490,17 @@ Output ONLY valid JSON, no markdown:
         this.tasks[index] = updated;
 
         // Auto-unblock
+        let unblocked: TaskItem[] = [];
         if (updated.status === 'completed' && current.status !== 'completed') {
-            await this.unblockDependentTasks(id);
+            unblocked = await this.unblockDependentTasks(id);
         }
+
+        return { task: updated, unblocked };
     }
 
-    async unblockDependentTasks(completedTaskId: string): Promise<void> {
+    async unblockDependentTasks(completedTaskId: string): Promise<TaskItem[]> {
         const completedIds = new Set(this.tasks.filter(t => t.status === 'completed').map(t => t.id));
+        const unblocked: TaskItem[] = [];
 
         for (const task of this.tasks) {
             if (task.blockedBy.includes(completedTaskId) && task.status === 'blocked') {
@@ -452,15 +508,19 @@ Output ONLY valid JSON, no markdown:
                 if (allDepsComplete) {
                     task.status = 'pending';
                     task.updatedAt = new Date().toISOString();
+                    unblocked.push(task);
                 }
             }
         }
+
+        return unblocked;
     }
 
     async getAvailableTasks(): Promise<TaskItem[]> {
         const completedIds = new Set(this.tasks.filter(t => t.status === 'completed').map(t => t.id));
         return this.tasks.filter(task => {
             if (task.status === 'completed' || task.status === 'failed') return false;
+            if (task.status === 'blocked') return false;
             return task.blockedBy.every(depId => completedIds.has(depId));
         });
     }
@@ -503,11 +563,12 @@ When working on complex requests:
 2. Use \`get_next_tasks\` to see what to work on
 3. Pick a task, mark it \`in_progress\` with \`update_task\`
 4. DO the work (read files, make changes)
-5. Mark the task \`completed\` with \`update_task\`
-6. Move to the next task
+5. Mark the task \`completed\` with \`update_task\` only after the work is actually done
+6. Continue until \`update_task\` returns \`allDone: true\`
 
 IMPORTANT: Tasks must be SPECIFIC - include actual file paths and specific changes.
 DO NOT create generic tasks like "analyze requirements" or "implement logic".
+If a task is \`in_progress\`, continue that task before starting a new one.
 `;
     }
 
