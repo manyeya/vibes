@@ -10,6 +10,7 @@ import {
     SummarizationPlugin,
     ArtifactPlugin,
     ClarificationPlugin,
+    WebSearchPlugin,
 } from '../plugins';
 import MemoryPlugin from '../plugins/memory';
 import {
@@ -72,7 +73,7 @@ function resolveSharedWorkspaceDir(workspaceDir: string): string {
 export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugin[] {
     const sharedWorkspaceDir = resolveSharedWorkspaceDir(config.workspaceDir);
 
-    return [
+    const plugins: Plugin[] = [
         new PlanningPlugin(config.model, {
             planPath: path.join(config.workspaceDir, 'plan.md'),
             tasksPath: path.join(config.workspaceDir, 'tasks.json'),
@@ -100,6 +101,13 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
             compressionRatio: config.compressionRatio,
         }),
     ];
+
+    // Web search (Exa / Tavily / Brave) — only when a provider key is set, so
+    // the agent isn't handed a tool that can only error.
+    const webSearch = new WebSearchPlugin();
+    if (webSearch.isEnabled) plugins.push(webSearch);
+
+    return plugins;
 }
 
 /**
@@ -114,7 +122,7 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
  * planning stack.
  */
 export function createSubAgentPlugins(config: DefaultPluginFactoryOptions): Plugin[] {
-    return [
+    const plugins: Plugin[] = [
         new PlanningPlugin(config.model, {
             planPath: path.join(config.workspaceDir, 'plan.md'),
             tasksPath: path.join(config.workspaceDir, 'tasks.json'),
@@ -125,6 +133,12 @@ export function createSubAgentPlugins(config: DefaultPluginFactoryOptions): Plug
         new BashPlugin(config.sandbox ? { sandbox: config.sandbox } : config.workspaceDir),
         new ArtifactPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
     ];
+
+    // Research-capable workers get web search too, when configured.
+    const webSearch = new WebSearchPlugin();
+    if (webSearch.isEnabled) plugins.push(webSearch);
+
+    return plugins;
 }
 
 /**

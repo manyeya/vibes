@@ -9,6 +9,15 @@ import MemoryPlugin from "./memory";
 import SummarizationPlugin, { type SummarizationConfig } from "./summarization";
 import ArtifactPlugin, { type ArtifactKind, type ArtifactPluginConfig } from "./artifact";
 import ClarificationPlugin, { ASK_USER_TOOL_NAME } from "./clarification";
+import WebSearchPlugin, {
+    type WebSearchPluginConfig,
+    type SearchProvider,
+    type SearchResult,
+    resolveSearchProvider,
+    ExaProvider,
+    TavilyProvider,
+    BraveProvider,
+} from "./web-search";
 
 export {
     type Plugin,
@@ -27,4 +36,12 @@ export {
     type ArtifactPluginConfig,
     ClarificationPlugin,
     ASK_USER_TOOL_NAME,
+    WebSearchPlugin,
+    type WebSearchPluginConfig,
+    type SearchProvider,
+    type SearchResult,
+    resolveSearchProvider,
+    ExaProvider,
+    TavilyProvider,
+    BraveProvider,
 }

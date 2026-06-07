@@ -14,7 +14,6 @@ import { createHarness, type Harness, ASK_USER_TOOL_NAME } from '../../../packag
 import type { SubAgent } from '../../../packages/harness-vibes/index';
 import { wrapLanguageModel, hasToolCall, type LanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
-import { webSearch } from '@exalabs/ai-sdk';
 import { vibePrompt } from './prompts/vibe';
 import { getModel, getContextWindow, getDefaultModelId } from './model-factory';
 import { dotenvLoad } from 'dotenv-mono';
@@ -123,9 +122,9 @@ export const vibeHarness: Harness = createHarness(
         // Hand control back to the user the moment the agent asks a question:
         // the run halts after `ask_user` so the questionnaire can be answered.
         stopWhen: hasToolCall(ASK_USER_TOOL_NAME),
-        tools: {
-            webSearch: webSearch() as any,
-        },
+        // `webSearch` is now provided by the WebSearchPlugin (default + sub-agent
+        // plugin sets), which auto-detects a provider from EXA_API_KEY /
+        // TAVILY_API_KEY / BRAVE_API_KEY and streams a sources card.
         subAgents: defaultSubAgents,
 
     },

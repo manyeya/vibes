@@ -17,6 +17,7 @@ const SUPPRESSED = new Set([
   'data-command',
   'data-file_operation',
   'data-skill',
+  'data-search',
   'data-summarization',
   'data-error',
   'data-memory_update',

@@ -199,6 +199,18 @@ export interface VibesDataParts extends Record<string, unknown> {
         skills?: string[];
     };
 
+    /** Web search results (WebSearchPlugin) — rendered as a sources card. */
+    search: {
+        query: string;
+        status: 'running' | 'complete' | 'failed';
+        /** Which backend served the query (exa / tavily / brave). */
+        provider?: string;
+        /** Normalised result list. */
+        results?: Array<{ title: string; url: string; snippet?: string }>;
+        count?: number;
+        error?: string;
+    };
+
     /**
      * Live context-window usage so the UI can show how full the context is and
      * how much room remains before the conversation is compressed. Emitted each
@@ -665,6 +677,26 @@ export class DataStreamWriter {
             type: 'data-file_operation',
             id: `file-${id}`,
             data: { operation, path, status, ...options },
+        } as const);
+    }
+
+    /** Write/replace a web-search update (stable id per search). */
+    writeSearch(
+        id: string,
+        query: string,
+        status: 'running' | 'complete' | 'failed',
+        options: {
+            provider?: string;
+            results?: Array<{ title: string; url: string; snippet?: string }>;
+            count?: number;
+            error?: string;
+        } = {}
+    ): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-search',
+            id: `search-${id}`,
+            data: { query, status, ...options },
         } as const);
     }
 
