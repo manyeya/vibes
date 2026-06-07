@@ -13,7 +13,7 @@ export const ContextGauge = ({ usage }: { usage: ContextUsageData }) => {
   if (!contextWindow) return null;
 
   const fill = Math.min(1, usedTokens / contextWindow);
-  const remaining = Math.max(0, compressAt - usedTokens);
+  const pct = Math.round(fill * 100);
   const compressing = usedTokens >= compressAt;
   const near = usedTokens >= compressAt * 0.8;
 
@@ -41,7 +41,7 @@ export const ContextGauge = ({ usage }: { usage: ContextUsageData }) => {
         />
       </span>
       <span className={cn(compressing && 'text-[color:var(--color-ember)]')}>
-        {compressing ? 'compressing' : `${fmtK(remaining)} to compress`}
+        {compressing ? 'compressing' : `${pct}%`}
       </span>
     </div>
   );

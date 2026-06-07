@@ -10,6 +10,8 @@ import {
   Copy,
   Check,
   Download,
+  Maximize2,
+  Minimize2,
   X,
   Loader2,
 } from 'lucide-react';
@@ -31,6 +33,9 @@ const KIND_LABEL: Record<ArtifactKind, string> = {
 };
 const EXT: Record<ArtifactKind, string> = { html: 'html', markdown: 'md', mermaid: 'mmd', chart: 'json' };
 
+/** Min docked width for the canvas; drag can grow it up to ~85vw. */
+const MIN_W = 420;
+
 interface ArtifactPanelProps {
   artifacts: ArtifactData[];
   activeId: string | null;
@@ -42,6 +47,11 @@ export const ArtifactPanel: React.FC<ArtifactPanelProps> = ({ artifacts, activeI
   const [mode, setMode] = useState<'preview' | 'code'>('preview');
   const [copied, setCopied] = useState(false);
   const userPickedMode = useRef(false);
+  const [expanded, setExpanded] = useState(false);
+  const [width, setWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('vibes_canvas_width'));
+    return saved >= MIN_W ? saved : Math.round(Math.min(960, Math.max(MIN_W, window.innerWidth * 0.46)));
+  });
 
   const active = artifacts.find((a) => a.id === activeId) ?? artifacts[artifacts.length - 1];
   const streaming = active?.status === 'streaming';
@@ -61,6 +71,43 @@ export const ArtifactPanel: React.FC<ArtifactPanelProps> = ({ artifacts, activeI
     userPickedMode.current = true;
     setMode(m);
   };
+
+  // Drag the left edge to resize. The panel hugs the viewport's right edge, so
+  // its width is (viewport right − cursor x), clamped to leave room for chat.
+  // `body.canvas-resizing` kills iframe pointer-events during the drag — an HTML
+  // preview iframe otherwise captures the mouse and the parent window stops
+  // getting mousemove, which was the jank — and updates are coalesced to one
+  // per animation frame.
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const clamp = (w: number) => Math.min(window.innerWidth - 360, Math.max(MIN_W, w));
+    let last = width;
+    let raf = 0;
+    const flush = () => { raf = 0; setWidth(last); };
+    const onMove = (ev: MouseEvent) => {
+      last = clamp(window.innerWidth - ev.clientX);
+      if (!raf) raf = requestAnimationFrame(flush);
+    };
+    const onUp = () => {
+      if (raf) cancelAnimationFrame(raf);
+      setWidth(last);
+      document.body.classList.remove('canvas-resizing');
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      localStorage.setItem('vibes_canvas_width', String(Math.round(last)));
+    };
+    document.body.classList.add('canvas-resizing');
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  // Esc exits full view.
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpanded(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expanded]);
 
   if (!active) return null;
   const Icon = KIND_ICON[active.kind];
@@ -91,8 +138,25 @@ export const ArtifactPanel: React.FC<ArtifactPanelProps> = ({ artifacts, activeI
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 28 }}
       transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-      className="flex h-full w-[46%] min-w-[420px] max-w-[860px] shrink-0 flex-col border-l border-[color:var(--color-line-strong)] bg-[color:var(--color-ground)]"
+      style={expanded ? undefined : { width, maxWidth: '85vw' }}
+      className={cn(
+        'flex h-full shrink-0 flex-col bg-[color:var(--color-ground)]',
+        expanded
+          ? 'fixed inset-0 z-50 w-full'
+          : 'relative border-l border-[color:var(--color-line-strong)]',
+      )}
     >
+      {/* Drag-to-resize handle (docked mode only) */}
+      {!expanded && (
+        <div
+          onMouseDown={startResize}
+          title="Drag to resize"
+          className="group absolute left-0 top-0 z-20 h-full w-1.5 -translate-x-1/2 cursor-col-resize"
+        >
+          <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-[color:var(--color-amber)]" />
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center gap-3 border-b border-[color:var(--color-line)] px-4 py-3">
         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[rgba(224,164,88,0.12)] text-[color:var(--color-amber)]">
@@ -133,6 +197,14 @@ export const ArtifactPanel: React.FC<ArtifactPanelProps> = ({ artifacts, activeI
           ))}
         </div>
 
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          title={expanded ? 'Exit full view (Esc)' : 'Full view'}
+          className="icon-btn"
+        >
+          {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+        </button>
         <button type="button" onClick={copy} title="Copy source" className="icon-btn">
           {copied ? <Check className="h-4 w-4 text-[color:var(--color-moss)]" /> : <Copy className="h-4 w-4" />}
         </button>
@@ -184,6 +256,8 @@ export const ArtifactPanel: React.FC<ArtifactPanelProps> = ({ artifacts, activeI
           border-radius: 8px; color: var(--color-ink-faint); transition: color .15s, background-color .15s;
         }
         .icon-btn:hover { color: var(--color-ink); background-color: var(--color-surface); }
+        body.canvas-resizing { cursor: col-resize; user-select: none; }
+        body.canvas-resizing iframe { pointer-events: none; }
       `}</style>
     </motion.aside>
   );

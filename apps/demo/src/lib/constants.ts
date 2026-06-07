@@ -66,15 +66,6 @@ export const TOOL_STAGE_LABELS = {
   failed: 'Failed',
 } as const;
 
-export const CAPABILITIES = [
-  'Planning',
-  'Tree-of-Thoughts',
-  'Semantic Memory',
-  'Reflexion',
-  'Procedural',
-  'Swarm',
-] as const;
-
 export const Z_INDEX_SCALE = {
   base: 0,
   sidebar: 40,
