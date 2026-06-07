@@ -32,15 +32,16 @@ const DEFAULT_ZHIPU_MODEL = 'glm-4.7-flash';
 const DEFAULT_OPENROUTER_MODEL = 'anthropic/claude-3.5-sonnet';
 
 /**
- * Models offered in the UI model selector. OpenRouter ids (the only
- * provider configured here). The free ones were probed live as
- * tool-capable; availability shifts, so the selector lets the user switch
- * when one is rate-limited.
+ * A model offered in the UI selector. The free OpenRouter catalog is fetched
+ * live (see {@link getAvailableModels}); this is also the shape of the curated
+ * fallback used when the catalog can't be reached.
  */
 export interface AvailableModel {
     id: string;
     label: string;
     free: boolean;
+    /** Provider/family for grouping in the selector (e.g. "Google", "Qwen"). */
+    group?: string;
     note?: string;
     /** USD per 1M input tokens (for session cost estimate). */
     priceIn?: number;
@@ -53,17 +54,156 @@ export interface AvailableModel {
 /** Fallback window when a model isn't in the table / is unknown. */
 export const DEFAULT_CONTEXT_WINDOW = 128_000;
 
+/**
+ * Curated fallback, used only when the OpenRouter catalog can't be fetched
+ * (offline / no network). The paid Claude entry is always appended to the live
+ * list too, as a reliable option when the free models are rate-limited.
+ */
 export const AVAILABLE_MODELS: AvailableModel[] = [
-    { id: 'openai/gpt-oss-120b:free', label: 'GPT-OSS 120B', free: true, note: 'Strong tool use', priceIn: 0, priceOut: 0, contextWindow: 131_072 },
-    { id: 'google/gemma-4-31b-it:free', label: 'Gemma 4 31B', free: true, priceIn: 0, priceOut: 0, contextWindow: 131_072 },
-    { id: 'google/gemma-4-26b-a4b-it:free', label: 'Gemma 4 26B', free: true, priceIn: 0, priceOut: 0, contextWindow: 131_072 },
-    { id: 'nvidia/nemotron-3-super-120b-a12b:free', label: 'Nemotron 3 Super', free: true, note: '1M context', priceIn: 0, priceOut: 0, contextWindow: 1_000_000 },
-    { id: 'qwen/qwen3-coder:free', label: 'Qwen3 Coder', free: true, note: 'Often rate-limited', priceIn: 0, priceOut: 0, contextWindow: 262_144 },
-    { id: 'moonshotai/kimi-k2.6:free', label: 'Kimi K2.6', free: true, note: 'Reasoning; can rate-limit', priceIn: 0, priceOut: 0, contextWindow: 200_000 },
-    { id: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet', free: false, note: 'Paid, most reliable', priceIn: 3, priceOut: 15, contextWindow: 200_000 },
+    { id: 'openai/gpt-oss-120b:free', label: 'GPT-OSS 120B', free: true, group: 'OpenAI', note: 'Strong tool use', priceIn: 0, priceOut: 0, contextWindow: 131_072 },
+    { id: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet', free: false, group: 'Anthropic', note: 'Paid, most reliable', priceIn: 3, priceOut: 15, contextWindow: 200_000 },
 ];
 
-/** The model id the backend defaults to (env override, else the first listed). */
+// ============ OPENROUTER FREE-MODEL CATALOG ============
+
+const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
+const CATALOG_TTL_MS = 10 * 60 * 1000;
+
+/** id → model, for sync lookups (context window, override validation). Seeded
+ *  with the curated fallback and enriched after each successful catalog fetch. */
+const modelIndex = new Map<string, AvailableModel>();
+for (const m of AVAILABLE_MODELS) modelIndex.set(m.id, m);
+
+let catalogCache: { at: number; models: AvailableModel[] } | null = null;
+let inflight: Promise<AvailableModel[]> | null = null;
+
+const PROVIDER_LABELS: Record<string, string> = {
+    google: 'Google',
+    'meta-llama': 'Meta',
+    meta: 'Meta',
+    qwen: 'Qwen',
+    mistralai: 'Mistral',
+    deepseek: 'DeepSeek',
+    openai: 'OpenAI',
+    anthropic: 'Anthropic',
+    nvidia: 'NVIDIA',
+    microsoft: 'Microsoft',
+    moonshotai: 'Moonshot',
+    nousresearch: 'Nous',
+    cognitivecomputations: 'Cognitive',
+    'z-ai': 'Z.AI',
+    thudm: 'THUDM',
+    gryphe: 'Gryphe',
+    sao10k: 'Sao10K',
+    openchat: 'OpenChat',
+    liquid: 'Liquid',
+    arliai: 'ArliAI',
+    tencent: 'Tencent',
+    tngtech: 'TNG',
+    featherless: 'Featherless',
+    rekaai: 'Reka',
+    inception: 'Inception',
+    agentica: 'Agentica',
+};
+
+function prettyProvider(prefix: string): string {
+    return (
+        PROVIDER_LABELS[prefix] ??
+        prefix.replace(/[-_]/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase())
+    );
+}
+
+/** Map a raw OpenRouter catalog entry to an {@link AvailableModel}, or null if
+ *  it isn't a free, tool-capable model (the agent requires tool calling). */
+function toAvailableModel(raw: any): AvailableModel | null {
+    const id: unknown = raw?.id;
+    if (typeof id !== 'string' || !id) return null;
+
+    const pricing = raw.pricing ?? {};
+    const isFree = (pricing.prompt === '0' && pricing.completion === '0') || id.endsWith(':free');
+    if (!isFree) return null;
+
+    // The whole app is tool-driven; skip models that can't call tools.
+    const params: string[] = Array.isArray(raw.supported_parameters) ? raw.supported_parameters : [];
+    if (!params.includes('tools')) return null;
+
+    const prefix = id.split('/')[0] ?? 'other';
+    const rawName: string = typeof raw.name === 'string' ? raw.name : id;
+    const label =
+        rawName.replace(/^[^:]+:\s*/, '').replace(/\s*\(free\)\s*$/i, '').trim() || id;
+    const ctx = typeof raw.context_length === 'number' ? raw.context_length : undefined;
+
+    return {
+        id,
+        label,
+        free: true,
+        group: prettyProvider(prefix),
+        priceIn: 0,
+        priceOut: 0,
+        contextWindow: ctx,
+        note: ctx && ctx >= 1_000_000 ? '1M context' : undefined,
+    };
+}
+
+/** Fetch + cache the free, tool-capable slice of the OpenRouter catalog.
+ *  Returns [] on any failure so callers fall back to the curated list. */
+async function fetchFreeCatalog(): Promise<AvailableModel[]> {
+    if (catalogCache && Date.now() - catalogCache.at < CATALOG_TTL_MS) return catalogCache.models;
+    if (inflight) return inflight;
+
+    inflight = (async () => {
+        try {
+            const headers: Record<string, string> = { Accept: 'application/json' };
+            if (process.env.OPENROUTER_API_KEY) {
+                headers.Authorization = `Bearer ${process.env.OPENROUTER_API_KEY}`;
+            }
+            const res = await fetch(OPENROUTER_MODELS_URL, { headers });
+            if (!res.ok) throw new Error(`OpenRouter /models responded ${res.status}`);
+            const json = (await res.json()) as { data?: unknown[] };
+            const free = (json.data ?? [])
+                .map(toAvailableModel)
+                .filter((m): m is AvailableModel => m !== null)
+                .sort(
+                    (a, b) =>
+                        (a.group ?? '').localeCompare(b.group ?? '') ||
+                        a.label.localeCompare(b.label),
+                );
+            for (const m of free) modelIndex.set(m.id, m);
+            catalogCache = { at: Date.now(), models: free };
+            return free;
+        } catch (err) {
+            console.warn('[model-factory] Failed to fetch OpenRouter catalog:', (err as Error).message);
+            return [];
+        } finally {
+            inflight = null;
+        }
+    })();
+
+    return inflight;
+}
+
+/**
+ * The full selector list: every free tool-capable OpenRouter model (grouped by
+ * provider) plus the curated paid fallback. Falls back to {@link AVAILABLE_MODELS}
+ * when the live catalog is unreachable.
+ */
+export async function getAvailableModels(): Promise<AvailableModel[]> {
+    const free = await fetchFreeCatalog();
+    if (free.length === 0) return AVAILABLE_MODELS;
+    const seen = new Set(free.map((m) => m.id));
+    const curatedExtras = AVAILABLE_MODELS.filter((m) => !seen.has(m.id));
+    return [...free, ...curatedExtras];
+}
+
+/** Whether a model id is one we know about (from the catalog or the curated
+ *  list). Falls back to a loose OpenRouter-id shape check so a freshly listed
+ *  model the cache hasn't seen yet is still accepted. */
+export function isKnownModelId(id: string): boolean {
+    if (modelIndex.has(id)) return true;
+    return /^[\w.-]+\/[\w.:-]+$/.test(id);
+}
+
+/** The model id the backend defaults to (env override, else the first curated). */
 export function getDefaultModelId(): string {
     return process.env.OPENROUTER_MODEL || AVAILABLE_MODELS[0].id;
 }
@@ -71,8 +211,7 @@ export function getDefaultModelId(): string {
 /** Context window (tokens) for a model id, with a safe default. */
 export function getContextWindow(modelId?: string): number {
     if (!modelId) return DEFAULT_CONTEXT_WINDOW;
-    const match = AVAILABLE_MODELS.find((m) => m.id === modelId);
-    return match?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+    return modelIndex.get(modelId)?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
 }
 
 function resolveDefaultSpec(): ModelSpec {

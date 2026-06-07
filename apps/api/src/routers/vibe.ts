@@ -7,7 +7,7 @@ import streamCoordinator from "../stream-coordinator";
 import { vibeHarness } from "../vibe-coder";
 import { SqliteBackend, createAgentStreamResponse } from "../../../../packages/harness-vibes/index";
 import { agent as simpleAgent } from "../simple-agent";
-import { getModel, AVAILABLE_MODELS, getDefaultModelId } from "../model-factory";
+import { getModel, getAvailableModels, getDefaultModelId, isKnownModelId } from "../model-factory";
 
 /**
  * Loose message shape accepted by the streaming endpoints. AI SDK in
@@ -43,13 +43,13 @@ type ApiMessage = z.infer<typeof apiMessageSchema>;
 
 const app = new Hono();
 
-/** Models available to the UI model selector + the current default. */
-app.get('/models', (c) => {
-    return c.json({
-        success: true,
-        models: AVAILABLE_MODELS,
-        active: getDefaultModelId(),
-    });
+/** Models available to the UI model selector + the current default. Pulls the
+ *  live free OpenRouter catalog (grouped), with a curated fallback. */
+app.get('/models', async (c) => {
+    const models = await getAvailableModels();
+    const preferred = getDefaultModelId();
+    const active = models.some((m) => m.id === preferred) ? preferred : models[0]?.id;
+    return c.json({ success: true, models, active });
 });
 
 /**
@@ -59,7 +59,7 @@ app.get('/models', (c) => {
  */
 function applyModelOverride(agent: { setModelOverride: (m?: ReturnType<typeof getModel>) => void }, modelId: unknown): void {
     const id = typeof modelId === 'string' && modelId.trim() ? modelId.trim() : undefined;
-    const known = id && AVAILABLE_MODELS.some((m) => m.id === id);
+    const known = id ? isKnownModelId(id) : false;
     agent.setModelOverride(known ? getModel({ provider: 'openrouter', id: id! }) : undefined);
 }
 
