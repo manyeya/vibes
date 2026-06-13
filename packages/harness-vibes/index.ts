@@ -9,6 +9,7 @@ import { type InferAgentUIMessage } from 'ai';
 import {
     TasksPlugin,
     PlanningPlugin,
+    PLAN_REVIEW_TOOL_NAME,
     FilesystemPlugin,
     BashPlugin,
     SkillsPlugin,
@@ -95,6 +96,7 @@ export {
     DataStreamWriter,
     TasksPlugin,
     PlanningPlugin,
+    PLAN_REVIEW_TOOL_NAME,
     FilesystemPlugin,
     BashPlugin,
     SkillsPlugin,

@@ -41,18 +41,20 @@ import { ChatBubble } from './ChatBubble';
 import { TypingIndicator } from './TypingIndicator';
 import { SessionCard } from './SessionCard';
 import { ModelSelector, type ModelOption } from './ModelSelector';
+import { AgentSelector, type AgentOption } from './AgentSelector';
 import { TaskChecklist, type ChecklistTask } from './TaskChecklist';
 import { AgentTabs, type AgentTabInfo } from './AgentTabs';
 import { ActivityStream, StatusStrip } from './ActivityStream';
 import { ArtifactPanel } from '../artifacts/ArtifactPanel';
 import { ArtifactsContext } from '../artifacts/ArtifactsContext';
 import { ClarificationForm } from './ClarificationForm';
+import { PlanReviewForm } from './PlanReviewForm';
 import { ContextGauge } from './ContextGauge';
 import { LiveActivity } from './LiveActivity';
 import { SessionSidebar } from './SessionSidebar';
 import { ChatMessage } from './ChatMessage';
 import type { Session, SessionUsage } from './session-types';
-import type { ArtifactData, ClarificationData, ContextUsageData } from '../data-parts/types';
+import type { ArtifactData, ClarificationData, ContextUsageData, PlanReviewData } from '../data-parts/types';
 
 interface LiveDataPart {
   key: string;
@@ -68,6 +70,7 @@ const SUPPRESSED_CHAT_PARTS = new Set([
   'data-task_update',
   'data-task_graph',
   'data-clarification', // rendered as the questionnaire form above the composer
+  'data-plan_review',   // rendered as the plan-approval form above the composer
   'data-context_usage', // rendered as the context gauge in the composer footer
 ]);
 
@@ -93,11 +96,13 @@ interface ChatAreaProps {
   model?: string;
   models: ModelOption[];
   onModelChange: (id: string) => void;
+  /** Web-search backend preference from Settings ('auto' | 'exa' | 'tavily' | 'brave'). */
+  searchProvider?: string;
   usage?: SessionUsage;
   onSessionUpdate: () => void;
 }
 
-export const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSessionUpdate }: ChatAreaProps) => {
+export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvider, usage, onSessionUpdate }: ChatAreaProps) => {
   const [input, setInput] = useState('');
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [dataParts, setDataParts] = useState<LiveDataPart[]>([]);
@@ -106,14 +111,25 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSes
   const [panelOpen, setPanelOpen] = useState(false);
   // Live activity rail: which agent's work is shown ('main' or a delegationId).
   const [activeAgent, setActiveAgent] = useState<string>('main');
+  // Built-in sub-agents + the one this message is targeted at ('' = Auto, the
+  // orchestrator decides). Picking one routes the next message to it.
+  const [agentRoster, setAgentRoster] = useState<AgentOption[]>([]);
+  const [targetAgent, setTargetAgent] = useState<string>('');
+
   // Clarification questionnaires the user has already answered (by id), so the
   // form clears once submitted.
   const [answeredClarifications, setAnsweredClarifications] = useState<Set<string>>(() => new Set());
+  // Plan reviews the user has already acted on (by id), so the form clears once
+  // approved / changes-requested.
+  const [answeredPlanReviews, setAnsweredPlanReviews] = useState<Set<string>>(() => new Set());
 
-  // Keep the selected model in a ref so the transport (created once) always
-  // reads the latest value — including on automatic tool-approval resends.
+  // Keep the selected model + search provider in refs so the transport
+  // (created once) always reads the latest value — including on automatic
+  // tool-approval resends.
   const modelRef = useRef(model);
   modelRef.current = model;
+  const searchProviderRef = useRef(searchProvider);
+  searchProviderRef.current = searchProvider;
 
   const { messages, sendMessage, status, addToolApprovalResponse, error, stop, setMessages } = useChat({
     transport: new DefaultChatTransport({
@@ -125,6 +141,7 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSes
           messages,
           session_id: sessionId,
           model: modelRef.current || undefined,
+          search_provider: searchProviderRef.current || undefined,
         },
       }),
     }),
@@ -180,6 +197,7 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSes
         case 'data-agent_message':
         case 'data-agent_thought':
         case 'data-clarification':
+        case 'data-plan_review':
         case 'data-context_usage':
         case 'data-notification':
           updateLiveDataParts();
@@ -221,6 +239,14 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSes
     };
     fetchHistory();
   }, [sessionId, setMessages]);
+
+  // Load the built-in sub-agent roster for the composer's agent picker.
+  useEffect(() => {
+    fetch('/api/agents')
+      .then((r) => r.json())
+      .then((d) => { if (d?.success && Array.isArray(d.agents)) setAgentRoster(d.agents); })
+      .catch(() => { /* picker just shows Auto if this fails */ });
+  }, []);
 
   // Update session list when messages change
   useEffect(() => {
@@ -482,19 +508,56 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSes
     return answeredInTimeline || answeredInSession ? null : latest;
   }, [messages, dataParts, answeredClarifications]);
 
-  // Latest context-window usage (persisted in message parts + streamed live),
-  // for the gauge in the composer footer.
-  const contextUsage = useMemo<ContextUsageData | null>(() => {
-    let latest: ContextUsageData | null = null;
+  // The latest plan the agent put up for review that the user hasn't acted on —
+  // drives the approve / request-changes form above the composer. Same
+  // "answered" detection as clarifications: a user message after the review (the
+  // agent halts on request_plan_review) or the in-memory set means it's handled.
+  const activePlanReview = useMemo<PlanReviewData | null>(() => {
+    let latest: PlanReviewData | null = null;
+    let latestUserCount = 0;
+    let userCount = 0;
+    for (const m of messages as any[]) {
+      if (m?.role === 'user') userCount++;
+      for (const p of (m?.parts ?? [])) {
+        if (p?.type === 'data-plan_review' && p?.data?.id) {
+          latest = p.data as PlanReviewData;
+          latestUserCount = userCount;
+        }
+      }
+    }
+    for (const p of dataParts) {
+      if (p.type === 'data-plan_review' && (p.data as any)?.id) {
+        latest = p.data as PlanReviewData;
+        latestUserCount = userCount;
+      }
+    }
+    if (!latest) return null;
+    const answered = userCount > latestUserCount || answeredPlanReviews.has(latest.id);
+    return answered ? null : latest;
+  }, [messages, dataParts, answeredPlanReviews]);
+
+  // Latest context-window usage per agent (persisted in message parts + streamed
+  // live). The main conversation is the entry with no delegationId; each
+  // delegated sub-agent emits its own, keyed by delegationId.
+  const contextUsageByAgent = useMemo(() => {
+    const map = new Map<string, ContextUsageData>();
     const scan = (type?: string, data?: any) => {
-      if (type === 'data-context_usage' && typeof data?.contextWindow === 'number') latest = data as ContextUsageData;
+      if (type === 'data-context_usage' && typeof data?.contextWindow === 'number') {
+        map.set(data.delegationId ?? 'main', data as ContextUsageData);
+      }
     };
     for (const m of messages as any[]) {
       for (const p of (m?.parts ?? [])) scan(p?.type, p?.data);
     }
     for (const p of dataParts) scan(p.type, p.data as any);
-    return latest;
+    return map;
   }, [messages, dataParts]);
+
+  // Main-conversation gauge (composer footer) — never shows a sub-agent's value.
+  const contextUsage = contextUsageByAgent.get('main') ?? null;
+  // The active sub-agent's own gauge, shown under its tab so you can see how
+  // much context the delegation consumed as a separate thing.
+  const subAgentUsage = activeSubAgent ? contextUsageByAgent.get(activeSubAgent.id) ?? null : null;
 
   // ---- Stick-to-bottom scrolling --------------------------------------------
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -542,6 +605,9 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSes
     if (activeClarification) {
       setAnsweredClarifications((prev) => new Set(prev).add(activeClarification.id));
     }
+    if (activePlanReview) {
+      setAnsweredPlanReviews((prev) => new Set(prev).add(activePlanReview.id));
+    }
     setDataParts([]);
     setActiveAgent('main');
     stick.current = true;
@@ -566,7 +632,12 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSes
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (input.trim()) {
-      sendUserMessage(input);
+      // Targeting an agent frames the message as a delegation directive so the
+      // orchestrator routes it to that specialist; Auto sends it verbatim.
+      const text = targetAgent
+        ? `Delegate this to the \`${targetAgent}\` sub-agent and report back its result:\n\n${input}`
+        : input;
+      sendUserMessage(text);
       setInput('');
     }
   };
@@ -706,6 +777,13 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSes
                 >
                   {activeSubAgent.status === 'complete' ? 'done' : activeSubAgent.status === 'failed' ? 'failed' : 'working'}
                 </span>
+                {/* This sub-agent's own context usage, kept separate from the
+                    main conversation's gauge in the composer footer. */}
+                {subAgentUsage && (
+                  <div className="ml-auto shrink-0">
+                    <ContextGauge usage={subAgentUsage} />
+                  </div>
+                )}
               </div>
               {activeSubAgent.task && (
                 <p className="mt-1.5 text-[13px] leading-relaxed text-[color:var(--color-ink-soft)]">{activeSubAgent.task}</p>
@@ -809,6 +887,12 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSes
             onSubmit={(text) => sendUserMessage(text)}
           />
         )}
+        {activePlanReview && !isLoading && (
+          <PlanReviewForm
+            review={activePlanReview}
+            onSubmit={(text) => sendUserMessage(text)}
+          />
+        )}
         <AgentTabs agents={agents} active={effectiveAgent} onSelect={setActiveAgent} />
         <TaskChecklist tasks={tasks} />
         {viewingMain && <LiveActivity parts={visibleParts} />}
@@ -819,7 +903,6 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSes
               onChange={(e) => setInput(e.target.value)}
               placeholder="Describe a goal — Vibes plans, codes, and runs it."
               autoResize
-              maxLength={5000}
               className="block w-full min-h-[76px] px-0 py-0 text-[15px] leading-relaxed text-[color:var(--color-ink)] placeholder:text-[color:var(--color-ink-faint)]"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -829,14 +912,18 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, usage, onSes
               }}
             />
             <div className="mt-2 flex items-center justify-between gap-2">
-              {/* Reserved: slash commands, mode switches, attachments. */}
-              <div className="flex items-center gap-1" />
+              {/* Target a sub-agent for this message (Auto = orchestrator decides). */}
+              <div className="flex items-center gap-1">
+                {agentRoster.length > 0 && (
+                  <AgentSelector agents={agentRoster} value={targetAgent} onChange={setTargetAgent} placement="top" />
+                )}
+              </div>
 
               {/* model selector + send */}
               <div className="flex items-center gap-2">
                 {input.trim() && (
                   <span className="hidden font-mono text-[10px] text-[color:var(--color-ink-faint)] sm:inline">
-                    {input.length > 4500 ? `${input.length} / 5000` : '⇧↵ newline'}
+                    ⇧↵ newline
                   </span>
                 )}
                 <ModelSelector models={models} value={model ?? ''} onChange={onModelChange} placement="top" />

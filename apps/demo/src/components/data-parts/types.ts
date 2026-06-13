@@ -20,6 +20,7 @@ export type StatusData = VibesDataParts['status'] & {
 };
 export type CommandData = VibesDataParts['command'];
 export type FileOperationData = VibesDataParts['file_operation'];
+export type PlanReviewData = VibesDataParts['plan_review'];
 export type SkillData = VibesDataParts['skill'];
 export type SearchData = VibesDataParts['search'];
 export type TaskUpdateData = VibesDataParts['task_update'];
