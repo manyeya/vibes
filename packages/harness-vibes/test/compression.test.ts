@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { ModelMessage } from 'ai';
-import { AgentCore } from '../src/core/agent-core';
+import { AgentCore } from '../src/core/agent/agent-core';
 
 // Expose the protected compression helpers for testing.
 class TestAgent extends AgentCore {
