@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { tool } from 'ai';
 import z from 'zod';
-import { AgentCore } from '../src/core/agent-core';
+import { AgentCore } from '../src/core/agent/agent-core';
 import { createPluginStreamContext } from '../src/core/types';
 import { createCapturingWriter, createTool } from './helpers';
 
@@ -15,6 +15,10 @@ class ExposedVibeAgent extends AgentCore {
       heartbeatStartMs: 5,
       heartbeatIntervalMs: 5,
     });
+  }
+
+  async exposePrepareCall(instructions: string) {
+    return this.prepareCallOverride({ instructions } as any) as Promise<{ instructions: string }>;
   }
 }
 
@@ -84,6 +88,18 @@ describe('AgentCore tool filtering', () => {
     ]);
     expect(toolProgress.every(part => part.data.plugin === 'ProgressPlugin')).toBe(true);
     expect(toolProgress.at(-1)?.data.attempt).toBe(1);
+  });
+
+  test('injects the current date/time into the system prompt each turn', async () => {
+    const agent = new ExposedVibeAgent({ model: {} as any, instructions: 'BASE INSTRUCTIONS' });
+    const { instructions } = await agent.exposePrepareCall('BASE INSTRUCTIONS');
+
+    expect(instructions).toContain('<environment>');
+    expect(instructions).toContain('Current date and time:');
+    // The real current year, proving it's computed live (not frozen/static).
+    expect(instructions).toContain(String(new Date().getFullYear()));
+    // Appended AFTER the base prompt, so the stable prefix stays KV-cacheable.
+    expect(instructions.indexOf('BASE INSTRUCTIONS')).toBeLessThan(instructions.indexOf('<environment>'));
   });
 
   test('wrapped tools emit retry and failure metadata on terminal errors', async () => {

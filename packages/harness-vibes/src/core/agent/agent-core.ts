@@ -385,6 +385,16 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
             instructions += `\n\n## Custom Instructions\n${this.customSystemPrompt} `;
         }
 
+        // Anchor the model in real time. Appended LAST so the large, stable
+        // instruction prefix above stays KV-cacheable — only this short tail
+        // changes between turns. Computed per call (prepareCall runs once per
+        // turn) so each turn sees the actual current time, never a value frozen
+        // at process start.
+        const environment = this.getEnvironmentContext();
+        if (environment) {
+            instructions += `\n\n${environment}`;
+        }
+
         // Cache the assembled base so prepareStep can overlay recent errors.
         this.currentBaseInstructions = instructions;
 
@@ -396,6 +406,35 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
             instructions,
             tools: tools as ToolSet,
         };
+    }
+
+    /**
+     * A short, dynamic "environment" block appended to the system prompt on
+     * every turn — chiefly the current date and time, so the model treats the
+     * present as *now* instead of falling back on its training cutoff and
+     * serving stale information.
+     *
+     * Recomputed each call (so it never freezes at process start). Override to
+     * add more runtime context (locale, working directory, …) or return `''`
+     * to disable.
+     */
+    protected getEnvironmentContext(): string {
+        const now = new Date();
+        const human = now.toLocaleString('en-US', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZoneName: 'short',
+        });
+        return [
+            '<environment>',
+            `Current date and time: ${human} (${now.toISOString()}).`,
+            'Treat this as the present moment, not your training cutoff. For anything time-sensitive or recent, rely on this date and your available tools rather than assumptions about what is current.',
+            '</environment>',
+        ].join('\n');
     }
 
     // ============ PREPARE STEP OVERRIDE ============
