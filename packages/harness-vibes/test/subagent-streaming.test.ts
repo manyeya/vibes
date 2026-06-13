@@ -184,4 +184,62 @@ describe('SubAgentPlugin streaming', () => {
       await removeTempWorkspace(workspaceDir);
     }
   });
+
+  test("tags a delegated sub-agent's context-usage gauge with its delegationId", async () => {
+    const workspaceDir = await createTempWorkspace('subagent-stream-ctx');
+    const parts: any[] = [];
+
+    try {
+      const plugin = new SubAgentPlugin(
+        new Map([
+          ['Explorer', {
+            name: 'Explorer',
+            description: 'Codebase explorer',
+            systemPrompt: 'Explore the codebase.',
+            mode: 'general-purpose',
+            allowedTools: ['readFile'],
+          }],
+        ]),
+        {} as any,
+        () => createBuiltInPlugins(),
+        () => ({}),
+        [],
+        workspaceDir,
+        60 * 60 * 1000,
+        4,
+        (config) => ({
+          stream: async (call: { writer?: { write: (part: any) => void } }) => {
+            // Simulate what the real AgentCore.recordStepUsage emits each step:
+            // a context-usage gauge with the fixed 'context-usage' id.
+            call.writer?.write({
+              type: 'data-context_usage',
+              id: 'context-usage',
+              data: { usedTokens: 1234, contextWindow: 128000, threshold: 0.7, compressAt: 89600 },
+            });
+            await recordCompletion(config, 'done');
+            return createStreamResult('done', completionSteps('done'));
+          },
+        } as any)
+      );
+
+      plugin.onStreamContextReady(createPluginStreamContext(createCapturingWriter(parts)));
+      await (plugin.tools.delegate as any).execute({ agent_name: 'Explorer', task: 'Inspect auth flow' });
+
+      const completed = parts.find(
+        part => part.type === 'data-delegation' && part.data.status === 'complete',
+      );
+      const delegationId = completed.data.delegationId;
+
+      const ctx = parts.find(part => part.type === 'data-context_usage');
+      expect(ctx).toBeDefined();
+      // Distinct, prefixed id so it doesn't reconcile-clobber the main gauge…
+      expect(ctx.id).toBe(`${delegationId}:context-usage`);
+      // …and carries the attribution the UI keys on to show it separately.
+      expect(ctx.data.delegationId).toBe(delegationId);
+      expect(ctx.data.agentName).toBe('Explorer');
+      expect(ctx.data.usedTokens).toBe(1234);
+    } finally {
+      await removeTempWorkspace(workspaceDir);
+    }
+  });
 });

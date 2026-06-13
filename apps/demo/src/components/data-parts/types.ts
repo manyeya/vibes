@@ -48,7 +48,12 @@ export type DelegationData = VibesDataParts['delegation'];
 export type ArtifactData = VibesDataParts['artifact'];
 export type ArtifactKind = ArtifactData['kind'];
 export type ClarificationData = VibesDataParts['clarification'];
-export type ContextUsageData = VibesDataParts['context_usage'];
+export type ContextUsageData = VibesDataParts['context_usage'] & {
+  // Injected by the scoped writer when a delegated sub-agent emits its own
+  // gauge, so the UI can separate it from the main conversation's gauge.
+  agentName?: string;
+  delegationId?: string;
+};
 export type AgentMessageData = VibesDataParts['agent_message'];
 export type AgentThoughtData = VibesDataParts['agent_thought'];
 

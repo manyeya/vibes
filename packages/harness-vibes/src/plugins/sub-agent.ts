@@ -14,7 +14,7 @@ import {
     createDataStreamWriter,
     type DataStreamWriter,
 } from '../core/types';
-import { AgentCore } from '../core/agent-core';
+import { AgentCore } from '../core/agent/agent-core';
 
 // Optional structured-handoff tool. Sub-agents are NOT required to call it —
 // a normal final answer is a perfectly good result. Calling it just lets a
@@ -322,6 +322,14 @@ export default class SubAgentPlugin implements Plugin {
     private readonly registry: DelegationRegistry;
     private normalizedSubAgents: Map<string, NormalizedSubAgent>;
     private readonly generalPurposeToolNames: Set<string>;
+    /**
+     * The parent agent's context window + compression ratio, so a delegated
+     * sub-agent's own gauge is framed against the right model. Seeded by the
+     * parent through `setContextWindow` (the AgentCore fan-out) and refreshed
+     * when the UI swaps models mid-session.
+     */
+    private parentContextWindow = 128_000;
+    private parentCompressionRatio = 0.7;
 
     constructor(
         private readonly subAgents: Map<string, SubAgent>,
@@ -356,6 +364,19 @@ export default class SubAgentPlugin implements Plugin {
     onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
         this.streamContext = undefined;
         this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
+    }
+
+    /**
+     * Receive the parent's context window/ratio (via AgentCore's fan-out) so
+     * delegated sub-agents render their own gauge against the same frame.
+     */
+    setContextWindow(contextWindow: number, compressionRatio?: number): void {
+        if (Number.isFinite(contextWindow) && contextWindow > 0) {
+            this.parentContextWindow = contextWindow;
+        }
+        if (compressionRatio !== undefined && compressionRatio > 0 && compressionRatio <= 1) {
+            this.parentCompressionRatio = compressionRatio;
+        }
     }
 
     private normalizeSubAgents(subAgents: Map<string, SubAgent>): Map<string, NormalizedSubAgent> {
@@ -584,6 +605,12 @@ export default class SubAgentPlugin implements Plugin {
                     : undefined,
                 blockedTools,
                 toolsRequiringApproval,
+                // A delegated sub-agent emits its OWN gauge. The scoped writer
+                // tags it with this agent's delegationId, so the UI shows it
+                // separately (under the sub-agent's tab) instead of clobbering
+                // the main conversation's gauge.
+                contextWindow: this.parentContextWindow,
+                contextCompressionRatio: this.parentCompressionRatio,
             };
         }
 
@@ -607,6 +634,11 @@ export default class SubAgentPlugin implements Plugin {
             toolsRequiringApproval: subAgent.toolsRequiringApproval
                 ? filterApprovalConfig(cloneApprovalConfig(subAgent.toolsRequiringApproval), availableToolNames)
                 : [],
+            // A delegated sub-agent emits its OWN gauge, tagged with this
+            // agent's delegationId so the UI shows it separately rather than
+            // overwriting the main conversation's gauge.
+            contextWindow: this.parentContextWindow,
+            contextCompressionRatio: this.parentCompressionRatio,
         };
     }
 

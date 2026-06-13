@@ -263,6 +263,12 @@ export class VibeAgent extends AgentCore {
         if (config.plugins) {
             this.addPlugin([...config.plugins]);
         }
+
+        // Seed every window-aware plugin (summarization + sub-agents) with the
+        // constructed context window now that they're all registered, so the
+        // compression threshold and delegated sub-agents' gauges are framed
+        // correctly even before the first per-request model override.
+        this.setContextWindow(this.contextWindow, this.contextCompressionRatio);
     }
 }
 
