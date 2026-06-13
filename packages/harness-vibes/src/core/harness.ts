@@ -1,11 +1,11 @@
 import { generateText, Output, type LanguageModel, type ModelMessage } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import type { ZodType } from 'zod';
-import { VibeAgent, type VibeAgentConfig } from './vibe-agent';
-import { AgentCore } from './agent-core';
+import { VibeAgent, type VibeAgentConfig } from './agent/vibe-agent';
+import { AgentCore } from './agent/agent-core';
 import type { AgentState } from './types';
 import type { Sandbox } from './sandbox';
-import { SessionStore } from './session-manager';
+import { SessionStore } from './session/session-manager';
 import type SqliteBackend from '../backend/sqlite-backend';
 import type { SessionInfo } from '../backend/sqlite-backend';
 

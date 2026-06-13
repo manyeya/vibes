@@ -178,9 +178,9 @@ export interface VibesDataParts extends Record<string, unknown> {
         stderr?: string;
     };
 
-    /** Filesystem operation (FilesystemPlugin). */
+    /** Filesystem operation (FilesystemPlugin / BashPlugin's edit_file). */
     file_operation: {
-        operation: 'read' | 'write' | 'list';
+        operation: 'read' | 'write' | 'list' | 'edit';
         path: string;
         status: 'running' | 'complete';
         /** Bytes written (write). */
@@ -189,6 +189,11 @@ export interface VibesDataParts extends Record<string, unknown> {
         fileCount?: number;
         /** A short, truncated file list (list). */
         files?: string[];
+        /** Lines added / removed (edit). */
+        added?: number;
+        removed?: number;
+        /** The changed hunk for the diff card (edit); line arrays, may be capped. */
+        diff?: { removed: string[]; added: string[] };
     };
 
     /** Skill activation / discovery (SkillsPlugin). */
@@ -260,6 +265,25 @@ export interface VibesDataParts extends Record<string, unknown> {
             /** Whether the question must be answered (default true). */
             required?: boolean;
         }>;
+    };
+
+    /**
+     * A plan put to the user for review (PlanningPlugin's request_plan_review).
+     * Rendered as an approve / request-changes form above the composer; the
+     * user's decision returns as their next message.
+     */
+    plan_review: {
+        id: string;
+        title: string;
+        /** Optional note from the agent introducing the plan. */
+        note?: string;
+        problem?: string;
+        solution?: string;
+        phases?: Array<{ name: string; goal: string; steps?: string[] }>;
+        milestones?: string[];
+        risks?: string[];
+        /** The tasks generated from the plan. */
+        tasks: Array<{ id: string; title: string; status?: string; priority?: string }>;
     };
 
     /**
@@ -667,10 +691,17 @@ export class DataStreamWriter {
     /** Write a filesystem operation update (stable id per op). */
     writeFileOperation(
         id: string,
-        operation: 'read' | 'write' | 'list',
+        operation: 'read' | 'write' | 'list' | 'edit',
         path: string,
         status: 'running' | 'complete',
-        options: { bytes?: number; fileCount?: number; files?: string[] } = {}
+        options: {
+            bytes?: number;
+            fileCount?: number;
+            files?: string[];
+            added?: number;
+            removed?: number;
+            diff?: { removed: string[]; added: string[] };
+        } = {}
     ): void {
         if (!this.writer) return;
         this.writer.write({
@@ -744,6 +775,16 @@ export class DataStreamWriter {
             type: 'data-clarification',
             id: `clarification-${clarification.id}`,
             data: clarification,
+        } as const);
+    }
+
+    /** Write a plan for the user to review (approve / request changes). */
+    writePlanReview(review: VibesDataParts['plan_review']): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-plan_review',
+            id: `plan_review-${review.id}`,
+            data: review,
         } as const);
     }
 

@@ -37,9 +37,9 @@ import {
     createDataStreamWriter,
     DataStreamWriter,
 } from './src/core/types';
-import { AgentCore } from './src/core/agent-core';
+import { AgentCore } from './src/core/agent/agent-core';
 
-export { createAgentStreamResponse } from './src/core/stream-response';
+export { createAgentStreamResponse } from './src/core/streaming/stream-response';
 export {
     SessionStore,
     defaultSessionManager,
@@ -47,7 +47,7 @@ export {
     type StoredSession,
     type SessionAgentConfig,
     type CleanupOptions,
-} from './src/core/session-manager';
+} from './src/core/session/session-manager';
 
 // ── Phase 1: Sandbox abstraction ────────────────────────────────────────
 export {
@@ -67,7 +67,7 @@ export {
     createDefaultPlugins,
     type VibeAgentConfig,
     type DefaultPluginFactoryOptions,
-} from './src/core/vibe-agent';
+} from './src/core/agent/vibe-agent';
 
 // ── Phase 2: Public harness facade ──────────────────────────────────────
 export {

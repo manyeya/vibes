@@ -8,12 +8,12 @@
  * can control the writer and pass it to the agent for plugin hooks.
  */
 
-import type { AgentCore } from './agent-core';
+import type { AgentCore } from '../agent/agent-core';
 import type { ModelMessage, UIMessage, ToolSet, UIMessageChunk } from 'ai';
 import type { VibesUIMessage } from './streaming';
 import { createUIMessageStream, createUIMessageStreamResponse, convertToModelMessages } from 'ai';
-import type { AgentState } from './types';
-import type StateBackend from '../backend/state-backend';
+import type { AgentState } from '../types';
+import type StateBackend from '../../backend/state-backend';
 
 interface AgentStreamOptions {
     agent: AgentCore;

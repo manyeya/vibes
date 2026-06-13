@@ -18,72 +18,21 @@ import {
     Plugin,
     ErrorEntry,
     ToolsRequiringApprovalConfig,
-    ToolApprovalPolicy,
     createPluginStreamContext,
-    type DataStreamOperation,
-} from './types';
+} from '../types';
+import { recordError, getRecentErrors, formatRecentErrors } from './error-log';
+import {
+    extractMessageContent,
+    isErrorMessage,
+    extractToolInfo,
+    compressMessage,
+} from './message-compression';
+import { resolveApprovalPolicy, wrapToolExecute } from './tool-resolution';
 
 // Re-export ErrorEntry for convenience
 export type { ErrorEntry };
 
-/**
- * Turn a tool's return value into a short, human-readable completion line for
- * the activity feed (e.g. "12 results", "Wrote src/app.ts"). Plugins that
- * self-instrument set their own richer message; this is the fallback the
- * auto-instrumentation wrapper uses for tools that don't, so the feed shows
- * what happened instead of a generic "<tool> complete". Returns undefined when
- * nothing meaningful can be derived.
- */
-function summarizeToolResult(result: unknown): string | undefined {
-    if (result == null) return undefined;
-
-    if (typeof result === 'string') {
-        const line = result.trim().split('\n')[0]?.trim();
-        if (!line) return undefined;
-        return line.length > 80 ? `${line.slice(0, 79)}…` : line;
-    }
-
-    if (typeof result !== 'object') return undefined;
-    const r = result as Record<string, unknown>;
-
-    // Collections — surface the count ("8 files", "3 results").
-    for (const [key, noun] of [
-        ['files', 'file'],
-        ['results', 'result'],
-        ['matches', 'match'],
-        ['items', 'item'],
-        ['entries', 'entry'],
-    ] as const) {
-        const value = r[key];
-        if (Array.isArray(value)) {
-            const plural = noun === 'match' ? 'matches' : noun === 'entry' ? 'entries' : `${noun}s`;
-            return `${value.length} ${value.length === 1 ? noun : plural}`;
-        }
-    }
-
-    if (typeof r.savedTo === 'string') return `Wrote ${r.savedTo}`;
-    if (typeof r.path === 'string' && r.path.length <= 80) return r.path;
-    if (typeof r.summary === 'string' && r.summary.trim()) return r.summary.trim().split('\n')[0];
-    if (typeof r.message === 'string' && r.message.trim()) return r.message.trim().split('\n')[0];
-    if (typeof r.count === 'number') return `${r.count} ${r.count === 1 ? 'result' : 'results'}`;
-    if (typeof r.content === 'string') {
-        const len = r.content.length;
-        return `${len} char${len === 1 ? '' : 's'}`;
-    }
-
-    return undefined;
-}
-
 // ============ TYPE DEFINITIONS ============
-
-/**
- * Tool call arguments with known properties
- */
-interface ToolCallArgs {
-    path?: string;
-    command?: string;
-    [key: string]: unknown;
-}
 
 /**
  * Message with potential parts property (UIMessage)
@@ -301,6 +250,19 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
     }
 
     /**
+     * Forward a UI/API web-search backend preference to any plugin that
+     * supports it (the WebSearchPlugin). Pass `undefined` or `'auto'` to revert
+     * to the server's env auto-detection. Duck-typed so core stays decoupled
+     * from the concrete plugin.
+     */
+    setSearchProviderPreference(provider?: string): void {
+        for (const plugin of this.plugins) {
+            const p = plugin as { setProviderPreference?: (id?: string) => void };
+            if (typeof p.setProviderPreference === 'function') p.setProviderPreference(provider);
+        }
+    }
+
+    /**
      * Set up cross-plugin dependencies after all plugins are added. No default
      * plugins currently need wiring; kept as an extension point for subclasses.
      */
@@ -415,9 +377,9 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
         const prunedMessages = await this.pruneMessages(stepOptions.messages || []);
 
         // 2. Overlay recent errors onto the cached base instructions
-        const recentErrors = this.getRecentErrors();
+        const recentErrors = getRecentErrors(this.errorLog, this.maxRecentErrors);
         const systemOverride = recentErrors.length > 0
-            ? `${this.currentBaseInstructions}\n\n${this.formatRecentErrors(recentErrors)}`
+            ? `${this.currentBaseInstructions}\n\n${formatRecentErrors(recentErrors)}`
             : undefined;
 
         // 3. Fan out to plugin.prepareStep
@@ -630,116 +592,25 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
             const originalExecute = toolDefRecord.execute as ((args: unknown, options: unknown) => Promise<unknown>) | undefined;
             const ownerName = this.toolOwners[toolName] ?? 'custom';
 
-            // Resolve approval policy. AI SDK accepts boolean OR
-            // (input, ctx) => boolean | Promise<boolean>. Predicate functions
-            // from user config must be forwarded as-is so AI SDK can evaluate
-            // them per call — collapsing to `true` would force approval on
-            // every invocation and defeat the predicate.
-            let resolvedNeedsApproval: ToolApprovalPolicy | undefined;
-            if (Array.isArray(approvalConfig)) {
-                if (approvalConfig.includes(toolName)) {
-                    resolvedNeedsApproval = true;
-                }
-            } else if (approvalConfig && typeof approvalConfig === 'object') {
-                const policy = (approvalConfig as Record<string, ToolApprovalPolicy>)[toolName];
-                if (policy !== undefined) {
-                    resolvedNeedsApproval = policy;
-                }
-            }
-            if (resolvedNeedsApproval === undefined) {
-                resolvedNeedsApproval = toolDefRecord.needsApproval as ToolApprovalPolicy | undefined;
-            }
+            const resolvedNeedsApproval = resolveApprovalPolicy(approvalConfig, toolName, toolDefRecord);
 
-            // Create a stable wrapped tool with retry logic
+            // Wrap each executable tool with retry + activity-feed instrumentation
+            // (see tool-resolution.ts). The stream context is read lazily so the
+            // wrapper always sees the run's current writer.
             resolvedTools[toolName] = {
                 ...(toolDef as Record<string, unknown>),
                 ...(resolvedNeedsApproval !== undefined ? { needsApproval: resolvedNeedsApproval } : {}),
-                execute: originalExecute ? async (args: unknown, options: unknown) => {
-                    // One operation per tool call. Established as the "current"
-                    // operation (see runToolOperation) so a self-instrumenting
-                    // plugin's milestones + completion message enrich THIS row
-                    // instead of spawning a duplicate. `operation` is undefined
-                    // only when there's no active stream (e.g. non-streaming).
-                    const runBody = async (operation?: DataStreamOperation): Promise<unknown> => {
-                        operation?.progress('starting', {
-                            phase: 'starting',
-                            message: `Starting ${toolName}`,
-                            attempt: 1,
-                        });
-
-                        // Trigger lifecycle hooks.
-                        // NOTE: Plugin.onInputDelta is declared but not invoked
-                        // here — execute() only sees the FINAL tool input. Partial
-                        // input deltas surface inside AI SDK's streamText `onChunk`
-                        // event (search for `tool-input-delta` in
-                        // node_modules/ai/src/generate-text/stream-text.ts). Wiring
-                        // that path is tracked as a follow-up.
-                        for (const plugin of this.plugins) {
-                            plugin.onInputStart?.({ toolName, args });
-                            plugin.onInputAvailable?.({ toolName, args });
-                        }
-
-                        // Retry logic for tool execution
-                        let lastError: Error | undefined;
-                        for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-                            try {
-                                operation?.progress('in_progress', {
-                                    phase: attempt === 0 ? 'running' : 'retry',
-                                    message: attempt === 0
-                                        ? `Running ${toolName}`
-                                        : `Retrying ${toolName} (${attempt + 1}/${this.maxRetries + 1})`,
-                                    attempt: attempt + 1,
-                                });
-
-                                const result = await originalExecute(args, options);
-                                // If a plugin already closed the shared operation
-                                // with its own richer message, keep it; otherwise
-                                // surface a summary of the result.
-                                if (operation && !operation.isClosed) {
-                                    operation.complete(
-                                        summarizeToolResult(result) ?? `${toolName} complete`,
-                                        { phase: 'complete', attempt: attempt + 1 },
-                                    );
-                                }
-                                return result;
-                            } catch (error) {
-                                lastError = error instanceof Error ? error : new Error(String(error));
-                                if (attempt < this.maxRetries) {
-                                    // Exponential backoff before retry
-                                    await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 100));
-                                    console.warn(`[AgentCore] Tool ${toolName} failed (attempt ${attempt + 1}/${this.maxRetries + 1}), retrying...`);
-                                }
-                            }
-                        }
-
-                        this.logError(toolName, lastError!.message, `Plugin: ${ownerName}`);
-                        if (operation && !operation.isClosed) {
-                            operation.fail(lastError!.message, {
-                                toolName,
-                                phase: 'failed',
-                                attempt: this.maxRetries + 1,
-                                context: `Plugin: ${ownerName}`,
-                                message: `${toolName} failed`,
-                            });
-                        }
-
-                        // Notify plugins of final failure after all retries exhausted
-                        for (const plugin of this.plugins) {
-                            try {
-                                await plugin.onError?.(lastError!);
-                            } catch (hookError) {
-                                console.error(`[AgentCore] Plugin onError hook error:`, hookError);
-                            }
-                        }
-
-                        throw lastError;
-                    };
-
-                    const ctx = this.activeStreamContext;
-                    return ctx
-                        ? ctx.runToolOperation({ name: toolName, toolName, plugin: ownerName }, runBody)
-                        : runBody(undefined);
-                } : undefined
+                execute: originalExecute
+                    ? wrapToolExecute({
+                        toolName,
+                        ownerName,
+                        originalExecute,
+                        plugins: this.plugins,
+                        maxRetries: this.maxRetries,
+                        getStreamContext: () => this.activeStreamContext,
+                        logError: (t, e, c) => this.logError(t, e, c),
+                    })
+                    : undefined,
             };
         }
 
@@ -775,164 +646,21 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
     // ============ ERROR TRACKING ============
 
     /**
-     * Add an error to the error log. Errors are tracked separately
-     * from the message stream and never included in summaries.
+     * Record an error into the agent's separate error log (never summarized).
+     * Thin instance hook over {@link recordError} so call sites — and the tool
+     * wrapper — keep a stable `this.logError(...)`.
      */
     protected logError(toolName: string | undefined, error: string, context?: string): void {
-        // Check if this error already occurred recently (deduplicate)
-        const existing = this.errorLog.find(e =>
-            e.error === error &&
-            e.toolName === toolName &&
-            Date.now() - new Date(e.timestamp).getTime() < 60000 // Within last minute
-        );
-
-        if (existing) {
-            existing.occurrenceCount++;
-            existing.timestamp = new Date().toISOString();
-        } else {
-            this.errorLog.push({
-                timestamp: new Date().toISOString(),
-                toolName,
-                error,
-                context,
-                occurrenceCount: 1
-            });
-        }
-
-        // Keep only recent errors
-        if (this.errorLog.length > 20) {
-            this.errorLog = this.errorLog.slice(-20);
-        }
-
-        if (process.env.DEBUG_VIBES) {
-            console.error(`[AgentCore] Error logged:`, { toolName, error, context });
-        }
-    }
-
-    /**
-     * Get recent errors for display in system prompt.
-     */
-    protected getRecentErrors(): ErrorEntry[] {
-        // Return most recent errors, sorted by occurrence count and recency
-        return this.errorLog
-            .slice(-this.maxRecentErrors)
-            .sort((a, b) => {
-                // Prioritize frequently occurring errors
-                if (b.occurrenceCount !== a.occurrenceCount) {
-                    return b.occurrenceCount - a.occurrenceCount;
-                }
-                return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
-            });
-    }
-
-    /**
-     * Format recent errors for system prompt display.
-     * Uses clear formatting to help agent avoid repeating mistakes.
-     */
-    protected formatRecentErrors(errors: ErrorEntry[]): string {
-        let output = `## Recent Errors (Do NOT Repeat These)\n\n`;
-        output += `The following errors occurred recently. Learn from them and avoid making the same mistakes.\n\n`;
-
-        for (const err of errors) {
-            output += `### ${err.toolName || 'Unknown'} ${err.occurrenceCount > 1 ? `(×${err.occurrenceCount})` : ''}\n`;
-            output += `\`\`\`\n${err.error}\n\`\`\`\n`;
-            if (err.context) {
-                output += `**Context**: ${err.context}\n`;
-            }
-            output += `\n`;
-        }
-
-        output += `---\n`;
-        return output;
+        recordError(this.errorLog, toolName, error, context);
     }
 
     // ============ MESSAGE PROCESSING ============
 
     /**
-     * Extract message content as string for analysis.
-     */
-    protected extractMessageContent(msg: ModelMessage): string {
-        if (typeof msg.content === 'string') {
-            return msg.content;
-        }
-        if (Array.isArray(msg.content)) {
-            return msg.content
-                .map(part => {
-                    if (part.type === 'text') return part.text;
-                    if (part.type === 'tool-call') {
-                        const tc = part as { toolName?: string; args?: unknown; input?: unknown };
-                        const rawArgs = tc.args ?? tc.input;
-                        const argsStr = rawArgs ? JSON.stringify(rawArgs).slice(0, 200) : 'no args';
-                        return `[Tool Call: ${tc.toolName || 'unknown'} with args: ${argsStr}]`;
-                    }
-                    // Tool results carry the LARGE payloads (file reads, command
-                    // output). Extracting their text is what makes the size +
-                    // token estimates — and therefore compression — accurate.
-                    if (part.type === 'tool-result') {
-                        return this.toolResultText(part);
-                    }
-                    return `[${part.type}]`;
-                })
-                .join('\n');
-        }
-        return String(msg.content || '');
-    }
-
-    /**
-     * Pull the textual payload out of a tool-result part across AI SDK output
-     * shapes ({ type:'text'|'json'|'error-text'|..., value }, or a legacy
-     * string).
-     */
-    protected toolResultText(part: unknown): string {
-        const out = (part as { output?: unknown })?.output;
-        if (out == null) return '';
-        if (typeof out === 'string') return out;
-        const value = (out as { value?: unknown }).value;
-        if (typeof value === 'string') return value;
-        try {
-            return JSON.stringify(value ?? out);
-        } catch {
-            return String(value ?? '');
-        }
-    }
-
-    /**
-     * Check if a message contains a tool error.
-     */
-    protected isErrorMessage(msg: ModelMessage): boolean {
-        if (msg.role !== 'tool') return false;
-        const content = this.extractMessageContent(msg);
-        // Common error indicators
-        return content.toLowerCase().includes('error') ||
-               content.toLowerCase().includes('failed') ||
-               content.toLowerCase().includes('exception');
-    }
-
-    /**
-     * Extract tool information from a message if available.
-     */
-    protected extractToolInfo(msg: ModelMessage): { toolName?: string; args?: ToolCallArgs } {
-        const content = msg.content;
-        if (Array.isArray(content)) {
-            for (const part of content) {
-                if (part.type === 'tool-call') {
-                    const tc = part as unknown as { toolName: string; args: ToolCallArgs };
-                    return { toolName: tc.toolName, args: tc.args };
-                }
-            }
-        }
-        return {};
-    }
-
-    /**
-     * Apply restorable compression to large content.
-     * Replaces large file reads, web content, and tool outputs with
-     * references that can be restored if needed.
-     *
-     * Key principle: Compression is LOSSLESS and RESTORABLE.
-     * - File reads → File path reference
-     * - Web content → URL reference
-     * - Errors → NEVER compress
+     * Apply restorable compression to large content. User/system messages and
+     * errors are never shrunk (errors are logged separately instead); oversized
+     * assistant/tool payloads are replaced with a reference + preview. See
+     * `message-compression.ts` for the per-message mechanics.
      */
     protected async compressLargeContent(messages: ModelMessage[]): Promise<ModelMessage[]> {
         const compressed: ModelMessage[] = [];
@@ -945,141 +673,25 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
             }
 
             // NEVER compress errors - track them separately instead
-            if (this.isErrorMessage(msg)) {
-                const { toolName } = this.extractToolInfo(msg);
-                const content = this.extractMessageContent(msg);
-                this.logError(toolName, content, `Role: ${msg.role}`);
+            if (isErrorMessage(msg)) {
+                const { toolName } = extractToolInfo(msg);
+                this.logError(toolName, extractMessageContent(msg), `Role: ${msg.role}`);
                 // Still include error in compressed messages, but don't shrink it
                 compressed.push(msg);
                 continue;
             }
 
-            const content = this.extractMessageContent(msg);
-
             // Check if content is large enough to compress
-            if (content.length < this.compressionThreshold) {
+            if (extractMessageContent(msg).length < this.compressionThreshold) {
                 compressed.push(msg);
                 continue;
             }
 
             // Apply restorable compression based on message type
-            const compressionResult = this.compressMessage(msg, content);
-            compressed.push(compressionResult);
+            compressed.push(compressMessage(msg, this.compressionThreshold));
         }
 
         return compressed;
-    }
-
-    /**
-     * Compress a single message with restorable references. Crucially this
-     * shrinks payloads IN PLACE while preserving message structure — a
-     * tool-result keeps its `toolCallId`/`toolName` (so the assistant
-     * tool-call ↔ tool-result pairing the provider requires stays intact),
-     * and an assistant message keeps its tool-call parts. Replacing the
-     * whole `content` with a bare string (the old behaviour) produced
-     * invalid messages and orphaned tool calls.
-     */
-    protected compressMessage(msg: ModelMessage, _content: string): ModelMessage {
-        const threshold = this.compressionThreshold;
-
-        // Tool results carry the big file reads / command output. Truncate the
-        // OUTPUT of each oversized part, keeping the part (and its toolCallId).
-        if (msg.role === 'tool' && Array.isArray(msg.content)) {
-            const parts = (msg.content as any[]).map(part => {
-                if (part?.type !== 'tool-result') return part;
-                const text = this.toolResultText(part);
-                if (text.length < threshold) return part;
-                const ref = `[${part.toolName ?? 'tool'} output truncated — ${text.length} chars. Re-run the tool if you need the full result.]\n${this.summarizeLargeContent(text)}`;
-                return { ...part, output: { type: 'text', value: ref } };
-            });
-            return { ...msg, content: parts } as ModelMessage;
-        }
-
-        // Assistant messages: shrink large TEXT only. NEVER drop tool-call
-        // parts — that would orphan their tool-results.
-        if (msg.role === 'assistant') {
-            if (typeof msg.content === 'string') {
-                return msg.content.length < threshold
-                    ? msg
-                    : { ...msg, content: `[response truncated — ${msg.content.length} chars]\n${this.summarizeLargeContent(msg.content)}` } as ModelMessage;
-            }
-            if (Array.isArray(msg.content)) {
-                const parts = (msg.content as any[]).map(part => {
-                    if (part?.type !== 'text' || (part.text ?? '').length < threshold) return part;
-                    return { ...part, text: `[text truncated — ${part.text.length} chars]\n${this.summarizeLargeContent(part.text)}` };
-                });
-                return { ...msg, content: parts } as ModelMessage;
-            }
-        }
-
-        // Default: keep original (never corrupt unknown shapes).
-        return msg;
-    }
-
-    /**
-     * Create a brief summary of large content for restorable compression.
-     */
-    protected summarizeLargeContent(content: string): string {
-        const lines = content.split('\n');
-        const summary: string[] = [];
-
-        // Include first few lines
-        summary.push('First lines:');
-        summary.push(...lines.slice(0, 3).map(l => `  ${l.slice(0, 100)}`));
-
-        // Include last few lines if content is very large
-        if (lines.length > 10) {
-            summary.push('...');
-            summary.push('Last lines:');
-            summary.push(...lines.slice(-3).map(l => `  ${l.slice(0, 100)}`));
-        }
-
-        return summary.join('\n');
-    }
-
-    /**
-     * Format messages into a readable format for summarization.
-     * Converts message structures into natural conversation format.
-     */
-    protected formatMessagesForSummary(messages: ModelMessage[]): string {
-        const MAX_CONTENT_LENGTH = 2000;
-
-        const formatContent = (content: unknown): string => {
-            if (typeof content === 'string') {
-                return content.length > MAX_CONTENT_LENGTH
-                    ? content.slice(0, MAX_CONTENT_LENGTH) + '...[truncated]'
-                    : content;
-            }
-            if (Array.isArray(content)) {
-                return content
-                    .map(part => {
-                        if (part.type === 'text') {
-                            return formatContent(part.text);
-                        }
-                        if (part.type === 'tool-call') {
-                            const argsStr = part.args ? JSON.stringify(part.args).slice(0, 200) : 'no args';
-                            return `[Tool Call: ${part.toolName} with args: ${argsStr}]`;
-                        }
-                        return `[${part.type}]`;
-                    })
-                    .join('\n');
-            }
-            return String(content).slice(0, MAX_CONTENT_LENGTH);
-        };
-
-        return messages
-            .map((msg, index) => {
-                const roleLabel = {
-                    system: 'System',
-                    user: 'User',
-                    assistant: 'Assistant',
-                    tool: 'Tool Result'
-                }[msg.role] || msg.role;
-
-                const content = formatContent(msg.content);
-                return `[${index + 1}] ${roleLabel}:\n${content}`;
-            })
-            .join('\n\n---\n\n');
     }
 
     /**
@@ -1097,7 +709,7 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
         // window so it doesn't pre-empt summarization or trim short
         // conversations by message count.
         const estimateTokens = (msgs: ModelMessage[]) =>
-            msgs.reduce((acc, msg) => acc + this.extractMessageContent(msg).length, 0) / 4;
+            msgs.reduce((acc, msg) => acc + extractMessageContent(msg).length, 0) / 4;
 
         const emergencyCeiling = this.contextWindow * 0.95;
         if (estimateTokens(compressed) < emergencyCeiling) {
@@ -1110,7 +722,7 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
         let acc = 0;
         let splitAt = compressed.length;
         for (let i = compressed.length - 1; i >= 0; i--) {
-            acc += this.extractMessageContent(compressed[i]).length / 4;
+            acc += extractMessageContent(compressed[i]).length / 4;
             if (acc > keepBudget) break;
             splitAt = i;
         }

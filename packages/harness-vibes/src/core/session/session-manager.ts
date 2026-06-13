@@ -21,14 +21,14 @@
  */
 
 import * as path from 'path';
-import { AgentCore } from './agent-core';
-import type { AgentCoreConfig, AgentState } from './types';
-import type { Sandbox } from './sandbox';
-import { LocalSandbox } from '../sandbox/local-sandbox';
-import SqliteBackend from '../backend/sqlite-backend';
-import type { SessionInfo } from '../backend/sqlite-backend';
+import { AgentCore } from '../agent/agent-core';
+import type { AgentCoreConfig, AgentState } from '../types';
+import type { Sandbox } from '../sandbox';
+import { LocalSandbox } from '../../sandbox/local-sandbox';
+import SqliteBackend from '../../backend/sqlite-backend';
+import type { SessionInfo } from '../../backend/sqlite-backend';
 import type { UIMessageStreamWriter } from 'ai';
-import type { VibesUIMessage } from './streaming';
+import type { VibesUIMessage } from '../streaming/streaming';
 
 /**
  * Per-session context handed to a {@link SessionAgentFactory}. The factory
@@ -221,6 +221,9 @@ export class SessionStore {
         // Build the agent. The factory (when provided) constructs the real
         // agent — typically the flagship VibeAgent — rooted at a sandbox for
         // this workspace. Without a factory we fall back to a bare AgentCore.
+        // The sandbox backs the filesystem/artifact tools (node fs on the real
+        // workspace dir); the shell runs through just-bash in BashPlugin, rooted
+        // at the same directory, so the two views stay in sync.
         const sandbox = new LocalSandbox(workspaceDir);
         const agent = this.agentFactory
             ? this.agentFactory({ sessionId, workspaceDir, sandbox })

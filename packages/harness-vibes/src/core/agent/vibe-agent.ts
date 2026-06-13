@@ -4,23 +4,22 @@ import { openai } from '@ai-sdk/openai';
 import {
     SkillsPlugin,
     PlanningPlugin,
-    FilesystemPlugin,
     BashPlugin,
     SubAgentPlugin,
     SummarizationPlugin,
     ArtifactPlugin,
     ClarificationPlugin,
     WebSearchPlugin,
-} from '../plugins';
-import MemoryPlugin from '../plugins/memory';
+} from '../../plugins';
+import MemoryPlugin from '../../plugins/memory';
 import {
     AgentCoreConfig,
     SubAgent,
     Plugin,
     ToolsRequiringApprovalConfig,
-} from './types';
+} from '../types';
 import { AgentCore } from './agent-core';
-import type { Sandbox } from './sandbox';
+import type { Sandbox } from '../sandbox';
 
 /**
  * Configuration for initializing a VibeAgent instance.
@@ -79,10 +78,10 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
             tasksPath: path.join(config.workspaceDir, 'tasks.json'),
             maxRecitationTasks: 10,
         }),
-        new SkillsPlugin(),
-        // Filesystem + Bash run through the shared Sandbox when provided,
-        // otherwise each constructs a LocalSandbox rooted at workspaceDir.
-        new FilesystemPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
+        new SkillsPlugin({ workspaceDir: config.workspaceDir }),
+        // Full-bash workspace: all file I/O (read/write/edit/list/diff) goes
+        // through the shell — cat, tee, sed, grep, find, diff — rooted at the
+        // workspace. No separate filesystem tool.
         new BashPlugin(config.sandbox ? { sandbox: config.sandbox } : config.workspaceDir),
         // Renderable artifacts (websites, docs, diagrams, charts) → canvas panel.
         new ArtifactPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
@@ -128,8 +127,8 @@ export function createSubAgentPlugins(config: DefaultPluginFactoryOptions): Plug
             tasksPath: path.join(config.workspaceDir, 'tasks.json'),
             maxRecitationTasks: 10,
         }),
-        new SkillsPlugin(),
-        new FilesystemPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
+        new SkillsPlugin({ workspaceDir: config.workspaceDir }),
+        // Full-bash: file I/O is done through the shell (cat/tee/sed/grep/find).
         new BashPlugin(config.sandbox ? { sandbox: config.sandbox } : config.workspaceDir),
         new ArtifactPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
     ];
@@ -176,9 +175,10 @@ export class VibeAgent extends AgentCore {
     </capability>
 
     <capability name="OS & Environment">
-        - \`bash\`: Full shell access for exploration, searching (grep, find), and advanced commands.
-        - \`readFile\` / \`writeFile\`: Direct workspace filesystem management.
-        - \`list_files\`: Discover project structure recursively.
+        - \`bash\`: Your single interface to the workspace. Do ALL file work here —
+          read (\`cat\`, \`grep\`, \`head\`), list (\`ls\`, \`find\`), write (\`cat > f <<'EOF'\`,
+          \`tee\`), edit in place (\`sed -i\`, \`awk\`), and review changes (\`diff\`).
+          There is no separate file tool — the working directory persists between calls.
     </capability>
 
     <capability name="Multi-Agent Collaboration">
@@ -187,12 +187,12 @@ export class VibeAgent extends AgentCore {
 </extensible_capabilities>
 
 <standard_workflow>
-    1. **Understand**: Read the request and relevant files using \`readFile\` or \`list_files\`.
+    1. **Understand**: Explore with \`bash\` — \`ls\`/\`find\` to map the tree, \`cat\`/\`grep\` to read.
     2. **Decompose**: Call \`generate_tasks\` with a specific file-based plan.
     3. **Execute**:
         - Pick the next available task; mark it \`in_progress\` via \`update_task\`.
-        - Perform work (code edits, shell commands).
-    4. **Verify**: Use \`bash\` to run tests or \`readFile\` to confirm your changes are correct.
+        - Perform work with \`bash\` (write with heredocs/\`tee\`, edit with \`sed\`/\`awk\`).
+    4. **Verify**: Use \`bash\` to run checks and \`cat\`/\`diff\` to confirm your changes.
     5. **Complete**: Mark task \`completed\` via \`update_task\`.
 </standard_workflow>
 

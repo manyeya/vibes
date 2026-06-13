@@ -42,7 +42,7 @@ import type {
     PluginStreamContext,
     VibesUIMessage,
     VibesDataParts,
-} from './streaming.js';
+} from './streaming/streaming.js';
 
 /**
  * Types of tasks for categorization and filtering.
@@ -343,16 +343,16 @@ export interface AgentState {
 }
 
 /**
- * @deprecated Use VibesDataParts from './streaming.ts' instead
+ * @deprecated Use VibesDataParts from './streaming/streaming.ts' instead
  * This is kept for backwards compatibility
  */
-export type AgentDataParts = import('./streaming.js').VibesDataParts;
+export type AgentDataParts = import('./streaming/streaming.js').VibesDataParts;
 
 /**
- * @deprecated Use VibesUIMessage from './streaming.ts' instead
+ * @deprecated Use VibesUIMessage from './streaming/streaming.ts' instead
  * This is kept for backwards compatibility
  */
-export type AgentUIMessage = import('./streaming.js').VibesUIMessage;
+export type AgentUIMessage = import('./streaming/streaming.js').VibesUIMessage;
 
 /**
  * Re-export commonly used streaming types and utilities
@@ -361,7 +361,7 @@ export type {
     PluginStreamContext,
     VibesDataParts,
     VibesUIMessage,
-} from './streaming.js';
+} from './streaming/streaming.js';
 
 export {
     createDataStreamWriter,
@@ -369,7 +369,7 @@ export {
     createScopedUIMessageStreamWriter,
     DataStreamWriter,
     DataStreamOperation,
-} from './streaming.js';
+} from './streaming/streaming.js';
 
 /**
  * Configuration for initializing a AgentCore instance.
