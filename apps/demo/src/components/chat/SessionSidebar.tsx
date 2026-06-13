@@ -68,14 +68,16 @@ export const SessionSidebar = ({
     return sorted;
   }, [sessions, query, sort]);
 
-  // Drag the right edge to resize. The sidebar hugs the viewport's left edge,
-  // so its width is just the cursor's x, clamped.
+  // Drag the right edge to resize. Width is the cursor's x measured from the
+  // sidebar's own left edge (which sits right of the nav rail), so the drag
+  // tracks the cursor exactly regardless of what's to the left.
   const startResize = (e: React.MouseEvent) => {
     e.preventDefault();
+    const asideLeft = (e.currentTarget as HTMLElement).closest('aside')?.getBoundingClientRect().left ?? 0;
     const clamp = (w: number) => Math.min(MAX_W, Math.max(MIN_W, w));
     let last = width;
     const onMove = (ev: MouseEvent) => {
-      last = clamp(ev.clientX);
+      last = clamp(ev.clientX - asideLeft);
       setWidth(last);
     };
     const onUp = () => {

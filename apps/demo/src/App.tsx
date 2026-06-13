@@ -3,8 +3,14 @@ import { MotionConfig, AnimatePresence } from 'framer-motion';
 import { PanelLeft, ChevronRight } from 'lucide-react';
 import { SessionSidebar } from './components/chat/SessionSidebar';
 import { ChatArea } from './components/chat/ChatArea';
+import { LeftNav } from './components/LeftNav';
+import { SettingsPage, type SearchProviderId } from './components/SettingsPage';
 import type { ModelOption } from './components/chat/ModelSelector';
 import type { Session } from './components/chat/session-types';
+
+type Route = 'chat' | 'settings';
+
+const parseRoute = (hash: string): Route => (hash.replace(/^#\/?/, '') === 'settings' ? 'settings' : 'chat');
 
 // ============ MAIN APP ============
 export default function App() {
@@ -21,6 +27,20 @@ export default function App() {
 
   const [models, setModels] = useState<ModelOption[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>(() => localStorage.getItem('vibes_model') || '');
+  const [searchProvider, setSearchProvider] = useState<SearchProviderId>(
+    () => (localStorage.getItem('vibes_search_provider') as SearchProviderId) || 'auto',
+  );
+
+  // Hash-based routing for top-level views (chat / settings) — a real URL
+  // (#/settings) without pulling in a router dependency.
+  const [route, setRoute] = useState<Route>(() => parseRoute(window.location.hash));
+  useEffect(() => {
+    const onHash = () => setRoute(parseRoute(window.location.hash));
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  const goSettings = useCallback(() => { window.location.hash = '#/settings'; }, []);
+  const goChat = useCallback(() => { window.location.hash = '#/'; }, []);
 
   const fetchSessions = useCallback(async () => {
     setIsLoadingSessions(true);
@@ -95,14 +115,38 @@ export default function App() {
     if (selectedModel) localStorage.setItem('vibes_model', selectedModel);
   }, [selectedModel]);
 
+  useEffect(() => {
+    localStorage.setItem('vibes_search_provider', searchProvider);
+  }, [searchProvider]);
+
   const currentSession = sessions.find(s => s.id === currentSessionId);
+
+  // Right-rail Sessions: from settings it returns to chat (and reveals the
+  // list); within chat it just toggles the list.
+  const handleToggleSessions = useCallback(() => {
+    if (parseRoute(window.location.hash) === 'settings') {
+      goChat();
+      setSidebarOpen(true);
+    } else {
+      setSidebarOpen((v) => !v);
+    }
+  }, [goChat]);
 
   return (
     <MotionConfig reducedMotion="user">
     <div className="flex h-screen bg-[color:var(--color-ground)] text-[color:var(--color-ink)] bg-paper-grain">
-      {/* Session Sidebar (wider + collapsible) */}
+      {/* Far-left icon rail: Sessions (top) · Settings (bottom). */}
+      <LeftNav
+        active={route}
+        sessionsOpen={sidebarOpen}
+        onToggleSessions={handleToggleSessions}
+        onOpenSettings={goSettings}
+      />
+
+      {/* Session Sidebar (wider + collapsible) — chat route only; Settings is
+          a full-page view, so the session list steps aside there. */}
       <AnimatePresence>
-        {sidebarOpen && (
+        {route === 'chat' && sidebarOpen && (
           <SessionSidebar
             sessions={sessions}
             currentSessionId={currentSessionId}
@@ -117,38 +161,51 @@ export default function App() {
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header — compact Linear-style topbar: breadcrumb on the left, a
-            quiet model chip on the right. */}
-        <header className="flex h-12 shrink-0 items-center justify-between border-b border-[color:var(--color-line)] bg-[color:var(--color-ground)] px-3">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => setSidebarOpen((v) => !v)}
-              aria-label={sidebarOpen ? 'Hide sessions' : 'Show sessions'}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[color:var(--color-ink-faint)] transition-colors hover:bg-[color:var(--color-surface)] hover:text-[color:var(--color-ink)]"
-            >
-              <PanelLeft className="h-4 w-4" />
-            </button>
-            <span className="shrink-0 font-display text-[15px] italic leading-none text-[color:var(--color-ink)]">
-              Vibes
-            </span>
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[color:var(--color-ink-faint)]" aria-hidden />
-            <span className="min-w-0 truncate text-[13px] text-[color:var(--color-ink-soft)]">
-              {currentSession?.metadata?.title || 'Untitled session'}
-            </span>
-          </div>
-        </header>
+        {route === 'settings' ? (
+          <SettingsPage
+            models={models}
+            selectedModel={selectedModel}
+            onModelChange={setSelectedModel}
+            searchProvider={searchProvider}
+            onSearchProviderChange={setSearchProvider}
+          />
+        ) : (
+          <>
+            {/* Header — compact Linear-style topbar: breadcrumb on the left, a
+                quiet model chip on the right. */}
+            <header className="flex h-12 shrink-0 items-center justify-between border-b border-[color:var(--color-line)] bg-[color:var(--color-ground)] px-3">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setSidebarOpen((v) => !v)}
+                  aria-label={sidebarOpen ? 'Hide sessions' : 'Show sessions'}
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[color:var(--color-ink-faint)] transition-colors hover:bg-[color:var(--color-surface)] hover:text-[color:var(--color-ink)]"
+                >
+                  <PanelLeft className="h-4 w-4" />
+                </button>
+                <span className="shrink-0 font-display text-[15px] italic leading-none text-[color:var(--color-ink)]">
+                  Vibes
+                </span>
+                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[color:var(--color-ink-faint)]" aria-hidden />
+                <span className="min-w-0 truncate text-[13px] text-[color:var(--color-ink-soft)]">
+                  {currentSession?.metadata?.title || 'Untitled session'}
+                </span>
+              </div>
+            </header>
 
-        {/* Chat Area */}
-        <ChatArea
-          key={currentSessionId}
-          sessionId={currentSessionId}
-          model={selectedModel}
-          models={models}
-          onModelChange={setSelectedModel}
-          usage={currentSession?.metadata?.usage}
-          onSessionUpdate={fetchSessions}
-        />
+            {/* Chat Area */}
+            <ChatArea
+              key={currentSessionId}
+              sessionId={currentSessionId}
+              model={selectedModel}
+              models={models}
+              onModelChange={setSelectedModel}
+              searchProvider={searchProvider}
+              usage={currentSession?.metadata?.usage}
+              onSessionUpdate={fetchSessions}
+            />
+          </>
+        )}
       </div>
     </div>
     </MotionConfig>

@@ -13,6 +13,7 @@ const SUPPRESSED = new Set([
   'data-task_update',
   'data-task_graph',
   'data-clarification',
+  'data-plan_review',
   'data-context_usage',
   'data-command',
   'data-file_operation',

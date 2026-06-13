@@ -219,6 +219,7 @@ export const ChatMessage = ({ message, onApprove, onDeny, live = false }: ChatMe
     if (part.type === 'data-status') return null;
     if (part.type === 'data-task_update' || part.type === 'data-task_graph') return null;
     if (part.type === 'data-clarification') return null; // shown as the form above the composer
+    if (part.type === 'data-plan_review') return null; // shown as the plan-approval form above the composer
     if (part.type === 'data-context_usage') return null; // shown as the gauge in the composer footer
     if (isDataPart(part)) {
       // Sub-agent detail (anything carrying a delegationId that isn't the
