@@ -66,6 +66,7 @@ describe('Plugin streaming', () => {
 
     try {
       const plugin = new BashPlugin(workspaceDir);
+      await plugin.waitReady();
       attachStream(plugin, parts, { heartbeatStartMs: 5, heartbeatIntervalMs: 5 });
 
       await (plugin.tools.bash as any).execute({
@@ -293,7 +294,7 @@ describe('Plugin streaming', () => {
     }
   });
 
-  test('SummarizationPlugin: token-based — emits context usage and compresses past the threshold', async () => {
+  test('SummarizationPlugin: token-based — compresses past the threshold', async () => {
     const parts: any[] = [];
     const model = new MockLanguageModelV3({
       doGenerate: async () => ({
@@ -308,13 +309,11 @@ describe('Plugin streaming', () => {
     const plugin = new SummarizationPlugin(model as any, { contextWindow: 1000, compressionRatio: 0.7 });
     plugin.onStreamContextReady(createPluginStreamContext(createCapturingWriter(parts)));
 
-    // Small conversation → under threshold → no compression, but usage emitted.
+    // Small conversation → under threshold → no compression. The live gauge is
+    // now emitted by AgentCore from real provider tokens, not this plugin.
     await (plugin.prepareStep as any)({ steps: [], stepNumber: 0, model, messages: [{ role: 'user', content: 'hi' }] });
-    const usage = parts.filter((p) => p.type === 'data-context_usage').pop();
-    expect(usage).toBeDefined();
-    expect(usage.data.contextWindow).toBe(1000);
-    expect(usage.data.compressAt).toBe(700);
     expect(parts.some((p) => p.type === 'data-summarization')).toBe(false);
+    expect(parts.some((p) => p.type === 'data-context_usage')).toBe(false);
 
     // Big conversation (~2000 tok) → over threshold → summarize oldest, keep recent.
     const big = Array.from({ length: 20 }, (_, i) => ({
@@ -327,6 +326,33 @@ describe('Plugin streaming', () => {
     expect(result?.messages?.[0]?.role).toBe('system');
     expect(String(result.messages[0].content)).toContain('summarised');
     expect(result.messages.length).toBeLessThan(big.length + 1);
+  });
+
+  test('SummarizationPlugin: counts tool-call/result payloads toward the token estimate', async () => {
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => ({
+        finishReason: { type: 'stop', unified: 'stop' },
+        content: [{ type: 'text', text: '• summarised' }],
+        usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
+        warnings: [],
+        providerMetadata: undefined,
+      } as any),
+    });
+    // window 1000 tok, ratio 0.7 → compress at 700 tok (~2800 chars).
+    const plugin = new SummarizationPlugin(model as any, { contextWindow: 1000, compressionRatio: 0.7 });
+
+    // A heavy tool result (a big file dump) is the bulk of a real agent's
+    // context. The old estimate ignored the payload and never tripped
+    // compression; now it must.
+    const heavyToolOutput = 'y'.repeat(4000);
+    const messages = [
+      { role: 'user', content: 'read the file' },
+      { role: 'assistant', content: [{ type: 'tool-call', toolName: 'bash', input: { command: 'cat big.txt' } }] },
+      { role: 'tool', content: [{ type: 'tool-result', toolName: 'bash', output: { type: 'text', value: heavyToolOutput } }] },
+    ];
+    const result: any = await (plugin.prepareStep as any)({ steps: [], stepNumber: 0, model, messages });
+    // ~4000+ chars / 4 ≈ 1000+ tok > 700 → compression must trigger.
+    expect(result?.messages?.[0]?.role).toBe('system');
   });
 
   test('MemoryPlugin: remember/recall/forget round-trip + loads into the system prompt', async () => {

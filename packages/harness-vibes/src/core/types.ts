@@ -395,6 +395,12 @@ export interface AgentCoreConfig {
     contextWindow?: number;
     /** Fraction of the context window at which compression kicks in, 0–1 (default: 0.7) */
     contextCompressionRatio?: number;
+    /**
+     * Whether this agent emits the live context-usage gauge (default: true).
+     * Set false for sub-agents so their (smaller) context doesn't clobber the
+     * main conversation's gauge in the UI.
+     */
+    emitContextGauge?: boolean;
     /** Model temperature for controlling randomness */
     temperature?: number;
     /** Maximum retries for API failures (default: 2) */

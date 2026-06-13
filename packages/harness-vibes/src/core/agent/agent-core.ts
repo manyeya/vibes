@@ -79,6 +79,8 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
     protected contextWindow: number;
     /** Fraction of the window at which we start trimming context (0–1). */
     protected contextCompressionRatio: number;
+    /** Whether to emit the live context-usage gauge (false for sub-agents). */
+    protected emitContextGauge: boolean;
     protected maxRetries: number;
     protected customTools: Record<string, unknown>;
     protected toolsRequiringApproval: ToolsRequiringApprovalConfig = [];
@@ -150,21 +152,13 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
         // We also wrap onStepFinish to aggregate per-step token usage into
         // `lastStreamUsage` for the stream wrapper to persist.
         const userOnStepFinish = config.onStepFinish;
-        const accumulateUsage = (step: StepResult<ToolSet>) => {
-            const u = step.usage;
-            if (u) {
-                this.lastStreamUsage.inputTokens += u.inputTokens ?? 0;
-                this.lastStreamUsage.outputTokens += u.outputTokens ?? 0;
-                this.lastStreamUsage.totalTokens += u.totalTokens ?? 0;
-            }
-        };
         const settings: ToolLoopAgentSettings<never, ToolSet, never> = {
             model: config.model,
             instructions: config.instructions,
             tools: config.tools || {},
             temperature: config.temperature,
             onStepFinish: async (step) => {
-                accumulateUsage(step);
+                this.recordStepUsage(step);
                 if (userOnStepFinish) {
                     await userOnStepFinish(step);
                 }
@@ -203,6 +197,7 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
         this.maxContextMessages = config.maxContextMessages ?? 50;
         this.contextWindow = config.contextWindow ?? 128000;
         this.contextCompressionRatio = config.contextCompressionRatio ?? 0.7;
+        this.emitContextGauge = config.emitContextGauge ?? true;
         this.maxRetries = config.maxRetries ?? 2;
         this.customTools = config.tools || {};
         this.toolsRequiringApproval = config.toolsRequiringApproval || [];
@@ -227,6 +222,70 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
         const usage = { ...this.lastStreamUsage };
         this.lastStreamUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
         return usage;
+    }
+
+    /**
+     * Fold a finished step's token usage into the running totals and, when a
+     * stream writer is active, emit the live context-window gauge. Two distinct
+     * numbers come out of `step.usage`:
+     *
+     *   - **Cumulative spend** (`lastStreamUsage`): summed across every step, so
+     *     it reflects what the provider actually bills — each step re-sends the
+     *     growing context and you pay for all of it.
+     *   - **Context fullness** (the gauge): the *latest* step's input + output is
+     *     the real size of the conversation now in the window. This is the ground
+     *     truth the provider reports — far more accurate than a char-count
+     *     estimate because it includes the system prompt and tool schemas the
+     *     model actually saw, plus the full tool-call/result payloads.
+     */
+    protected recordStepUsage(step: StepResult<ToolSet>): void {
+        const u = step.usage;
+        if (!u) return;
+
+        const inputTokens = u.inputTokens ?? 0;
+        const outputTokens = u.outputTokens ?? 0;
+        // Some providers report input/output but omit a combined total; derive
+        // it so cumulative spend never sticks at zero.
+        const totalTokens = u.totalTokens ?? inputTokens + outputTokens;
+
+        this.lastStreamUsage.inputTokens += inputTokens;
+        this.lastStreamUsage.outputTokens += outputTokens;
+        this.lastStreamUsage.totalTokens += totalTokens;
+
+        // Live gauge: the freshest step's input+output is how full the context is
+        // right now. Overwrites in place (stable id) so it tracks each step.
+        const writer = this.activeStreamContext?.writer;
+        const used = inputTokens + outputTokens;
+        if (this.emitContextGauge && writer && used > 0 && this.contextWindow > 0) {
+            writer.writeContextUsage({
+                usedTokens: used,
+                contextWindow: this.contextWindow,
+                threshold: this.contextCompressionRatio,
+                compressAt: Math.round(this.contextWindow * this.contextCompressionRatio),
+            });
+        }
+    }
+
+    /**
+     * Update the context window (and optionally the compression ratio) used by
+     * the live gauge and token-based summarization. Call this when the UI swaps
+     * the active model mid-session for one with a different window — the change
+     * is fanned out to any plugin that tracks its own window (the
+     * SummarizationPlugin) so its compression threshold moves with the model.
+     */
+    setContextWindow(contextWindow: number, compressionRatio?: number): void {
+        if (Number.isFinite(contextWindow) && contextWindow > 0) {
+            this.contextWindow = contextWindow;
+        }
+        if (compressionRatio !== undefined && compressionRatio > 0 && compressionRatio <= 1) {
+            this.contextCompressionRatio = compressionRatio;
+        }
+        for (const plugin of this.plugins) {
+            const p = plugin as { setContextWindow?: (w: number, r?: number) => void };
+            if (typeof p.setContextWindow === 'function') {
+                p.setContextWindow(this.contextWindow, this.contextCompressionRatio);
+            }
+        }
     }
 
     addPlugin(plugin: Plugin | Plugin[]) {

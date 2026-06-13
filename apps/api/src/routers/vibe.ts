@@ -4,10 +4,10 @@ import { z } from "zod";
 import { createUIMessageStreamResponse, type UIMessageChunk } from "ai";
 import { logger } from "../logger";
 import streamCoordinator from "../stream-coordinator";
-import { vibeHarness } from "../vibe-coder";
+import { vibeHarness, defaultSubAgents } from "../vibe-coder";
 import { SqliteBackend, createAgentStreamResponse } from "../../../../packages/harness-vibes/index";
 import { agent as simpleAgent } from "../simple-agent";
-import { getModel, getAvailableModels, getDefaultModelId, isKnownModelId } from "../model-factory";
+import { getModel, getAvailableModels, getContextWindow, getDefaultModelId, isKnownModelId } from "../model-factory";
 
 /**
  * Loose message shape accepted by the streaming endpoints. AI SDK in
@@ -37,6 +37,8 @@ const vibeSchema = z.object({
     session_id: z.string().nullable().optional(),
     /** Optional per-request OpenRouter model id from the UI model selector. */
     model: z.string().nullable().optional(),
+    /** Optional web-search backend preference from the UI settings ('auto' | 'exa' | 'tavily' | 'brave'). */
+    search_provider: z.string().nullable().optional(),
 }).passthrough();
 
 type ApiMessage = z.infer<typeof apiMessageSchema>;
@@ -57,12 +59,39 @@ app.get('/models', async (c) => {
  * the selector swaps the model for this run; anything else reverts to the
  * agent's constructed default.
  */
-function applyModelOverride(agent: { setModelOverride: (m?: ReturnType<typeof getModel>) => void }, modelId: unknown): void {
+function applyModelOverride(
+    agent: {
+        setModelOverride: (m?: ReturnType<typeof getModel>) => void;
+        setContextWindow: (w: number, r?: number) => void;
+    },
+    modelId: unknown,
+): void {
     const id = typeof modelId === 'string' && modelId.trim() ? modelId.trim() : undefined;
     const known = id ? isKnownModelId(id) : false;
     agent.setModelOverride(known ? getModel({ provider: 'openrouter', id: id! }) : undefined);
+    // Keep the context gauge + compression threshold aligned with the active
+    // model's real window — selector models range from a few k to 1M tokens, so
+    // a window frozen to the startup default would make the gauge meaningless.
+    agent.setContextWindow(getContextWindow(known ? id! : getDefaultModelId()));
 }
 
+/**
+ * Apply the UI's web-search backend preference for this run. The plugin
+ * validates the id and falls back to env auto-detection for 'auto' or any
+ * unconfigured backend, so we pass it through verbatim.
+ */
+function applySearchProvider(agent: { setSearchProviderPreference: (p?: string) => void }, provider: unknown): void {
+    agent.setSearchProviderPreference(typeof provider === 'string' && provider.trim() ? provider.trim() : undefined);
+}
+
+
+/** The roster of built-in sub-agents the UI can target a message at. */
+app.get('/agents', (c) => {
+    return c.json({
+        success: true,
+        agents: defaultSubAgents.map((a) => ({ name: a.name, description: a.description })),
+    });
+});
 
 // ============ SESSION MANAGEMENT ENDPOINTS ============
 
@@ -337,6 +366,7 @@ app.post('/vibe', zValidator('json', vibeSchema), async (c) => {
 
         const agent = (await vibeHarness.session(sessionId)).raw;
         applyModelOverride(agent, body.model);
+        applySearchProvider(agent, body.search_provider);
 
         const startTime = Date.now();
         // The agent's `generate({messages})` overload accepts ModelMessage[]
@@ -403,6 +433,7 @@ app.post('/vibe/stream', zValidator('json', vibeSchema), async (c) => {
         const agent = session.raw;
         const sessionBackend = session.backend!;
         applyModelOverride(agent, body.model);
+        applySearchProvider(agent, body.search_provider);
 
         // Pass originalMessages so AI SDK reuses message IDs when the client
         // resubmits after a tool approval. We detect that case either by the

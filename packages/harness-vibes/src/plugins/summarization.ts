@@ -49,8 +49,8 @@ export default class SummarizationPlugin implements Plugin {
 
     private currentSummary = '';
     private summarizedFingerprints = new Set<string>();
-    private readonly contextWindow: number;
-    private readonly compressionRatio: number;
+    private contextWindow: number;
+    private compressionRatio: number;
     private readonly perMessageCharCap: number;
     private readonly model: LanguageModel;
     private writer?: DataStreamWriter;
@@ -69,6 +69,20 @@ export default class SummarizationPlugin implements Plugin {
         return Math.round(chars / 4);
     }
 
+    /**
+     * Update the window/ratio that drive the compression threshold — called by
+     * the agent when the UI swaps the active model mid-session. The live gauge
+     * itself is emitted by AgentCore from real provider token counts.
+     */
+    setContextWindow(contextWindow: number, compressionRatio?: number): void {
+        if (Number.isFinite(contextWindow) && contextWindow > 0) {
+            this.contextWindow = contextWindow;
+        }
+        if (compressionRatio !== undefined && compressionRatio > 0 && compressionRatio <= 1) {
+            this.compressionRatio = compressionRatio;
+        }
+    }
+
     onStreamContextReady(context: PluginStreamContext) {
         this.writer = context.writer.withDefaults({ plugin: this.name });
     }
@@ -85,16 +99,12 @@ export default class SummarizationPlugin implements Plugin {
         experimental_context?: unknown;
     }) {
         const messages = options.messages;
+        // Estimate from the message list to decide whether to compress. The live
+        // UI gauge is emitted separately by AgentCore from the provider's real
+        // token counts (which also include the system prompt + tool schemas);
+        // this estimate only needs to be good enough to trigger compression.
         const used = this.estimateTokens(messages);
         const compressAt = Math.round(this.contextWindow * this.compressionRatio);
-
-        // Always surface live usage so the UI can show how full the context is.
-        this.writer?.writeContextUsage({
-            usedTokens: used,
-            contextWindow: this.contextWindow,
-            threshold: this.compressionRatio,
-            compressAt,
-        });
 
         // Below the threshold → leave the conversation intact (just carry any
         // existing summary). This is the common case: no flow disruption.
@@ -173,18 +183,36 @@ export default class SummarizationPlugin implements Plugin {
         if (!Array.isArray(message.content)) return '';
         return message.content
             .map(part => {
-                if (part.type === 'text') return (part as { text?: string }).text ?? '';
+                if (part.type === 'text' || part.type === 'reasoning') {
+                    return (part as { text?: string }).text ?? '';
+                }
+                // Include the actual tool input/output payloads. In an agentic
+                // loop these dominate the context (file contents, command
+                // output), so counting only a `[tool-result name]` placeholder
+                // made the token estimate — and the compression trigger — wildly
+                // undercount.
                 if (part.type === 'tool-call') {
                     const tc = part as { toolName?: string; input?: unknown };
-                    return `[tool-call ${tc.toolName ?? ''}]`;
+                    return `[tool-call ${tc.toolName ?? ''}] ${this.stringifyPayload(tc.input)}`;
                 }
                 if (part.type === 'tool-result') {
-                    const tr = part as { toolName?: string };
-                    return `[tool-result ${tr.toolName ?? ''}]`;
+                    const tr = part as { toolName?: string; output?: unknown };
+                    return `[tool-result ${tr.toolName ?? ''}] ${this.stringifyPayload(tr.output)}`;
                 }
                 return `[${part.type}]`;
             })
             .join('\n');
+    }
+
+    /** Best-effort string form of a tool input/output, for token estimation. */
+    private stringifyPayload(value: unknown): string {
+        if (value == null) return '';
+        if (typeof value === 'string') return value;
+        try {
+            return JSON.stringify(value);
+        } catch {
+            return String(value);
+        }
     }
 
     private async summarize(messages: ModelMessage[]): Promise<string> {
