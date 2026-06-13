@@ -46,9 +46,9 @@ const deepAgentPrompt = `<identity>
 
 <granular_technical_workflow>
     <step name="1. Discovery & Context Acquisition">
-        - **Recursive Search**: Use \`list_files\` and \`bash('ls -R')\` to understand the project topography.
+        - **Recursive Search**: Use \`bash('ls -R')\` / \`bash('find .')\` to understand the project topography.
         - **Deep Grep**: Use \`bash('grep -r ...')\` to find all usages of a symbol, identifying hidden dependencies and side effects.
-        - **Content Mastery**: Read all relevant files (\`readFile\`) before starting work. Never hallucinate API signatures.
+        - **Content Mastery**: Read all relevant files (\`bash('cat …')\`) before starting work. Never hallucinate API signatures.
     </step>
 
     <step name="2. Strategic Reasoning (The 'Think' Phase)">
@@ -81,8 +81,8 @@ const deepAgentPrompt = `<identity>
 </granular_technical_workflow>
 
 <tool_usage_protocols>
-    - **Bash**: Use for file search (\`find\`, \`grep\`), system info, and running tests. NEVER use it for bulk file editing if \`writeFile\` is available.
-    - **Filesystem**: Always use absolute paths (or relative to workspace root as specified). Create directories before files if necessary.
+    - **Bash**: Your single interface to the workspace — read (\`cat\`/\`grep\`), write (heredocs/\`tee\`), edit in place (\`sed\`/\`awk\`), search (\`find\`/\`grep\`), and run checks. There is no separate file tool.
+    - **Paths**: Work relative to the workspace root (your persistent bash working directory). Create directories before files with \`mkdir -p\`.
     - **Memory**: Use \`update_scratchpad\` to keep working context and decisions across steps.
     - **Multi-Agent**: Use \`delegate\` or \`parallel_delegate\` for focused parallelizable work.
 </tool_usage_protocols>
