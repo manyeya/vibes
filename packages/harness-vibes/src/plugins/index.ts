@@ -1,6 +1,6 @@
 import { type Plugin } from "../core/types";
 import TasksPlugin from "./tasks";
-import PlanningPlugin from "./planning";
+import PlanningPlugin, { PLAN_REVIEW_TOOL_NAME } from "./planning";
 import SkillsPlugin from "./skills";
 import FilesystemPlugin from "./filesystem";
 import BashPlugin from "./bash";
@@ -23,6 +23,7 @@ export {
     type Plugin,
     TasksPlugin,
     PlanningPlugin,
+    PLAN_REVIEW_TOOL_NAME,
     SkillsPlugin,
     FilesystemPlugin,
     BashPlugin,

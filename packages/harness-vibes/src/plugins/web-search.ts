@@ -101,17 +101,35 @@ export class BraveProvider implements SearchProvider {
 }
 
 /**
+ * Build every search backend the current environment can actually use, keyed
+ * by id, plus the auto-selected default (first available in priority order:
+ * explicit override → Exa → Tavily → Brave). An empty map means no backend is
+ * configured and the plugin disables itself cleanly.
+ */
+export function buildProviderRegistry(explicit?: SearchProvider): {
+    providers: Map<string, SearchProvider>;
+    autoName?: string;
+} {
+    const providers = new Map<string, SearchProvider>();
+    if (explicit) providers.set(explicit.name, explicit);
+    if (process.env.EXA_API_KEY) providers.set('exa', new ExaProvider(process.env.EXA_API_KEY));
+    if (process.env.TAVILY_API_KEY) providers.set('tavily', new TavilyProvider(process.env.TAVILY_API_KEY));
+    const brave = process.env.BRAVE_API_KEY ?? process.env.BRAVE_SEARCH_API_KEY;
+    if (brave) providers.set('brave', new BraveProvider(brave));
+
+    // "Auto" prefers an explicit override, then env order.
+    const autoName = explicit?.name ?? ['exa', 'tavily', 'brave'].find((id) => providers.has(id));
+    return { providers, autoName };
+}
+
+/**
  * Pick a provider: an explicit one wins, otherwise auto-detect from env in
  * priority order (Exa → Tavily → Brave). Returns undefined when none is
  * configured, which lets the plugin disable itself cleanly.
  */
 export function resolveSearchProvider(explicit?: SearchProvider): SearchProvider | undefined {
-    if (explicit) return explicit;
-    if (process.env.EXA_API_KEY) return new ExaProvider(process.env.EXA_API_KEY);
-    if (process.env.TAVILY_API_KEY) return new TavilyProvider(process.env.TAVILY_API_KEY);
-    const brave = process.env.BRAVE_API_KEY ?? process.env.BRAVE_SEARCH_API_KEY;
-    if (brave) return new BraveProvider(brave);
-    return undefined;
+    const { providers, autoName } = buildProviderRegistry(explicit);
+    return autoName ? providers.get(autoName) : undefined;
 }
 
 export interface WebSearchPluginConfig {
@@ -135,17 +153,44 @@ export default class WebSearchPlugin implements Plugin {
     name = 'WebSearchPlugin';
     private writer?: DataStreamWriter;
     private streamContext?: PluginStreamContext;
-    private readonly provider?: SearchProvider;
+    private readonly providers: Map<string, SearchProvider>;
+    private readonly autoName?: string;
+    /** UI/API provider preference for this run; undefined = env auto-detect. */
+    private preference?: string;
     private readonly defaultNumResults: number;
 
     constructor(config: WebSearchPluginConfig = {}) {
-        this.provider = config.provider ?? resolveSearchProvider();
+        const { providers, autoName } = buildProviderRegistry(config.provider);
+        this.providers = providers;
+        this.autoName = autoName;
         this.defaultNumResults = config.defaultNumResults ?? 8;
     }
 
-    /** Whether a backend is configured. Callers can skip loading the plugin when false. */
+    /** Whether any backend is configured. Callers can skip loading the plugin when false. */
     get isEnabled(): boolean {
-        return this.provider !== undefined;
+        return this.providers.size > 0;
+    }
+
+    /**
+     * The provider this run will use: the explicit UI/API preference when it's
+     * actually configured, otherwise the auto-detected default. A preference for
+     * an unconfigured backend falls back to auto rather than erroring — which is
+     * exactly what the settings UI promises ("Auto falls back to whatever the
+     * server is configured with").
+     */
+    private get activeProvider(): SearchProvider | undefined {
+        if (this.preference && this.providers.has(this.preference)) {
+            return this.providers.get(this.preference);
+        }
+        return this.autoName ? this.providers.get(this.autoName) : undefined;
+    }
+
+    /**
+     * Set the preferred backend for subsequent runs (from the UI settings).
+     * Pass 'auto' or undefined to revert to env auto-detection.
+     */
+    setProviderPreference(id?: string): void {
+        this.preference = id && id !== 'auto' ? id : undefined;
     }
 
     onStreamContextReady(context: PluginStreamContext) {
@@ -180,7 +225,7 @@ export default class WebSearchPlugin implements Plugin {
                         plugin: this.name,
                     });
                     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-                    const provider = this.provider;
+                    const provider = this.activeProvider;
 
                     if (!provider) {
                         const error =
@@ -220,10 +265,11 @@ export default class WebSearchPlugin implements Plugin {
     }
 
     modifySystemPrompt(prompt: string): string {
-        if (!this.provider) return prompt;
+        const provider = this.activeProvider;
+        if (!provider) return prompt;
         return `${prompt}
 
 ## Web Search
-You can call \`webSearch(query)\` to look up current information online (backend: ${this.provider.name}). Prefer it over guessing when a question depends on recent or external facts, and cite the useful sources by URL in your answer.`;
+You can call \`webSearch(query)\` to look up current information online (backend: ${provider.name}). Prefer it over guessing when a question depends on recent or external facts, and cite the useful sources by URL in your answer.`;
     }
 }

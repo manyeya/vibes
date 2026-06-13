@@ -294,6 +294,6 @@ Pick \`kind\`:
 Rules:
 - After creating, mention it briefly in chat ("I've put the landing page in the canvas") — don't paste the full content back into the message.
 - To revise, call \`update_artifact\` with the same \`id\` (it re-renders in place); don't create a near-duplicate.
-- Artifacts are saved under \`${this.dir}/\` in your workspace, so you can \`readFile\` / \`writeFile\` them too.`;
+- Artifacts are saved under \`${this.dir}/\` in your workspace, so you can \`cat\`/edit them with bash too.`;
     }
 }

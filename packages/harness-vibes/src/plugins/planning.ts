@@ -18,6 +18,9 @@ import {
     type ModelMessage,
 } from '../core/types';
 
+/** Tool that pauses the run to put the plan in front of the user for approval. */
+export const PLAN_REVIEW_TOOL_NAME = 'request_plan_review';
+
 /**
  * Planning configuration options
  */
@@ -90,6 +93,8 @@ export class PlanningPlugin implements Plugin {
     private maxRecitationTasks: number;
     private lastRecitedTasks: TaskItem[] = [];
     private currentPlan?: Plan;
+    /** Plan ids that have been put up for review — gates task generation. */
+    private reviewedPlanIds: Set<string> = new Set();
     private model?: LanguageModel;
 
     // Compose TasksPlugin instead of extending to avoid type conflicts
@@ -143,13 +148,23 @@ export class PlanningPlugin implements Plugin {
 ## Planning & Task Management
 
 **Planning Workflow:**
-1. Use \`create_plan()\` to generate a high-level project brief
-2. Use \`generate_tasks_from_plan()\` to create specific tasks from the plan
-3. Work through tasks sequentially, marking them complete as you go
+1. Use \`create_plan()\` to generate a high-level project brief (problem, approach, phases)
+2. Use \`${PLAN_REVIEW_TOOL_NAME}()\` to get the user's sign-off on the PLAN, then STOP and wait
+3. Once approved, use \`generate_tasks_from_plan()\` to create the concrete tasks
+4. Work through tasks sequentially, marking them complete as you go
+
+**Plan review (human-in-the-loop):**
+For any non-trivial, multi-step task, call \`${PLAN_REVIEW_TOOL_NAME}()\` right after
+\`create_plan()\` — **before** generating tasks or doing any work — and then STOP and
+wait. Do NOT call \`generate_tasks_from_plan()\` or touch the workspace until the plan
+is approved. The user either approves the plan (then generate the tasks and proceed)
+or requests changes (then revise with \`create_plan\` and call \`${PLAN_REVIEW_TOOL_NAME}()\`
+again). Skip review only for trivial one-step asks.
 
 **Available Tools:**
 - \`create_plan(request)\` - Generate a high-level project plan (problem, solution, phases, milestones)
 - \`generate_tasks_from_plan()\` - Create specific actionable tasks from the current plan
+- \`${PLAN_REVIEW_TOOL_NAME}(note?)\` - Show the plan to the user for approval before executing
 - \`save_plan()\` - Save the current task plan to a file
 - \`load_plan()\` - Load a task plan from a file
 - \`recite_plan()\` - Refresh and view your current task plan
@@ -468,6 +483,57 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
 
         return Object.assign({}, baseTools, {
 
+            [PLAN_REVIEW_TOOL_NAME]: tool({
+                description:
+                    'Put the plan in front of the user for sign-off BEFORE generating tasks or doing any work. ' +
+                    'Renders the plan (and any tasks already generated) above the composer with Approve / Request changes. ' +
+                    'Call this right after create_plan — NOT after generate_tasks_from_plan — and then STOP: the user ' +
+                    'will either approve (then generate tasks and proceed) or request changes (then revise the plan and ' +
+                    'call this again). Generate no tasks and do no execution work until the plan is approved.',
+                inputSchema: z.object({
+                    note: z.string().optional().describe('Optional one-line note introducing the plan or flagging a key decision.'),
+                }),
+                execute: async ({ note }) => {
+                    const operation = this.createOperation('request-plan-review', PLAN_REVIEW_TOOL_NAME);
+                    const tasks = await this.tasksPlugin.getTasks();
+                    const plan = this.currentPlan;
+                    if (!plan && tasks.length === 0) {
+                        this.writer?.writeError(
+                            'No plan to review yet — call create_plan() and generate_tasks_from_plan() first.',
+                            { toolName: PLAN_REVIEW_TOOL_NAME, recoverable: true },
+                        );
+                        return { error: 'No plan to review. Create a plan and generate tasks first.' };
+                    }
+                    // Mark this plan reviewed so generate_tasks_from_plan unlocks
+                    // once the user approves (the run halts here until they do).
+                    if (plan) this.reviewedPlanIds.add(plan.id);
+                    const id = `plan_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+                    this.writer?.writePlanReview({
+                        id,
+                        title: plan?.title ?? 'Proposed plan',
+                        note,
+                        problem: plan?.problem,
+                        solution: plan?.solution,
+                        phases: plan?.phases,
+                        milestones: plan?.milestones,
+                        risks: plan?.risks,
+                        tasks: tasks.map((t) => ({ id: t.id, title: t.title, status: t.status, priority: t.priority })),
+                    });
+                    operation?.complete(
+                        `Sent the plan for review (${tasks.length} task${tasks.length === 1 ? '' : 's'})`,
+                        { phase: 'complete' },
+                    );
+                    return {
+                        status: 'awaiting_plan_approval',
+                        taskCount: tasks.length,
+                        message:
+                            'The plan is now shown to the user for approval above the composer. Stop here and wait — ' +
+                            'they will approve it or request changes in their next message. Generate no tasks and ' +
+                            'execute nothing until then; once approved, call generate_tasks_from_plan() and proceed.',
+                    };
+                },
+            }),
+
             create_plan: tool({
                 description: `Create a high-level project plan with problem statement, solution approach, phases, and milestones.`,
                 inputSchema: z.object({
@@ -618,6 +684,18 @@ NEVER be concise. Be exhaustive. Break every objective down into its smallest ac
                             success: false,
                             error: 'No plan found. Use create_plan() first.',
                         };
+                    }
+
+                    // Hard gate: a plan must be put up for review — which halts
+                    // the run for the user's approval — before its tasks are
+                    // generated. This makes "see and approve the plan first"
+                    // mechanical, not just a prompt the model might skip.
+                    if (!this.reviewedPlanIds.has(plan.id)) {
+                        const msg =
+                            'This plan has not been reviewed. Call request_plan_review() and wait for the user to ' +
+                            'approve the plan before generating tasks.';
+                        this.writer?.writeError(msg, { toolName: 'generate_tasks_from_plan', recoverable: true });
+                        return { success: false, error: msg };
                     }
 
                     // Build plan context for LLM

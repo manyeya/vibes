@@ -96,10 +96,13 @@ describe('Public harness facade', () => {
             const names = Object.keys(tools);
 
             expect(names.length).toBeGreaterThan(20);
+            // Tools from several different plugins should all be present (the
+            // race used to drop every plugin tool). File I/O is full-bash now,
+            // so there is no readFile/writeFile — bash is the file interface.
             expect(names).toContain('bash');
             expect(names).toContain('generate_tasks');
-            expect(names).toContain('readFile');
-            expect(names).toContain('writeFile');
+            expect(names).toContain('create_artifact');
+            expect(names).toContain('remember');
         } finally {
             await removeTempWorkspace(root);
         }
