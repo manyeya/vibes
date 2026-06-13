@@ -265,18 +265,29 @@ function buildSubAgentSystemPrompt(subAgent: NormalizedSubAgent): string {
     return `${subAgent.systemPrompt}\n\n## Delegation Contract\n- Focus only on the delegated task; use your tools to actually do the work.\n- When finished, give a concise final answer summarizing the outcome and any file paths.\n- You MAY call ${COMPLETION_TOOL_NAME} to hand back a structured summary + file list, but it is optional — do not loop or stall waiting to call it.`;
 }
 
-function buildSuccessArtifactContent(options: {
+function buildSuccessArtifact(options: {
     agentName: string;
     request: DelegationInput;
+    /** The sub-agent's complete output — stored in full so the inline result can reference it. */
+    fullOutput: string;
     result: DelegationSuccessResult;
     metadata?: Record<string, unknown>;
-}): string {
+}): { content: string; resultStartLine: number } {
     const completionLine = options.result.inferred
         ? `Inferred from the sub-agent's final output (no structured ${COMPLETION_TOOL_NAME} call).`
         : `Structured completion confirmed via ${COMPLETION_TOOL_NAME}.`;
-    return `# ${options.agentName} Task Result\n\n## Task\n${options.request.task}\n\n## Summary\n${options.result.summary}\n\n## Files\n${options.result.filesCreated && options.result.filesCreated.length > 0
+    // Everything before the output, so we know which file line the output starts
+    // on — that lets the TOC's line ranges point at the real file, not at the
+    // output's own 1-based lines.
+    const head = `# ${options.agentName} Task Result\n\n## Task\n${options.request.task}\n\n## Result\n`;
+    const files = options.result.filesCreated && options.result.filesCreated.length > 0
         ? options.result.filesCreated.map(filePath => `- \`${filePath}\``).join('\n')
-        : 'None'}\n\n## Completion\n${completionLine}\n\n## Metadata${formatMetadata(options.metadata)}`;
+        : 'None';
+    const tail = `\n\n## Files\n${files}\n\n## Completion\n${completionLine}\n\n## Metadata${formatMetadata(options.metadata)}`;
+    return {
+        content: head + options.fullOutput + tail,
+        resultStartLine: (head.match(/\n/g)?.length ?? 0) + 1,
+    };
 }
 
 function buildErrorArtifactContent(options: {
@@ -290,10 +301,82 @@ function buildErrorArtifactContent(options: {
     return `# ${options.agentName} Task Failure\n\n## Task\n${options.request.task}\n\n## Error Code\n${options.errorCode}\n\n## Summary\n${options.summary}\n\n## Error\n${options.error}\n\n## Raw Output\n${options.rawText?.trim() ? options.rawText : 'None'}`;
 }
 
-/** Cap an inferred summary so it stays a summary, not a transcript. */
-function inferSummary(rawText: string): string {
-    const trimmed = rawText.trim();
-    return trimmed.length > 800 ? `${trimmed.slice(0, 800)}…` : trimmed;
+/**
+ * How much of a sub-agent's output to INLINE in the result handed to the parent.
+ * The full output is always preserved in the saved artifact, so this is only a
+ * preview budget — anything past it is one `cat` away (progressive disclosure),
+ * never lost. ~8k chars ≈ 2k tokens.
+ */
+const INLINE_RESULT_CHARS = 8000;
+
+interface TocEntry { title: string; level: number; start: number; end: number; }
+
+/**
+ * Build a table of contents from the markdown headers in the sub-agent's output,
+ * with line ranges relative to the ARTIFACT FILE (offset by where the output
+ * begins in it). Computed in code from the agent's own headers — the model never
+ * supplies a line number, so the references can't drift. A section spans to the
+ * next header of the same-or-higher level (so a `##` includes its `###`
+ * children). Headers inside fenced code blocks are ignored. Returns [] when the
+ * output isn't meaningfully sectioned.
+ */
+function buildToc(fullText: string, resultStartLine: number): TocEntry[] {
+    const lines = fullText.split('\n');
+    const headers: { level: number; title: string; line: number }[] = [];
+    let inFence = false;
+    lines.forEach((ln, i) => {
+        if (/^\s*```/.test(ln)) { inFence = !inFence; return; }
+        if (inFence) return;
+        const m = /^(#{1,3})\s+(.+?)\s*$/.exec(ln);
+        if (m) headers.push({ level: m[1].length, title: m[2], line: i + 1 });
+    });
+    if (headers.length < 2) return [];
+    const lastLine = lines.length;
+    return headers.map((h, idx) => {
+        let end = lastLine;
+        for (let j = idx + 1; j < headers.length; j++) {
+            if (headers[j].level <= h.level) { end = headers[j].line - 1; break; }
+        }
+        return {
+            title: h.title,
+            level: h.level,
+            start: resultStartLine + h.line - 1,
+            end: resultStartLine + end - 1,
+        };
+    });
+}
+
+/**
+ * The result handed to the parent. The whole output when it fits; otherwise — if
+ * the output is sectioned and saved — a short lead-in plus a navigable table of
+ * contents with line ranges, so the parent jumps to the part it needs
+ * (`sed -n 'A,Bp' <file>`) instead of reading everything or re-delegating. Falls
+ * back to a flat preview for unsectioned output. No data is ever dropped.
+ */
+function buildInlineResult(fullText: string, savedTo?: string, resultStartLine?: number): string {
+    const trimmed = fullText.trim();
+    if (trimmed.length <= INLINE_RESULT_CHARS) return trimmed;
+
+    const toc = savedTo && resultStartLine != null ? buildToc(fullText, resultStartLine) : [];
+    if (toc.length >= 2) {
+        const minLevel = Math.min(...toc.map((s) => s.level));
+        const entries = toc
+            .map((s) => `${'  '.repeat(s.level - minLevel)}- ${s.title} — lines ${s.start}–${s.end}`)
+            .join('\n');
+        // Lead-in: the output's preamble before its first header, capped.
+        const headerIdx = trimmed.search(/^#{1,3}\s/m);
+        const leadRaw = (headerIdx > 0 ? trimmed.slice(0, headerIdx) : '').trim();
+        const lead = leadRaw.length > 600 ? `${leadRaw.slice(0, 600).trimEnd()}…` : leadRaw;
+        return `${lead ? `${lead}\n\n` : ''}This result is long (${trimmed.length} chars). The full output is saved to \`${savedTo}\` — read a section with \`sed -n 'START,ENDp' ${savedTo}\`:\n\n${entries}`;
+    }
+
+    // Unsectioned (or no saved file): flat preview + pointer.
+    const preview = trimmed.slice(0, INLINE_RESULT_CHARS).trimEnd();
+    const more = trimmed.length - INLINE_RESULT_CHARS;
+    const pointer = savedTo
+        ? ` The complete result is saved to \`${savedTo}\` — read it (\`cat ${savedTo}\`) if you need the rest.`
+        : '';
+    return `${preview}\n\n[… ${more} more characters not shown.${pointer}]`;
 }
 
 /**
@@ -881,27 +964,38 @@ export default class SubAgentPlugin implements Plugin {
             }
 
             const inferred = !completion;
+            // The sub-agent's complete deliverable (report summary → final answer
+            // → description of what it ran).
+            const fullText = resolvedSummary;
             const success: DelegationSuccessResult = {
                 status: 'completed',
                 delegationId,
-                summary: completion ? completion.summary : inferSummary(resolvedSummary),
+                summary: '', // finalized after we know whether/where the full output was saved
                 cached: false,
                 inferred: inferred || undefined,
                 filesCreated: completion?.files.length ? completion.files : undefined,
                 completionConfirmed: !inferred,
             };
 
-            if (this.shouldWriteArtifact(subAgent.artifactMode, 'success')) {
-                success.savedTo = await this.writeArtifact(
-                    subAgent.name,
-                    buildSuccessArtifactContent({
-                        agentName: subAgent.name,
-                        request,
-                        result: success,
-                        metadata: completion?.metadata,
-                    })
-                );
+            // Progressive disclosure: when the output is too long to inline, ALWAYS
+            // persist the full text (on top of the agent's artifactMode) so the
+            // preview can point at it — nothing is dropped, and the parent can read
+            // the rest on demand instead of re-delegating.
+            const willTruncate = fullText.trim().length > INLINE_RESULT_CHARS;
+            let resultStartLine: number | undefined;
+            if (willTruncate || this.shouldWriteArtifact(subAgent.artifactMode, 'success')) {
+                const artifact = buildSuccessArtifact({
+                    agentName: subAgent.name,
+                    request,
+                    fullOutput: fullText,
+                    result: success,
+                    metadata: completion?.metadata,
+                });
+                resultStartLine = artifact.resultStartLine;
+                success.savedTo = await this.writeArtifact(subAgent.name, artifact.content);
             }
+
+            success.summary = buildInlineResult(fullText, success.savedTo, resultStartLine);
 
             this.registry.set(subAgent.name, request, {
                 delegationId,
