@@ -49,6 +49,8 @@ import { ArtifactPanel } from '../artifacts/ArtifactPanel';
 import { ArtifactsContext } from '../artifacts/ArtifactsContext';
 import { ClarificationForm } from './ClarificationForm';
 import { PlanReviewForm } from './PlanReviewForm';
+import { CommandMenu } from './CommandMenu';
+import { useCommands, type Command, type PaletteCtx } from './command-providers';
 import { ContextGauge } from './ContextGauge';
 import { LiveActivity } from './LiveActivity';
 import { SessionSidebar } from './SessionSidebar';
@@ -82,12 +84,17 @@ function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
-function estimateCost(usage: SessionUsage | undefined, model: ModelOption | undefined): string {
-  if (!usage) return '$0.00';
+/**
+ * Estimated USD cost for the session, or null when it's free (every free
+ * OpenRouter model prices at 0) — we omit the chip rather than render a
+ * misleading "$0.00".
+ */
+function estimateCost(usage: SessionUsage | undefined, model: ModelOption | undefined): string | null {
+  if (!usage) return null;
   const cost =
     (usage.inputTokens / 1_000_000) * (model?.priceIn ?? 0) +
     (usage.outputTokens / 1_000_000) * (model?.priceOut ?? 0);
-  if (cost === 0) return '$0.00';
+  if (!cost) return null;
   return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`;
 }
 
@@ -131,7 +138,14 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
   const searchProviderRef = useRef(searchProvider);
   searchProviderRef.current = searchProvider;
 
-  const { messages, sendMessage, status, addToolApprovalResponse, error, stop, setMessages } = useChat({
+  // Recover an interrupted run after the device sleeps: track whether a run is
+  // in flight (persisted, so it survives a reload) and resume on wake.
+  const [runInFlight, setRunInFlight] = useState<boolean>(() => {
+    try { return localStorage.getItem(`vibes_inflight_${sessionId}`) === '1'; } catch { return false; }
+  });
+
+  const { messages, sendMessage, status, addToolApprovalResponse, error, stop, setMessages, resumeStream } = useChat({
+    id: sessionId,
     transport: new DefaultChatTransport({
       api: '/api/vibe/stream',
       headers: { 'Content-Type': 'application/json' },
@@ -144,8 +158,12 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
           search_provider: searchProviderRef.current || undefined,
         },
       }),
+      // Wake/online recovery: the AI SDK calls this to reconnect to an
+      // interrupted run; the server resolves the session's active stream.
+      prepareReconnectToStreamRequest: ({ id }) => ({ api: `/api/vibe/${id}/reconnect` }),
     }),
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+    onFinish: () => setRunInFlight(false),
 
     onData: (dataPart: any) => {
       const { type, data } = dataPart;
@@ -239,6 +257,52 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
     };
     fetchHistory();
   }, [sessionId, setMessages]);
+
+  // ── interrupted-run recovery (sleep/wake) ───────────────────────────────
+  // Mark a run in flight when it starts; cleared on a clean finish (onFinish).
+  useEffect(() => {
+    if (status === 'submitted' || status === 'streaming') setRunInFlight(true);
+  }, [status]);
+
+  // Persist the flag so a reload mid-run still knows to recover.
+  useEffect(() => {
+    try {
+      if (runInFlight) localStorage.setItem(`vibes_inflight_${sessionId}`, '1');
+      else localStorage.removeItem(`vibes_inflight_${sessionId}`);
+    } catch { /* ignore */ }
+  }, [runInFlight, sessionId]);
+
+  // On wake (tab visible / back online / window focus) try to resume the run.
+  const statusRef = useRef(status); statusRef.current = status;
+  const inFlightRef = useRef(runInFlight); inFlightRef.current = runInFlight;
+  const loadingRef = useRef(isLoadingHistory); loadingRef.current = isLoadingHistory;
+  useEffect(() => {
+    const tryResume = () => {
+      if (!inFlightRef.current || loadingRef.current) return;
+      if (statusRef.current === 'streaming' || statusRef.current === 'submitted') return;
+      void resumeStream?.();
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') tryResume(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', tryResume);
+    window.addEventListener('focus', tryResume);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', tryResume);
+      window.removeEventListener('focus', tryResume);
+    };
+  }, [resumeStream]);
+
+  // Reload mid-run: once history has loaded and we're idle, attempt a resume.
+  useEffect(() => {
+    if (!isLoadingHistory && inFlightRef.current && statusRef.current === 'ready') void resumeStream?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoadingHistory]);
+
+  const resumeInterrupted = useCallback(() => {
+    setRunInFlight(false); // cleared, then re-set when the new run starts
+    sendMessage({ text: 'The previous run was interrupted (my device slept). Continue the task from where you left off.' });
+  }, [sendMessage]);
 
   // Load the built-in sub-agent roster for the composer's agent picker.
   useEffect(() => {
@@ -642,6 +706,58 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
     }
   };
 
+  // ── slash-command palette ──────────────────────────────────────────────────
+  const commands = useCommands();
+  const [commandForm, setCommandForm] = useState<React.ReactNode>(null);
+  const [menuIndex, setMenuIndex] = useState(0);
+
+  const slashActive = input.startsWith('/') && !input.includes('\n');
+  const slashQuery = slashActive ? input.slice(1).trim().toLowerCase() : '';
+  const filteredCommands = useMemo<Command[]>(() => {
+    if (!slashActive) return [];
+    const toks = slashQuery.split(/\s+/).filter(Boolean);
+    return commands
+      .filter((c) => {
+        const hay = [c.label, c.slug ?? '', c.kind, ...(c.keywords ?? [])].join(' ').toLowerCase();
+        return toks.every((t) => hay.includes(t));
+      })
+      .slice(0, 8);
+  }, [slashActive, slashQuery, commands]);
+
+  useEffect(() => { setMenuIndex(0); }, [slashQuery, slashActive]);
+
+  const runWorkflowCmd = useCallback(async (nameOrId: string, inputs: Record<string, unknown>) => {
+    setCommandForm(null);
+    setInput('');
+    try {
+      const res = await fetch(`/api/vibe/${sessionId}/workflows/${encodeURIComponent(nameOrId)}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inputs, model: modelRef.current || undefined }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!data?.success) { console.error('[workflow run] failed:', data); return; }
+      // Tail the (resumable) run into the thread.
+      setActiveAgent('main');
+      stick.current = true;
+      setAtBottom(true);
+      requestAnimationFrame(() => scrollToBottom(false));
+      await resumeStream?.();
+    } catch (err) {
+      console.error('[workflow run] error:', err);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, resumeStream]);
+
+  const paletteCtx: PaletteCtx = {
+    openForm: (form) => { setCommandForm(form); setInput(''); },
+    closeForm: () => setCommandForm(null),
+    sendUserMessage,
+    insertText: (t) => setInput(t),
+    runWorkflow: runWorkflowCmd,
+  };
+  const selectCommand = (c: Command) => c.run(paletteCtx);
+
   const displayMessages = activeAssistant ? messages.slice(0, -1) : messages;
   // Has the active turn produced conversational text/reasoning yet? (Tool work
   // lives in the activity rail, so it doesn't count as a visible "answer".)
@@ -881,6 +997,26 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
 
       {/* Composer */}
       <div className="shrink-0 px-4 pb-5 pt-3">
+        {runInFlight && !isLoadingHistory && (status === 'ready' || status === 'error') && (
+          <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2 rounded-xl border border-[color:var(--color-amber)]/40 bg-[rgba(240,184,108,0.08)] px-3.5 py-2.5 text-[12.5px] text-[color:var(--color-ink-soft)]">
+            <RefreshCw className="h-4 w-4 shrink-0 text-[color:var(--color-amber)]" />
+            <span className="min-w-0 flex-1">A run was interrupted — your device may have slept. The work so far is saved.</span>
+            <button
+              type="button"
+              onClick={resumeInterrupted}
+              className="shrink-0 rounded-md bg-[color:var(--color-amber)] px-2.5 py-1 text-[12px] font-medium text-[color:var(--color-ground)] hover:opacity-90"
+            >
+              Continue
+            </button>
+            <button
+              type="button"
+              onClick={() => setRunInFlight(false)}
+              className="shrink-0 rounded-md px-2 py-1 text-[12px] text-[color:var(--color-ink-faint)] hover:text-[color:var(--color-ink)]"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {activeClarification && !isLoading && (
           <ClarificationForm
             clarification={activeClarification}
@@ -891,6 +1027,15 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
           <PlanReviewForm
             review={activePlanReview}
             onSubmit={(text) => sendUserMessage(text)}
+          />
+        )}
+        {commandForm}
+        {slashActive && (
+          <CommandMenu
+            commands={filteredCommands}
+            activeIndex={menuIndex}
+            onSelect={selectCommand}
+            onHover={setMenuIndex}
           />
         )}
         <AgentTabs agents={agents} active={effectiveAgent} onSelect={setActiveAgent} />
@@ -905,6 +1050,31 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
               autoResize
               className="block w-full min-h-[76px] px-0 py-0 text-[15px] leading-relaxed text-[color:var(--color-ink)] placeholder:text-[color:var(--color-ink-faint)]"
               onKeyDown={(e) => {
+                // Inline args: "/<name> key=val key2=\"…\"" + Enter → run directly
+                // (works even when the arg tokens don't match any menu item).
+                if (slashActive && e.key === 'Enter' && !e.shiftKey) {
+                  const bodyStr = input.slice(1);
+                  const sp = bodyStr.indexOf(' ');
+                  if (sp > 0) {
+                    const token = bodyStr.slice(0, sp).toLowerCase();
+                    const rest = bodyStr.slice(sp + 1).trim();
+                    const wf = commands.find((c) => c.kind === 'workflow' && (c.label.toLowerCase() === token || c.slug?.toLowerCase() === token));
+                    if (wf && rest) {
+                      e.preventDefault();
+                      const args: Record<string, string> = {};
+                      for (const m of rest.matchAll(/([A-Za-z0-9_]+)=("([^"]*)"|'([^']*)'|(\S+))/g)) args[m[1]] = m[3] ?? m[4] ?? m[5] ?? '';
+                      runWorkflowCmd(wf.label, args);
+                      setInput('');
+                      return;
+                    }
+                  }
+                }
+                if (slashActive && filteredCommands.length > 0) {
+                  if (e.key === 'ArrowDown') { e.preventDefault(); setMenuIndex((i) => (i + 1) % filteredCommands.length); return; }
+                  if (e.key === 'ArrowUp') { e.preventDefault(); setMenuIndex((i) => (i - 1 + filteredCommands.length) % filteredCommands.length); return; }
+                  if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') { e.preventDefault(); selectCommand(filteredCommands[menuIndex]); return; }
+                  if (e.key === 'Escape') { e.preventDefault(); setInput(''); return; }
+                }
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   handleSubmit(e);
@@ -950,17 +1120,32 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
         {/* Session + context meta — pulled below the composer so the in-box
             footer row stays free for commands, modes, and attachments. */}
         <div className="mx-auto mt-2 flex max-w-3xl items-center gap-3 px-1">
-          <div
-            className="flex items-center gap-1.5 font-mono text-[11px] text-[color:var(--color-ink-faint)]"
-            title="Total tokens spent this session (summed across every step) · estimated cost"
-          >
-            <Coins className="h-3.5 w-3.5" />
-            <span className="text-[color:var(--color-ink-soft)]">{formatTokens(usage?.totalTokens ?? 0)}</span>
-            <span>spent</span>
-            <span className="opacity-40">·</span>
-            <span>{estimateCost(usage, models.find((m) => m.id === model))}</span>
-          </div>
-          {contextUsage && <ContextGauge usage={contextUsage} />}
+          {/* Primary: current context-window occupancy (Claude-Code style). */}
+          {contextUsage ? (
+            <ContextGauge usage={contextUsage} />
+          ) : (
+            <span className="font-mono text-[11px] text-[color:var(--color-ink-faint)]">context · idle</span>
+          )}
+          <span className="text-[color:var(--color-ink-faint)] opacity-30">·</span>
+          {/* Secondary: cumulative tokens billed this session (+ cost when paid). */}
+          {(() => {
+            const cost = estimateCost(usage, models.find((m) => m.id === model));
+            return (
+              <div
+                className="flex items-center gap-1.5 font-mono text-[11px] text-[color:var(--color-ink-faint)]"
+                title="Tokens billed this session (each step re-sends the growing context, so this is cumulative — not the current window)."
+              >
+                <Coins className="h-3.5 w-3.5" />
+                <span>{formatTokens(usage?.totalTokens ?? 0)}</span>
+                {cost && (
+                  <>
+                    <span className="opacity-40">·</span>
+                    <span className="text-[color:var(--color-ink-soft)]">{cost}</span>
+                  </>
+                )}
+              </div>
+            );
+          })()}
           {viewingMain && panelArtifacts.length > 0 && !panelOpen && (
             <button
               type="button"

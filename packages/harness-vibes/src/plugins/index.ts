@@ -9,6 +9,17 @@ import MemoryPlugin from "./memory";
 import SummarizationPlugin, { type SummarizationConfig } from "./summarization";
 import ArtifactPlugin, { type ArtifactKind, type ArtifactPluginConfig } from "./artifact";
 import ClarificationPlugin, { ASK_USER_TOOL_NAME } from "./clarification";
+import WorkflowPlugin, {
+    type WorkflowPluginConfig,
+    type Workflow,
+    type WorkflowStep,
+    type StepKind,
+    validateWorkflow,
+    type WorkflowValidation,
+    runWorkflowToStream,
+    type RunWorkflowOptions,
+    type RunWorkflowOutcome,
+} from "./workflow";
 import WebSearchPlugin, {
     type WebSearchPluginConfig,
     type SearchProvider,
@@ -37,6 +48,16 @@ export {
     type ArtifactPluginConfig,
     ClarificationPlugin,
     ASK_USER_TOOL_NAME,
+    WorkflowPlugin,
+    type WorkflowPluginConfig,
+    type Workflow,
+    type WorkflowStep,
+    type StepKind,
+    validateWorkflow,
+    type WorkflowValidation,
+    runWorkflowToStream,
+    type RunWorkflowOptions,
+    type RunWorkflowOutcome,
     WebSearchPlugin,
     type WebSearchPluginConfig,
     type SearchProvider,

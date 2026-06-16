@@ -178,7 +178,7 @@ export interface VibesDataParts extends Record<string, unknown> {
         stderr?: string;
     };
 
-    /** Filesystem operation (FilesystemPlugin / BashPlugin's edit_file). */
+    /** Filesystem operation (FilesystemPlugin: read / write / edit_file / list_files). */
     file_operation: {
         operation: 'read' | 'write' | 'list' | 'edit';
         path: string;
@@ -322,6 +322,39 @@ export interface VibesDataParts extends Record<string, unknown> {
         path?: string;
         /** One-line description of what the artifact is. */
         summary?: string;
+    };
+
+    /**
+     * A declarative workflow (WorkflowPlugin) being saved or executed. The
+     * workflow engine runs a graph of AI-SDK-pattern steps (prompt chain,
+     * route, parallel, orchestrator-worker, evaluator-optimizer, sub-workflow)
+     * making real model calls. Emitted with a stable id so step updates replace
+     * the same part in place as the run progresses.
+     */
+    workflow: {
+        id: string;
+        name: string;
+        /** saved = library write · run = an execution snapshot, re-emitted as it progresses. */
+        action: 'saved' | 'run';
+        description?: string;
+        /** Run status (action === 'run'). */
+        status?: 'running' | 'complete' | 'failed';
+        /** Live, accumulating list of executed steps in order (action === 'run'). */
+        steps?: Array<{
+            id: string;
+            kind: 'prompt' | 'route' | 'parallel' | 'orchestrator' | 'evaluator' | 'pipeline' | 'workflow' | 'action';
+            title?: string;
+            status: 'running' | 'complete' | 'failed';
+            /** Nesting depth for indentation (top-level = 0). */
+            depth?: number;
+            /** Short summary of the step's output (complete) or the error. */
+            summary?: string;
+            /** Fuller output preview, shown when the step is expanded in the UI. */
+            detail?: string;
+        }>;
+        /** Running count of model calls so far (cost awareness). */
+        modelCalls?: number;
+        error?: string;
     };
 }
 
@@ -785,6 +818,19 @@ export class DataStreamWriter {
             type: 'data-plan_review',
             id: `plan_review-${review.id}`,
             data: review,
+        } as const);
+    }
+
+    /**
+     * Write/replace a workflow update (library save or execution progress).
+     * Stable `workflow-<id>` id so run/step updates replace in place.
+     */
+    writeWorkflow(workflow: VibesDataParts['workflow']): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-workflow',
+            id: `workflow-${workflow.id}`,
+            data: workflow,
         } as const);
     }
 
