@@ -7,10 +7,13 @@ class TestAgent extends AgentCore {
   compress(msgs: ModelMessage[]) {
     return this.compressLargeContent(msgs);
   }
+  prune(msgs: ModelMessage[]) {
+    return this.pruneMessages(msgs);
+  }
 }
 
-function makeAgent() {
-  return new TestAgent({ model: {} as any, instructions: 'test' });
+function makeAgent(config: Record<string, unknown> = {}) {
+  return new TestAgent({ model: {} as any, instructions: 'test', ...config });
 }
 
 const big = 'X'.repeat(5000);
@@ -71,5 +74,37 @@ describe('Context compression', () => {
     // assistant's large text part is shrunk
     expect(out[1].content[1].type).toBe('text');
     expect(out[1].content[1].text.length).toBeLessThan(big.length);
+  });
+});
+
+describe('Compression gating (phase 1 by context budget)', () => {
+  const bigRead = (): any[] => [
+    { role: 'user', content: 'read the file' },
+    { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'readFile', input: { path: 'a.ts' } }] },
+    { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'c1', toolName: 'readFile', output: { type: 'text', value: big } }] },
+  ];
+
+  test('keeps a large read VERBATIM while the context has headroom', async () => {
+    // Default 128k window → ~5k-char read is ~1.3k tokens, far below the gate.
+    const agent = makeAgent();
+    const out: any[] = await agent.prune(bigRead());
+    expect(out[2].content[0].output.value).toBe(big); // untouched
+    expect(out[2].content[0].output.value).not.toContain('truncated');
+  });
+
+  test('compresses the same read once the conversation nears the window', async () => {
+    // Tiny window so the ~1.3k-token conversation is over the 0.7 gate but
+    // under the 0.95 emergency ceiling (no message dropping).
+    const agent = makeAgent({ contextWindow: 1500 });
+    const out: any[] = await agent.prune(bigRead());
+    expect(out).toHaveLength(3); // nothing dropped
+    expect(out[2].content[0].output.value.length).toBeLessThan(big.length);
+    expect(out[2].content[0].output.value).toContain('truncated');
+  });
+
+  test('compressionGateRatio: 0 restores eager compression', async () => {
+    const agent = makeAgent({ compressionGateRatio: 0 });
+    const out: any[] = await agent.prune(bigRead());
+    expect(out[2].content[0].output.value).toContain('truncated');
   });
 });

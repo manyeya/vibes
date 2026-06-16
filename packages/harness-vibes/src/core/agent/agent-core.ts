@@ -95,8 +95,21 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
     protected modelOverride?: LanguageModel;
     /** Error log tracked separately from context (never summarized) */
     protected errorLog: ErrorEntry[] = [];
-    /** Threshold for content compression (characters) */
+    /** Min characters a single payload must reach before in-place compression shrinks it. */
     protected compressionThreshold: number = 3000;
+    /**
+     * Most recent estimate (chars/4) of the context actually prepared for the
+     * model. Emitted proactively as the gauge before each step, and used as a
+     * fallback for spend + gauge when a provider omits per-step token usage.
+     */
+    protected lastContextEstimate: number = 0;
+    /**
+     * Fraction of the context window the whole conversation must reach before
+     * per-message restorable compression runs at all. Below it, large reads are
+     * kept verbatim regardless of `compressionThreshold` — so a big file read in
+     * an otherwise-empty context isn't gutted. (0 = compress eagerly.)
+     */
+    protected compressionGateRatio: number = 0.7;
     /** Maximum errors to show in recent errors section */
     protected maxRecentErrors: number = 5;
 
@@ -197,6 +210,8 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
         this.maxContextMessages = config.maxContextMessages ?? 50;
         this.contextWindow = config.contextWindow ?? 128000;
         this.contextCompressionRatio = config.contextCompressionRatio ?? 0.7;
+        this.compressionThreshold = config.compressionThreshold ?? this.compressionThreshold;
+        this.compressionGateRatio = config.compressionGateRatio ?? this.compressionGateRatio;
         this.emitContextGauge = config.emitContextGauge ?? true;
         this.maxRetries = config.maxRetries ?? 2;
         this.customTools = config.tools || {};
@@ -240,30 +255,51 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
      */
     protected recordStepUsage(step: StepResult<ToolSet>): void {
         const u = step.usage;
-        if (!u) return;
-
-        const inputTokens = u.inputTokens ?? 0;
-        const outputTokens = u.outputTokens ?? 0;
+        const inputTokens = u?.inputTokens ?? 0;
+        const outputTokens = u?.outputTokens ?? 0;
         // Some providers report input/output but omit a combined total; derive
         // it so cumulative spend never sticks at zero.
-        const totalTokens = u.totalTokens ?? inputTokens + outputTokens;
+        const totalTokens = u?.totalTokens ?? inputTokens + outputTokens;
 
-        this.lastStreamUsage.inputTokens += inputTokens;
-        this.lastStreamUsage.outputTokens += outputTokens;
-        this.lastStreamUsage.totalTokens += totalTokens;
-
-        // Live gauge: the freshest step's input+output is how full the context is
-        // right now. Overwrites in place (stable id) so it tracks each step.
-        const writer = this.activeStreamContext?.writer;
-        const used = inputTokens + outputTokens;
-        if (this.emitContextGauge && writer && used > 0 && this.contextWindow > 0) {
-            writer.writeContextUsage({
-                usedTokens: used,
-                contextWindow: this.contextWindow,
-                threshold: this.contextCompressionRatio,
-                compressAt: Math.round(this.contextWindow * this.contextCompressionRatio),
-            });
+        if (inputTokens > 0 || outputTokens > 0) {
+            this.lastStreamUsage.inputTokens += inputTokens;
+            this.lastStreamUsage.outputTokens += outputTokens;
+            this.lastStreamUsage.totalTokens += totalTokens;
+            // Live gauge: the freshest step's input+output is how full the
+            // context is now — ground truth from the provider (includes the
+            // system prompt + tool schemas it actually saw).
+            this.writeContextGauge(inputTokens + outputTokens);
+        } else if (this.lastContextEstimate > 0) {
+            // Provider omitted usage entirely (some OpenRouter models do). Fall
+            // back to the prepared-context estimate so neither the gauge nor
+            // cumulative spend silently sticks at zero.
+            this.lastStreamUsage.inputTokens += this.lastContextEstimate;
+            this.lastStreamUsage.totalTokens += this.lastContextEstimate;
+            this.writeContextGauge(this.lastContextEstimate);
         }
+    }
+
+    /** Rough token estimate (chars/4) for a system prompt + message list. */
+    protected estimateContextTokens(system: string, messages: ModelMessage[]): number {
+        let chars = system.length;
+        for (const m of messages) chars += extractMessageContent(m).length;
+        return Math.round(chars / 4);
+    }
+
+    /**
+     * Emit/refresh the live context-window gauge with the given occupancy.
+     * Uses a stable data-part id so each call overwrites the last — the meter
+     * tracks the current window fullness rather than accumulating.
+     */
+    protected writeContextGauge(usedTokens: number): void {
+        const writer = this.activeStreamContext?.writer;
+        if (!this.emitContextGauge || !writer || usedTokens <= 0 || this.contextWindow <= 0) return;
+        writer.writeContextUsage({
+            usedTokens,
+            contextWindow: this.contextWindow,
+            threshold: this.contextCompressionRatio,
+            compressAt: Math.round(this.contextWindow * this.contextCompressionRatio),
+        });
     }
 
     /**
@@ -479,6 +515,16 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
         const systemOverride = recentErrors.length > 0
             ? `${this.currentBaseInstructions}\n\n${formatRecentErrors(recentErrors)}`
             : undefined;
+
+        // Proactively emit the context gauge from the prepared context, BEFORE
+        // the model call — so the meter appears as soon as a turn starts and
+        // still works for providers that omit per-step usage. recordStepUsage
+        // overwrites it with the provider's ground truth when available.
+        this.lastContextEstimate = this.estimateContextTokens(
+            systemOverride ?? this.currentBaseInstructions ?? '',
+            prunedMessages,
+        );
+        this.writeContextGauge(this.lastContextEstimate);
 
         // 3. Fan out to plugin.prepareStep
         const pluginStepOptions = {
@@ -798,17 +844,24 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
      * 2. Second pass: Truncation to max messages if still over limit
      */
     protected async pruneMessages(messages: ModelMessage[]): Promise<ModelMessage[]> {
-        // Phase 1: lossless restorable compression of large tool outputs.
-        const compressed = await this.compressLargeContent(messages);
+        const estimateTokens = (msgs: ModelMessage[]) =>
+            msgs.reduce((acc, msg) => acc + extractMessageContent(msg).length, 0) / 4;
+
+        // Phase 1: lossless restorable compression of large tool outputs — but
+        // only once the WHOLE conversation is approaching the window. While
+        // there's headroom we keep full reads verbatim, so a single large file
+        // read in an otherwise-empty context is no longer gutted to a preview.
+        // (`compressionGateRatio` = 0 restores the old eager behaviour.)
+        const compressionFloor = this.contextWindow * this.compressionGateRatio;
+        const compressed = estimateTokens(messages) >= compressionFloor
+            ? await this.compressLargeContent(messages)
+            : messages;
 
         // Token-based: the SummarizationPlugin handles compression at the
         // configured ratio (e.g. 70% of the window). This hard truncation is a
         // last-resort safety net only — it fires near the very top of the
         // window so it doesn't pre-empt summarization or trim short
         // conversations by message count.
-        const estimateTokens = (msgs: ModelMessage[]) =>
-            msgs.reduce((acc, msg) => acc + extractMessageContent(msg).length, 0) / 4;
-
         const emergencyCeiling = this.contextWindow * 0.95;
         if (estimateTokens(compressed) < emergencyCeiling) {
             return compressed;
