@@ -128,6 +128,24 @@ export default class FilesystemPlugin implements Plugin {
         }
     }
 
+    /** The changed hunk between two strings — lines left after trimming shared prefix/suffix. */
+    private computeDiff(oldStr: string, newStr: string): { removed: string[]; added: string[] } {
+        const oldLines = oldStr.split('\n');
+        const newLines = newStr.split('\n');
+        let start = 0;
+        while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start++;
+        let end = 0;
+        while (
+            end < oldLines.length - start &&
+            end < newLines.length - start &&
+            oldLines[oldLines.length - 1 - end] === newLines[newLines.length - 1 - end]
+        ) end++;
+        return {
+            removed: oldLines.slice(start, oldLines.length - end),
+            added: newLines.slice(start, newLines.length - end),
+        };
+    }
+
     get tools() {
         return {
 
@@ -189,6 +207,74 @@ export default class FilesystemPlugin implements Plugin {
                 },
             }),
 
+            edit_file: tool({
+                description:
+                    'Make a surgical edit to an EXISTING file by replacing an exact string. ' +
+                    'Preferred over rewriting the whole file: no regex or escaping, and it shows ' +
+                    'a diff. old_string must match the file exactly (including indentation) and be ' +
+                    'unique, unless replace_all is set. To create a new file, use writeFile().',
+                inputSchema: z.object({
+                    path: z.string().describe('Relative path to the file in the workspace'),
+                    old_string: z.string().describe('Exact text to replace — must be unique in the file unless replace_all'),
+                    new_string: z.string().describe('Replacement text'),
+                    replace_all: z.boolean().optional().describe('Replace every occurrence instead of requiring a unique match'),
+                }),
+                execute: async ({ path: relativePath, old_string, new_string, replace_all }) => {
+                    if (old_string === new_string) {
+                        throw new Error('old_string and new_string are identical — nothing to change.');
+                    }
+                    const operation = this.streamContext?.createOperation({
+                        name: 'edit-file',
+                        toolName: 'edit_file',
+                        plugin: this.name,
+                        heartbeatEnabled: false,
+                    });
+                    const opId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+                    this.writer?.writeFileOperation(opId, 'edit', relativePath, 'running');
+
+                    operation?.milestone(`Resolving ${relativePath}`, { phase: 'resolve' });
+                    if (!await this.sandbox.exists(relativePath)) {
+                        throw new Error(`File not found: ${relativePath} in workspace`);
+                    }
+                    const content = await this.sandbox.readFile(relativePath);
+
+                    const occurrences = content.split(old_string).length - 1;
+                    if (occurrences === 0) {
+                        throw new Error(
+                            `old_string not found in ${relativePath}. It must match the file exactly, including whitespace.`,
+                        );
+                    }
+                    if (occurrences > 1 && !replace_all) {
+                        throw new Error(
+                            `old_string appears ${occurrences} times in ${relativePath}. ` +
+                            'Add surrounding context to make it unique, or set replace_all: true.',
+                        );
+                    }
+
+                    // Literal replacement — a function replacer stops `$&`/`$1` in
+                    // new_string from being interpreted as regex backreferences.
+                    const next = replace_all
+                        ? content.split(old_string).join(new_string)
+                        : content.replace(old_string, () => new_string);
+
+                    operation?.milestone(`Writing ${relativePath}`, { phase: 'write' });
+                    await this.sandbox.writeFile(relativePath, next);
+                    await this.trackFile(relativePath);
+
+                    const diff = this.computeDiff(old_string, new_string);
+                    const replacements = replace_all ? occurrences : 1;
+                    operation?.complete(`Edited ${relativePath} (+${diff.added.length} -${diff.removed.length})`, {
+                        phase: 'complete',
+                    });
+                    this.writer?.writeFileOperation(opId, 'edit', relativePath, 'complete', {
+                        added: diff.added.length,
+                        removed: diff.removed.length,
+                        diff: { removed: diff.removed.slice(0, 30), added: diff.added.slice(0, 30) },
+                    });
+                    return { success: true, path: relativePath, replacements };
+                },
+            }),
+
             list_files: tool({
                 description: 'List files in the workspace recursively or at root.',
                 inputSchema: z.object({
@@ -226,6 +312,7 @@ export default class FilesystemPlugin implements Plugin {
 You have access to a sandboxed workspace directory.
 - Your workspace root is: ${this.baseDir}
 - Use readFile() and writeFile() to manage files in your workspace.
+- Use edit_file() to change an existing file: an exact old_string→new_string swap (no regex/escaping, shows a diff). Prefer it over rewriting a whole file with writeFile().
 - Use list_files() to explore your workspace structure.
 - **Sub-agent results** are saved to \`subagent_results/\` within your workspace. Use the structured delegation result first; read the artifact only when the summary is insufficient or you need audit/debug detail.
 - Treat this workspace as your primary repository for manuscripts, code, and findings.`;

@@ -1,6 +1,5 @@
 import * as fs from "fs/promises";
-import { tool, type Tool, type UIMessageStreamWriter } from "ai";
-import z from "zod";
+import { type UIMessageStreamWriter } from "ai";
 import {
     createBashTool,
     type BashToolkit,
@@ -39,6 +38,10 @@ export type BashPluginOptions = string | { sandbox?: Sandbox; baseDir?: string }
  * artifact plugins read/write through — keeping the shell and file views in
  * sync. The plugin keeps `bash-tool`'s tool definition/prompt and layers the
  * activity-rail streaming on top via the sandbox adapter's `executeCommand`.
+ *
+ * Bash is just bash: running commands and exploring the workspace. Reading,
+ * writing and editing file *content* is the job of the dedicated file tools
+ * (`readFile` / `writeFile` / `edit_file`) in {@link FilesystemPlugin}.
  */
 export default class BashPlugin implements Plugin {
     name = 'BashPlugin';
@@ -48,10 +51,6 @@ export default class BashPlugin implements Plugin {
     private baseDir: string;
     /** The `bash-tool` toolkit, built once in {@link waitReady}. */
     private bashTool?: BashToolkit['tools']['bash'];
-    /** The just-bash interpreter, reused by `bash` and `edit_file`. */
-    private engine?: Bash;
-    /** Structured surgical-edit tool, built once in {@link waitReady}. */
-    private editTool?: Tool<any, any>;
 
     constructor(options: BashPluginOptions = 'workspace') {
         if (typeof options === 'string') {
@@ -122,14 +121,30 @@ export default class BashPlugin implements Plugin {
             sandbox: adapter,
         });
         this.bashTool = toolkit.tools.bash;
-        // edit_file shares the SAME interpreter, so its reads/writes hit exactly
-        // the filesystem the shell sees.
-        this.engine = engine;
-        this.editTool = this.makeEditTool();
+    }
+
+    /**
+     * Translate absolute host paths that point INTO the workspace root into the
+     * interpreter's virtual root. just-bash mounts the workspace at `/`, so a
+     * command using the real on-disk path (e.g. `ls /Users/me/repo/src` when the
+     * workspace IS /Users/me/repo) would otherwise resolve *below* the root
+     * (`/Users/me/repo/Users/me/repo/src`) and fail with "No such file or
+     * directory". Rewriting the prefix to `/` makes those commands just work.
+     */
+    private toWorkspacePath(command: string): string {
+        const root = this.baseDir.replace(/\/+$/, '');
+        if (!root || root === '/') return command;
+        const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return command
+            // "<root>/foo" → "/foo"
+            .replace(new RegExp(escaped + '/', 'g'), '/')
+            // bare "<root>" (followed by space / quote / end) → "/"
+            .replace(new RegExp(escaped + `(?=\\s|$|["'\`])`, 'g'), '/');
     }
 
     /** Run one command through just-bash, streaming its lifecycle to the UI. */
     private async runCommand(engine: Bash, command: string): Promise<CommandResult> {
+        const normalized = this.toWorkspacePath(command);
         const operation = this.streamContext?.createOperation({
             name: 'bash-command',
             toolName: 'bash',
@@ -139,7 +154,7 @@ export default class BashPlugin implements Plugin {
         // bash-tool prepends `cd "<destination>" && ` to every command so it runs
         // in the working dir; strip that bookkeeping from what the UI card shows
         // (the real command still runs with it). Destination is the root ("/").
-        const display = command.replace(/^cd "\/" && /, '');
+        const display = normalized.replace(/^cd "\/" && /, '');
         const preview = display.length > 120 ? `${display.slice(0, 117)}...` : display;
         const cmdId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
         const trunc = (s: string) => (s.length > 600 ? `${s.slice(0, 600)}…` : s);
@@ -147,7 +162,7 @@ export default class BashPlugin implements Plugin {
         operation?.milestone(`Running command: ${preview}`, { phase: 'execute' });
         this.writer?.writeCommand(cmdId, display, 'running');
 
-        const res = await engine.exec(command, { rawScript: true });
+        const res = await engine.exec(normalized, { rawScript: true });
         const result: CommandResult = {
             stdout: res.stdout ?? '',
             stderr: res.stderr ?? '',
@@ -163,124 +178,26 @@ export default class BashPlugin implements Plugin {
         return result;
     }
 
-    /**
-     * The `edit_file` tool: a surgical exact-string replacement done in the
-     * interpreter's filesystem (no shell, no regex/escaping), which sidesteps
-     * sed-dialect and quoting fragility and streams a real diff card.
-     */
-    private makeEditTool(): Tool<any, any> {
-        return tool({
-            description:
-                'Make a surgical edit to an EXISTING file by replacing an exact string. ' +
-                'Preferred over sed/awk for changing code: no regex or shell escaping, and it ' +
-                'shows a diff. old_string must match the file exactly (including indentation) ' +
-                'and be unique, unless replace_all is set. To create a new file, use bash (heredoc).',
-            inputSchema: z.object({
-                path: z.string().describe('Relative path to the file in the workspace'),
-                old_string: z.string().describe('Exact text to replace — must be unique in the file unless replace_all'),
-                new_string: z.string().describe('Replacement text'),
-                replace_all: z.boolean().optional().describe('Replace every occurrence instead of requiring a unique match'),
-            }),
-            execute: async ({ path: relativePath, old_string, new_string, replace_all }) => {
-                const engine = this.engine;
-                if (!engine) throw new Error('edit_file is not ready');
-                if (old_string === new_string) {
-                    throw new Error('old_string and new_string are identical — nothing to change.');
-                }
-                const operation = this.streamContext?.createOperation({
-                    name: 'edit-file', toolName: 'edit_file', plugin: this.name, heartbeatEnabled: false,
-                });
-                const opId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-                const vpath = relativePath.startsWith('/') ? relativePath : `/${relativePath}`;
-
-                let content: string;
-                try {
-                    content = await engine.readFile(vpath);
-                } catch {
-                    throw new Error(`File not found: ${relativePath}`);
-                }
-
-                const occurrences = content.split(old_string).length - 1;
-                if (occurrences === 0) {
-                    throw new Error(
-                        `old_string not found in ${relativePath}. It must match the file exactly, including whitespace.`,
-                    );
-                }
-                if (occurrences > 1 && !replace_all) {
-                    throw new Error(
-                        `old_string appears ${occurrences} times in ${relativePath}. ` +
-                        'Add surrounding context to make it unique, or set replace_all: true.',
-                    );
-                }
-
-                // Literal replacement — a function replacer stops `$&`/`$1` in
-                // new_string from being interpreted as regex backreferences.
-                const next = replace_all
-                    ? content.split(old_string).join(new_string)
-                    : content.replace(old_string, () => new_string);
-                await engine.writeFile(vpath, next);
-
-                const diff = this.computeDiff(old_string, new_string);
-                const replacements = replace_all ? occurrences : 1;
-                operation?.complete(`Edited ${relativePath} (+${diff.added.length} -${diff.removed.length})`, {
-                    phase: 'complete',
-                });
-                this.writer?.writeFileOperation(opId, 'edit', relativePath, 'complete', {
-                    added: diff.added.length,
-                    removed: diff.removed.length,
-                    diff: { removed: diff.removed.slice(0, 30), added: diff.added.slice(0, 30) },
-                });
-                return { success: true, path: relativePath, replacements };
-            },
-        });
-    }
-
-    /** The changed hunk between two strings — lines left after trimming shared prefix/suffix. */
-    private computeDiff(oldStr: string, newStr: string): { removed: string[]; added: string[] } {
-        const oldLines = oldStr.split('\n');
-        const newLines = newStr.split('\n');
-        let start = 0;
-        while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start++;
-        let end = 0;
-        while (
-            end < oldLines.length - start &&
-            end < newLines.length - start &&
-            oldLines[oldLines.length - 1 - end] === newLines[newLines.length - 1 - end]
-        ) end++;
-        return {
-            removed: oldLines.slice(start, oldLines.length - end),
-            added: newLines.slice(start, newLines.length - end),
-        };
-    }
-
     get tools(): Record<string, any> {
         if (!this.bashTool) return {};
-        return this.editTool ? { bash: this.bashTool, edit_file: this.editTool } : { bash: this.bashTool };
+        return { bash: this.bashTool };
     }
 
     modifySystemPrompt(prompt: string): string {
         return `${prompt}
 
-## Bash Shell — your single interface to the workspace
-All file work goes through bash(); there is no separate file tool. It's an
-in-process bash sandbox (working directory: ${this.baseDir}, persists between calls).
+## Bash
+You have a \`bash\` tool: an in-process shell whose working directory IS the root
+of your workspace. Refer to files by paths RELATIVE to that root — \`ls\`,
+\`cat README.md\`, \`grep -r foo src\`, \`find . -name '*.ts'\` — or by an absolute
+path under \`/\`, which maps to the workspace root (\`/README.md\` is the same file
+as \`README.md\`). Do NOT prefix paths with the workspace's host location
+(\`${this.baseDir}\`): inside the shell that resolves *below* the root and fails
+with "No such file or directory".
 
-- **Read**: \`cat file\`, \`grep -n pat file\`, \`head\`/\`tail\`, \`sed -n '10,40p' file\`.
-- **List / explore**: \`ls -la\`, \`find . -name '*.ts'\`, \`tree\`, \`rg pattern\`.
-- **Create / overwrite**: a quoted heredoc keeps content literal —
-  \`cat > path/file.ts <<'EOF'\n…contents…\nEOF\`. Use \`tee\` to write + show.
-- **Edit existing files**: prefer the \`edit_file\` tool — an exact old→new string
-  swap (no regex/escaping, shows a diff). Fall back to \`sed -i 's/old/new/' file\`
-  (GNU style) or \`awk\` only for bulk/programmatic transforms.
-- **Review changes**: \`diff old new\` (there is no \`patch\` command — edit with sed/awk).
-
-This shell is just-bash with **GNU**-style tools — it is NOT the host OS shell.
-Use \`sed -i 's/…/' file\` with NO \`''\` backup suffix: the BSD/macOS form
-\`sed -i '' 's/…/' file\` FAILS here (\`''\` is read as the script). Assume GNU
-coreutils, not BSD, regardless of what OS you think you're on.
-
-Available: standard shell built-ins plus sed, awk, grep, rg, find, jq, yq, diff,
-tar, sqlite3, and more. Host programs — node, git, npm, python — are NOT
-available. Be careful with destructive commands.`;
+Use it to explore and search the codebase, inspect files, and chain commands with
+pipes, redirects and globs. Note: only the built-in shell commands are available
+(ls, cat, grep, sed, find, awk, …); host tools such as git, node, npm and python
+are not.`;
     }
 }

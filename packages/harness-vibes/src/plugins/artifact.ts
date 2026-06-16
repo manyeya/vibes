@@ -22,14 +22,14 @@ interface ArtifactRecord {
     summary?: string;
 }
 
-const EXT_BY_KIND: Record<ArtifactKind, string> = {
+export const EXT_BY_KIND: Record<ArtifactKind, string> = {
     html: 'html',
     markdown: 'md',
     mermaid: 'mmd',
     chart: 'json',
 };
 
-const KIND_BY_EXT: Record<string, ArtifactKind> = {
+export const KIND_BY_EXT: Record<string, ArtifactKind> = {
     html: 'html',
     md: 'markdown',
     markdown: 'markdown',
@@ -37,7 +37,7 @@ const KIND_BY_EXT: Record<string, ArtifactKind> = {
     json: 'chart',
 };
 
-function slugify(input: string): string {
+export function slugify(input: string): string {
     return (
         input
             .toLowerCase()
@@ -52,7 +52,7 @@ function slugify(input: string): string {
  * Validate a chart spec so the agent gets actionable feedback instead of a
  * silently-broken artifact. Mirrors what ChartView renders on the frontend.
  */
-function validateChartSpec(content: string): void {
+export function validateChartSpec(content: string): void {
     let spec: any;
     try {
         spec = JSON.parse(content);
