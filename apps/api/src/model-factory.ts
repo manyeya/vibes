@@ -69,10 +69,19 @@ export const AVAILABLE_MODELS: AvailableModel[] = [
 const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
 const CATALOG_TTL_MS = 10 * 60 * 1000;
 
-/** id → model, for sync lookups (context window, override validation). Seeded
- *  with the curated fallback and enriched after each successful catalog fetch. */
+/** id → model, for sync lookups (override validation). Seeded with the curated
+ *  fallback and enriched after each successful catalog fetch. This is the
+ *  SELECTOR set (free + tool-capable only). */
 const modelIndex = new Map<string, AvailableModel>();
 for (const m of AVAILABLE_MODELS) modelIndex.set(m.id, m);
+
+/**
+ * id → context window (tokens) for EVERY model OpenRouter lists — not just the
+ * free, tool-capable slice shown in the selector. The window gauge must resolve
+ * correctly for any model the user is actually on (incl. paid ones, or a model
+ * that dropped out of the free filter), so this is populated unfiltered. */
+const windowIndex = new Map<string, number>();
+for (const m of AVAILABLE_MODELS) if (m.contextWindow) windowIndex.set(m.id, m.contextWindow);
 
 let catalogCache: { at: number; models: AvailableModel[] } | null = null;
 let inflight: Promise<AvailableModel[]> | null = null;
@@ -160,6 +169,16 @@ async function fetchFreeCatalog(): Promise<AvailableModel[]> {
             const res = await fetch(OPENROUTER_MODELS_URL, { headers });
             if (!res.ok) throw new Error(`OpenRouter /models responded ${res.status}`);
             const json = (await res.json()) as { data?: unknown[] };
+            // Index the context window for EVERY listed model (unfiltered), so
+            // getContextWindow resolves for any model the user is on — even paid
+            // ones or models excluded from the free/tool-capable selector slice.
+            for (const raw of json.data ?? []) {
+                const id = (raw as { id?: unknown })?.id;
+                const ctx = (raw as { context_length?: unknown })?.context_length;
+                if (typeof id === 'string' && typeof ctx === 'number' && ctx > 0) {
+                    windowIndex.set(id, ctx);
+                }
+            }
             const free = (json.data ?? [])
                 .map(toAvailableModel)
                 .filter((m): m is AvailableModel => m !== null)
@@ -208,10 +227,12 @@ export function getDefaultModelId(): string {
     return process.env.OPENROUTER_MODEL || AVAILABLE_MODELS[0].id;
 }
 
-/** Context window (tokens) for a model id, with a safe default. */
+/** Context window (tokens) for a model id, with a safe default. Resolves from
+ *  the unfiltered window index first (covers any OpenRouter model), then the
+ *  curated/selector entries, then the default. */
 export function getContextWindow(modelId?: string): number {
     if (!modelId) return DEFAULT_CONTEXT_WINDOW;
-    return modelIndex.get(modelId)?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+    return windowIndex.get(modelId) ?? modelIndex.get(modelId)?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
 }
 
 function resolveDefaultSpec(): ModelSpec {

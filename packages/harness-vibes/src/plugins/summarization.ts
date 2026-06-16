@@ -96,14 +96,17 @@ export default class SummarizationPlugin implements Plugin {
         stepNumber: number;
         model: LanguageModel;
         messages: ModelMessage[];
+        system?: string;
         experimental_context?: unknown;
     }) {
         const messages = options.messages;
-        // Estimate from the message list to decide whether to compress. The live
-        // UI gauge is emitted separately by AgentCore from the provider's real
-        // token counts (which also include the system prompt + tool schemas);
-        // this estimate only needs to be good enough to trigger compression.
-        const used = this.estimateTokens(messages);
+        // Estimate from the message list PLUS the system prompt to decide whether
+        // to compress. The live UI gauge is emitted by AgentCore from the
+        // provider's real token counts (which include the system prompt + tool
+        // schemas), so folding in the system prompt here keeps the trigger from
+        // lagging far behind the gauge — otherwise the gauge can read "full"
+        // while this estimate (messages only) stays under the threshold.
+        const used = this.estimateTokens(messages) + Math.round((options.system?.length ?? 0) / 4);
         const compressAt = Math.round(this.contextWindow * this.compressionRatio);
 
         // Below the threshold → leave the conversation intact (just carry any
