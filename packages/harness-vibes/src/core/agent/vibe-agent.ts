@@ -4,11 +4,13 @@ import { openai } from '@ai-sdk/openai';
 import {
     SkillsPlugin,
     PlanningPlugin,
+    FilesystemPlugin,
     BashPlugin,
     SubAgentPlugin,
     SummarizationPlugin,
     ArtifactPlugin,
     ClarificationPlugin,
+    WorkflowPlugin,
     WebSearchPlugin,
 } from '../../plugins';
 import MemoryPlugin from '../../plugins/memory';
@@ -49,6 +51,18 @@ export interface VibeAgentConfig extends Partial<Omit<AgentCoreConfig, 'instruct
 export interface DefaultPluginFactoryOptions {
     model: LanguageModel;
     workspaceDir: string;
+    /**
+     * Per-session plugin-state dir (plan/tasks/scratchpad/tracked_files).
+     * Defaults to `workspaceDir`. For a workspace session this points at the
+     * per-session `.vibes/sessions/{id}/` dir while the sandbox root stays the
+     * SHARED project dir.
+     */
+    stateDir?: string;
+    /**
+     * Directory for cross-session shared state (memories.json, workflows.json).
+     * Defaults to a value derived from `workspaceDir`.
+     */
+    sharedDir?: string;
     sessionId?: string;
     /** Sandbox shared by the filesystem + bash plugins for this agent. */
     sandbox?: Sandbox;
@@ -58,11 +72,18 @@ export interface DefaultPluginFactoryOptions {
     compressionRatio?: number;
 }
 
+/**
+ * Climb from a per-session directory to the cross-session shared root.
+ * Handles both the legacy `workspace/sessions/{id}` layout and the workspace
+ * `workspace/projects/{id}` layout, so memories/workflows stay global at
+ * `workspace/` in both cases.
+ */
 function resolveSharedWorkspaceDir(workspaceDir: string): string {
     const normalized = path.normalize(workspaceDir);
     const parentDir = path.dirname(normalized);
+    const parentName = path.basename(parentDir);
 
-    if (path.basename(parentDir) === 'sessions') {
+    if (parentName === 'sessions' || parentName === 'projects') {
         return path.dirname(parentDir);
     }
 
@@ -70,26 +91,44 @@ function resolveSharedWorkspaceDir(workspaceDir: string): string {
 }
 
 export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugin[] {
-    const sharedWorkspaceDir = resolveSharedWorkspaceDir(config.workspaceDir);
+    const stateDir = config.stateDir ?? config.workspaceDir;
+    const sharedWorkspaceDir = config.sharedDir ?? resolveSharedWorkspaceDir(config.workspaceDir);
 
     const plugins: Plugin[] = [
         new PlanningPlugin(config.model, {
-            planPath: path.join(config.workspaceDir, 'plan.md'),
-            tasksPath: path.join(config.workspaceDir, 'tasks.json'),
+            planPath: path.join(stateDir, 'plan.md'),
+            tasksPath: path.join(stateDir, 'tasks.json'),
             maxRecitationTasks: 10,
         }),
         new SkillsPlugin({ workspaceDir: config.workspaceDir }),
-        // Full-bash workspace: all file I/O (read/write/edit/list/diff) goes
-        // through the shell — cat, tee, sed, grep, find, diff — rooted at the
-        // workspace. No separate filesystem tool.
+        // Dedicated file tools — read / write / edit / list file content with
+        // structured tools that stream diffs and file-op cards (read, write,
+        // edit_file, list_files). File I/O runs in the (shared) project
+        // sandbox; tracked_files bookkeeping is kept per-session in stateDir.
+        new FilesystemPlugin({
+            ...(config.sandbox ? { sandbox: config.sandbox } : { baseDir: config.workspaceDir }),
+            trackedFilesPath: path.join(stateDir, 'tracked_files.json'),
+        }),
+        // Bash shell for running commands and exploring the workspace (search,
+        // navigation, bulk transforms) — rooted at the same directory on disk.
         new BashPlugin(config.sandbox ? { sandbox: config.sandbox } : config.workspaceDir),
         // Renderable artifacts (websites, docs, diagrams, charts) → canvas panel.
         new ArtifactPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
         // Ask the user structured clarifying questions (questionnaire above the composer).
         new ClarificationPlugin(),
         new MemoryPlugin({
-            scratchpadPath: path.join(config.workspaceDir, 'scratchpad.md'),
+            scratchpadPath: path.join(stateDir, 'scratchpad.md'),
             notesPath: path.join(sharedWorkspaceDir, 'memories.json'),
+        }),
+        // Reusable, saveable workflows built from low-level AI SDK patterns
+        // (chain / route / parallel / orchestrator / evaluator). Library is
+        // shared across sessions, like memories.
+        new WorkflowPlugin(config.model, {
+            workflowsPath: path.join(sharedWorkspaceDir, 'workflows.json'),
+            // So import_workflow can read a definition file the agent wrote via
+            // bash — the reliable path for large/deeply-nested workflows.
+            workspaceDir: config.workspaceDir,
+            sandbox: config.sandbox,
         }),
         // Rolling-summary plugin: keeps long conversations within token
         // budget by summarising the oldest excess messages once we exceed
@@ -121,14 +160,21 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
  * planning stack.
  */
 export function createSubAgentPlugins(config: DefaultPluginFactoryOptions): Plugin[] {
+    const stateDir = config.stateDir ?? config.workspaceDir;
+
     const plugins: Plugin[] = [
         new PlanningPlugin(config.model, {
-            planPath: path.join(config.workspaceDir, 'plan.md'),
-            tasksPath: path.join(config.workspaceDir, 'tasks.json'),
+            planPath: path.join(stateDir, 'plan.md'),
+            tasksPath: path.join(stateDir, 'tasks.json'),
             maxRecitationTasks: 10,
         }),
         new SkillsPlugin({ workspaceDir: config.workspaceDir }),
-        // Full-bash: file I/O is done through the shell (cat/tee/sed/grep/find).
+        // Dedicated file tools (read/write/edit_file/list_files) + bash for
+        // commands and exploration, both rooted at the same workspace directory.
+        new FilesystemPlugin({
+            ...(config.sandbox ? { sandbox: config.sandbox } : { baseDir: config.workspaceDir }),
+            trackedFilesPath: path.join(stateDir, 'tracked_files.json'),
+        }),
         new BashPlugin(config.sandbox ? { sandbox: config.sandbox } : config.workspaceDir),
         new ArtifactPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
     ];
@@ -221,11 +267,14 @@ export class VibeAgent extends AgentCore {
     private initializePlugins(config: VibeAgentConfig): void {
         const skipDefaults = config.skipDefaultPlugins === true;
         const workspaceDir = config.workspaceDir || 'workspace';
+        const stateDir = config.stateDir || workspaceDir;
 
         if (!skipDefaults) {
             this.addPlugin(createDefaultPlugins({
                 model: this.model,
                 workspaceDir,
+                stateDir,
+                ...(config.sharedDir ? { sharedDir: config.sharedDir } : {}),
                 sessionId: config.sessionId,
                 sandbox: config.sandbox,
                 contextWindow: this.contextWindow,

@@ -396,6 +396,20 @@ export interface AgentCoreConfig {
     /** Fraction of the context window at which compression kicks in, 0–1 (default: 0.7) */
     contextCompressionRatio?: number;
     /**
+     * Minimum character length a single tool/assistant payload must reach
+     * before restorable in-place compression will shrink it (default: 3000).
+     * Raise it to let larger reads survive verbatim.
+     */
+    compressionThreshold?: number;
+    /**
+     * Fraction of the context window (0–1) the WHOLE conversation must reach
+     * before per-message restorable compression runs at all (default: 0.7).
+     * Below this, large reads are kept intact even if individually over
+     * `compressionThreshold` — no gutting a big file read in an otherwise-empty
+     * context. Set 0 to compress eagerly (legacy behaviour).
+     */
+    compressionGateRatio?: number;
+    /**
      * Whether this agent emits the live context-usage gauge (default: true).
      * Set false for sub-agents so their (smaller) context doesn't clobber the
      * main conversation's gauge in the UI.
@@ -413,6 +427,20 @@ export interface AgentCoreConfig {
     enableTelemetry?: boolean;
     /** The base directory for filesystem operations (e.g., 'workspace') */
     workspaceDir?: string;
+    /**
+     * Per-session plugin-state directory (plan.md, tasks.json, scratchpad.md,
+     * tracked_files.json). Defaults to `workspaceDir`. For a workspace session
+     * the sandbox root (`workspaceDir`) is the SHARED project dir, while this
+     * points at `{projectDir}/.vibes/sessions/{sessionId}/` so per-session state
+     * stays isolated.
+     */
+    stateDir?: string;
+    /**
+     * Cross-session shared-state directory (memories.json, workflows.json).
+     * Defaults to a value derived from `workspaceDir`. Set explicitly so that
+     * an opened external repo never receives global vibes state.
+     */
+    sharedDir?: string;
     /** List of tool names that require explicit user approval before execution */
     toolsRequiringApproval?: ToolsRequiringApprovalConfig;
     /** Optional whitelist of tool names allowed for this agent instance */

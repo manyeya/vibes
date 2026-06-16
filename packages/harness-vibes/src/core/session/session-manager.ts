@@ -21,12 +21,13 @@
  */
 
 import * as path from 'path';
+import { stat } from 'fs/promises';
 import { AgentCore } from '../agent/agent-core';
 import type { AgentCoreConfig, AgentState } from '../types';
 import type { Sandbox } from '../sandbox';
 import { LocalSandbox } from '../../sandbox/local-sandbox';
 import SqliteBackend from '../../backend/sqlite-backend';
-import type { SessionInfo } from '../../backend/sqlite-backend';
+import type { SessionInfo, WorkspaceInfo } from '../../backend/sqlite-backend';
 import type { UIMessageStreamWriter } from 'ai';
 import type { VibesUIMessage } from '../streaming/streaming';
 
@@ -37,8 +38,23 @@ import type { VibesUIMessage } from '../streaming/streaming';
  */
 export interface SessionContext {
     sessionId: string;
+    /**
+     * Sandbox root for this session — the directory the agent does file/shell
+     * work in. For a workspace session this is the SHARED project dir; for a
+     * legacy session it is the per-session dir.
+     */
     workspaceDir: string;
-    /** A sandbox rooted at the session workspace. */
+    /**
+     * Per-session plugin-state dir (plan.md, tasks.json, scratchpad.md,
+     * tracked_files.json). Equals {@link workspaceDir} for legacy sessions; for
+     * a workspace session it is an app-managed
+     * `{projectsDir}/{workspaceId}/.vibes/sessions/{sessionId}/` — kept out of
+     * an opened external repo.
+     */
+    stateDir: string;
+    /** Cross-session shared-state dir (memories.json, workflows.json). Global. */
+    sharedDir: string;
+    /** A sandbox rooted at {@link workspaceDir}. */
     sandbox: Sandbox;
 }
 
@@ -50,6 +66,7 @@ export type SessionAgentFactory = (ctx: SessionContext) => AgentCore;
  */
 const WORKSPACE_ROOT = 'workspace';
 const SESSIONS_DIR = path.join(WORKSPACE_ROOT, 'sessions');
+const PROJECTS_DIR = path.join(WORKSPACE_ROOT, 'projects');
 
 /**
  * Session configuration
@@ -63,6 +80,9 @@ export interface SessionConfig {
     metadata?: Record<string, any>;
     /** Base directory for all session workspaces (default: workspace/sessions) */
     sessionsDir?: string;
+    /** Workspace (project) this session belongs to. Sessions in a workspace
+     *  share the workspace's project dir as their sandbox root. */
+    workspaceId?: string;
 }
 
 /**
@@ -117,17 +137,22 @@ export class SessionStore {
     private sessions: Map<string, StoredSession> = new Map();
     private dbPath: string;
     private sessionsDir: string;
+    private projectsDir: string;
 
     /** Default agent configuration (used only when no agentFactory is set) */
     private defaultAgentConfig?: SessionAgentConfig;
     /** Builds the agent for each session. When unset, a bare AgentCore is used. */
     private agentFactory?: SessionAgentFactory;
+    /** Guard so the Default-workspace reconciliation runs at most once. */
+    private defaultWorkspaceEnsured = false;
 
     constructor(config?: {
         /** Path to SQLite database (default: workspace/vibes.db) */
         dbPath?: string;
-        /** Directory for session workspaces (default: workspace/sessions) */
+        /** Directory for legacy per-session workspaces (default: workspace/sessions) */
         sessionsDir?: string;
+        /** Root directory for workspace (project) dirs (default: workspace/projects) */
+        projectsDir?: string;
         /** Default agent configuration (fallback when no agentFactory is provided) */
         defaultAgentConfig?: SessionAgentConfig;
         /** Factory that builds the per-session agent (e.g. the flagship VibeAgent). */
@@ -135,6 +160,7 @@ export class SessionStore {
     }) {
         this.dbPath = config?.dbPath || path.join(WORKSPACE_ROOT, 'vibes.db');
         this.sessionsDir = config?.sessionsDir || SESSIONS_DIR;
+        this.projectsDir = config?.projectsDir || PROJECTS_DIR;
         this.defaultAgentConfig = config?.defaultAgentConfig;
         this.agentFactory = config?.agentFactory;
 
@@ -150,6 +176,8 @@ export class SessionStore {
      * data is stored.
      */
     async getOrCreateSession(config: SessionConfig = {}): Promise<StoredSession> {
+        await this.ensureDefaultWorkspace();
+
         // Use provided ID or generate a new one
         const sessionId = config.id || this.generateSessionId();
 
@@ -194,10 +222,6 @@ export class SessionStore {
     ): Promise<StoredSession> {
         const createdAt = new Date();
 
-        // Create session workspace directory
-        const workspaceDir = path.join(this.sessionsDir, sessionId);
-        await this.ensureDirectory(workspaceDir);
-
         // Create SQLite backend for this session. NOTE: the SqliteBackend
         // constructor eagerly inserts a bare session row, so a "create only if
         // missing" guard never fires — which silently dropped the caller's
@@ -205,29 +229,67 @@ export class SessionStore {
         // user-provided title is actually saved.
         const backend = new SqliteBackend(this.dbPath, sessionId);
         const existingSession = await backend.getSession(sessionId);
-        const alreadyTitled = Boolean(existingSession?.metadata?.title);
-        if (config.title !== undefined || config.metadata !== undefined || !alreadyTitled) {
+        const existingMeta = existingSession?.metadata ?? {};
+
+        // Resolve the session's directories. Order matters so a RELOAD honours
+        // what was persisted at creation (a workspace session's shared project
+        // dir), since the caller (e.g. the HTTP layer) usually reloads knowing
+        // only the session id, not its workspace:
+        //   1. persisted metadata.workspaceDir  → reuse (legacy or workspace)
+        //   2. config.workspaceId / stored workspace_id → shared project dir
+        //   3. fallback → legacy per-session dir
+        const workspaceId = config.workspaceId ?? existingSession?.workspaceId;
+        // Cross-session shared state (memories.json / workflows.json) is global,
+        // one level up from the projects dir — NEVER inside an opened repo.
+        const sharedDir = path.dirname(this.projectsDir);
+        let workspaceDir: string;   // sandbox root (file/shell work)
+        let stateDir: string;       // per-session plugin state
+        if (typeof existingMeta.workspaceDir === 'string') {
+            workspaceDir = existingMeta.workspaceDir;
+            stateDir = typeof existingMeta.stateDir === 'string' ? existingMeta.stateDir : workspaceDir;
+        } else if (workspaceId) {
+            const ws = await backend.getWorkspace(workspaceId);
+            workspaceDir = ws?.rootDir ?? path.join(this.projectsDir, workspaceId);
+            // Per-session plugin state lives in an APP-MANAGED dir keyed by the
+            // workspace + session — not under workspaceDir. For an app-managed
+            // workspace this still resolves to `{rootDir}/.vibes/...`; for an
+            // OPENED external folder it stays out of the user's repo.
+            stateDir = path.join(this.projectsDir, workspaceId, '.vibes', 'sessions', sessionId);
+        } else {
+            workspaceDir = path.join(this.sessionsDir, sessionId);
+            stateDir = workspaceDir;
+        }
+
+        await this.ensureDirectory(workspaceDir);
+        if (stateDir !== workspaceDir) await this.ensureDirectory(stateDir);
+
+        const alreadyTitled = Boolean(existingMeta.title);
+        const dirsPersisted = typeof existingMeta.workspaceDir === 'string';
+        if (config.title !== undefined || config.metadata !== undefined || !alreadyTitled || !dirsPersisted) {
             await backend.updateSession(sessionId, {
                 title: config.title,
+                ...(workspaceId ? { workspaceId } : {}),
                 metadata: {
-                    ...(existingSession?.metadata ?? {}),
+                    ...existingMeta,
                     ...config.metadata,
                     workspaceDir,
-                    createdAt: existingSession?.metadata?.createdAt ?? createdAt.toISOString(),
+                    stateDir,
+                    createdAt: existingMeta.createdAt ?? createdAt.toISOString(),
                 },
             });
         }
 
         // Build the agent. The factory (when provided) constructs the real
-        // agent — typically the flagship VibeAgent — rooted at a sandbox for
-        // this workspace. Without a factory we fall back to a bare AgentCore.
-        // The sandbox backs the filesystem/artifact tools (node fs on the real
+        // agent — typically the flagship VibeAgent — rooted at a sandbox for the
+        // (possibly shared) workspace dir, with per-session plugin state kept in
+        // stateDir. Without a factory we fall back to a bare AgentCore. The
+        // sandbox backs the filesystem/artifact tools (node fs on the real
         // workspace dir); the shell runs through just-bash in BashPlugin, rooted
         // at the same directory, so the two views stay in sync.
         const sandbox = new LocalSandbox(workspaceDir);
         const agent = this.agentFactory
-            ? this.agentFactory({ sessionId, workspaceDir, sandbox })
-            : new AgentCore(this.buildAgentConfig(sessionId, workspaceDir));
+            ? this.agentFactory({ sessionId, workspaceDir, stateDir, sharedDir, sandbox })
+            : new AgentCore(this.buildAgentConfig(sessionId, workspaceDir, stateDir, sharedDir));
 
         const instance: StoredSession = {
             id: sessionId,
@@ -248,14 +310,20 @@ export class SessionStore {
      */
     private buildAgentConfig(
         sessionId: string,
-        workspaceDir: string
+        workspaceDir: string,
+        stateDir: string = workspaceDir,
+        sharedDir?: string
     ): AgentCoreConfig {
         const baseConfig = this.defaultAgentConfig || {};
 
-        // All plugin paths should point to the session workspace
+        // Sandbox-rooted file/shell work uses workspaceDir; per-session plugin
+        // state (plan/tasks/scratchpad) uses stateDir; global memories/workflows
+        // use sharedDir.
         return {
             ...baseConfig,
             workspaceDir,
+            stateDir,
+            ...(sharedDir ? { sharedDir } : {}),
             // Session ID is passed through metadata for plugins to use
             sessionId,
         } as AgentCoreConfig;
@@ -293,9 +361,9 @@ export class SessionStore {
     /**
      * List all sessions (including unloaded ones)
      */
-    async listSessions(): Promise<SessionInfo[]> {
+    async listSessions(workspaceId?: string): Promise<SessionInfo[]> {
         const backend = new SqliteBackend(this.dbPath, 'default');
-        const sessions = await backend.listSessions();
+        const sessions = await backend.listSessions(workspaceId);
         backend.close();
         return sessions;
     }
@@ -359,6 +427,108 @@ export class SessionStore {
         backend.close();
     }
 
+    // ── Workspace (project) lifecycle ────────────────────────────────────
+
+    /**
+     * Reconcile the migration-backfilled Default workspace with this store's
+     * configured `projectsDir`. The SqliteBackend migration can only hardcode a
+     * conventional `workspace/projects/default`; if the store is rooted
+     * elsewhere (tests, alternative deployments) we repoint it here. No-op in
+     * the common case where the paths already match.
+     */
+    private async ensureDefaultWorkspace(): Promise<void> {
+        if (this.defaultWorkspaceEnsured) return;
+        this.defaultWorkspaceEnsured = true;
+        const desiredRoot = path.join(this.projectsDir, 'default');
+        const backend = new SqliteBackend(this.dbPath, 'default');
+        try {
+            const ws = await backend.getWorkspace('default');
+            if (!ws) {
+                await backend.createWorkspace({ id: 'default', name: 'Default', rootDir: desiredRoot });
+            } else if (ws.rootDir !== desiredRoot) {
+                backend.setWorkspaceRootDir('default', desiredRoot);
+            }
+        } finally {
+            backend.close();
+        }
+    }
+
+    /** List all workspaces (with session counts). */
+    async listWorkspaces(): Promise<WorkspaceInfo[]> {
+        await this.ensureDefaultWorkspace();
+        const backend = new SqliteBackend(this.dbPath, 'default');
+        const workspaces = await backend.listWorkspaces();
+        backend.close();
+        return workspaces;
+    }
+
+    /** Get one workspace, or null. */
+    async getWorkspace(workspaceId: string): Promise<WorkspaceInfo | null> {
+        const backend = new SqliteBackend(this.dbPath, 'default');
+        const ws = await backend.getWorkspace(workspaceId);
+        backend.close();
+        return ws;
+    }
+
+    /**
+     * Create a workspace. Two flavours:
+     *  - **app-managed** (default): allocate an id + a fresh project directory
+     *    under `projectsDir` and create it on disk.
+     *  - **open folder** (`rootDir` given): point the workspace at an EXISTING
+     *    directory on disk (Codex / Claude-cowork style). The directory must
+     *    already exist; per-session `.vibes` state stays app-managed so the
+     *    opened repo isn't polluted.
+     */
+    async createWorkspace(config: { id?: string; name?: string; rootDir?: string; metadata?: Record<string, any> }): Promise<WorkspaceInfo> {
+        const id = config.id || this.generateWorkspaceId();
+        const metadata: Record<string, any> = { ...(config.metadata ?? {}) };
+        let rootDir: string;
+        let name = config.name?.trim();
+
+        if (config.rootDir) {
+            rootDir = path.resolve(config.rootDir);
+            let isDir = false;
+            try { isDir = (await stat(rootDir)).isDirectory(); } catch { isDir = false; }
+            if (!isDir) throw new Error(`Not a directory: ${rootDir}`);
+            metadata.external = true;
+            if (!name) name = path.basename(rootDir) || rootDir;
+        } else {
+            rootDir = path.join(this.projectsDir, id);
+            await this.ensureDirectory(rootDir);
+            if (!name) name = 'Untitled workspace';
+        }
+
+        const backend = new SqliteBackend(this.dbPath, 'default');
+        const ws = await backend.createWorkspace({ id, name, rootDir, metadata });
+        backend.close();
+        return ws;
+    }
+
+    /** Rename / update a workspace's metadata. */
+    async updateWorkspace(workspaceId: string, updates: { name?: string; metadata?: Record<string, any> }): Promise<void> {
+        const backend = new SqliteBackend(this.dbPath, 'default');
+        await backend.updateWorkspace(workspaceId, updates);
+        backend.close();
+    }
+
+    /**
+     * Delete a workspace, its sessions (DB rows + cached agents), and its
+     * on-disk project directory.
+     */
+    async deleteWorkspace(workspaceId: string): Promise<void> {
+        const backend = new SqliteBackend(this.dbPath, 'default');
+        const sessions = await backend.listSessions(workspaceId);
+        for (const s of sessions) this.unloadSession(s.id);
+        await backend.deleteWorkspace(workspaceId);
+        backend.close();
+
+        // Remove only the APP-MANAGED directory (per-session `.vibes` state, and
+        // for an app-managed workspace its project files too). We deliberately
+        // never delete an opened external folder — that is the user's own repo,
+        // which always lives outside `projectsDir/{workspaceId}`.
+        await this.deleteDirectory(path.join(this.projectsDir, workspaceId));
+    }
+
     /**
      * Clean up old sessions
      */
@@ -401,9 +571,17 @@ export class SessionStore {
     }
 
     /**
-     * Get the workspace directory for a session
+     * Get the sandbox-root directory for a session. Honours the dir persisted
+     * at creation (so workspace sessions resolve to their shared project dir),
+     * falling back to the legacy per-session path.
      */
     getSessionWorkspace(sessionId: string): string {
+        try {
+            const backend = new SqliteBackend(this.dbPath, sessionId);
+            const meta = backend.getState().metadata as { workspaceDir?: unknown } | undefined;
+            backend.close();
+            if (meta && typeof meta.workspaceDir === 'string') return meta.workspaceDir;
+        } catch { /* fall through to the computed default */ }
         return path.join(this.sessionsDir, sessionId);
     }
 
@@ -469,6 +647,13 @@ export class SessionStore {
      */
     private generateSessionId(): string {
         return `session_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+    }
+
+    /**
+     * Generate a unique workspace ID
+     */
+    private generateWorkspaceId(): string {
+        return `wp_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     }
 
     /**

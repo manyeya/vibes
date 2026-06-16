@@ -1,13 +1,16 @@
 import React from 'react';
-import { MessagesSquare, Settings, type LucideIcon } from 'lucide-react';
+import { MessagesSquare, Settings, Workflow, MessageSquareText, Boxes, type LucideIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface LeftNavProps {
   /** Which top-level view is active. */
-  active: 'chat' | 'settings';
+  active: 'chat' | 'settings' | 'workflows' | 'prompts' | 'workspaces';
   /** Whether the session list is currently open (drives the Sessions highlight). */
   sessionsOpen: boolean;
   onToggleSessions: () => void;
+  onOpenWorkspaces: () => void;
+  onOpenWorkflows: () => void;
+  onOpenPrompts: () => void;
   onOpenSettings: () => void;
 }
 
@@ -47,7 +50,7 @@ const NavButton: React.FC<{
  * Sessions at the top, Settings at the bottom. Keeps top-level navigation out
  * of the chat header.
  */
-export const LeftNav: React.FC<LeftNavProps> = ({ active, sessionsOpen, onToggleSessions, onOpenSettings }) => {
+export const LeftNav: React.FC<LeftNavProps> = ({ active, sessionsOpen, onToggleSessions, onOpenWorkspaces, onOpenWorkflows, onOpenPrompts, onOpenSettings }) => {
   return (
     <nav className="flex h-full w-12 shrink-0 flex-col items-center justify-between border-r border-[color:var(--color-line)] bg-[color:var(--color-surface)] py-3">
       <div className="flex flex-col items-center gap-1.5">
@@ -56,6 +59,24 @@ export const LeftNav: React.FC<LeftNavProps> = ({ active, sessionsOpen, onToggle
           label="Sessions"
           active={active === 'chat' && sessionsOpen}
           onClick={onToggleSessions}
+        />
+        <NavButton
+          icon={Boxes}
+          label="Workspaces"
+          active={active === 'workspaces'}
+          onClick={onOpenWorkspaces}
+        />
+        <NavButton
+          icon={Workflow}
+          label="Workflows"
+          active={active === 'workflows'}
+          onClick={onOpenWorkflows}
+        />
+        <NavButton
+          icon={MessageSquareText}
+          label="Prompts"
+          active={active === 'prompts'}
+          onClick={onOpenPrompts}
         />
       </div>
       <div className="flex flex-col items-center gap-1.5">

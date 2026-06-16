@@ -20,12 +20,23 @@ import {
     type ArtifactPluginConfig,
     ClarificationPlugin,
     ASK_USER_TOOL_NAME,
+    WorkflowPlugin,
+    type WorkflowPluginConfig,
+    type Workflow,
+    type WorkflowStep,
+    type StepKind,
+    validateWorkflow,
+    type WorkflowValidation,
+    runWorkflowToStream,
+    type RunWorkflowOptions,
+    type RunWorkflowOutcome,
     type SummarizationConfig,
     type ParallelDelegationResult,
 } from './src/plugins';
 import MemoryPlugin from './src/plugins/memory';
 import SqliteBackend from './src/backend/sqlite-backend';
 import StateBackend, { InMemoryStateBackend } from './src/backend/state-backend';
+export type { SessionInfo, WorkspaceInfo } from './src/backend/sqlite-backend';
 import {
     type AgentState,
     type AgentCoreConfig,
@@ -107,6 +118,16 @@ export {
     type ArtifactPluginConfig,
     ClarificationPlugin,
     ASK_USER_TOOL_NAME,
+    WorkflowPlugin,
+    type WorkflowPluginConfig,
+    type Workflow,
+    type WorkflowStep,
+    type StepKind,
+    validateWorkflow,
+    type WorkflowValidation,
+    runWorkflowToStream,
+    type RunWorkflowOptions,
+    type RunWorkflowOutcome,
     type ParallelDelegationResult,
     SqliteBackend,
     StateBackend,

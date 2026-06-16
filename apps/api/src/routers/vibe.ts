@@ -1,11 +1,14 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { createUIMessageStreamResponse, type UIMessageChunk } from "ai";
+import { readFile, writeFile, mkdir, readdir } from "fs/promises";
+import { resolve, dirname } from "path";
+import os from "node:os";
+import { createUIMessageStream, createUIMessageStreamResponse, type UIMessageChunk } from "ai";
 import { logger } from "../logger";
 import streamCoordinator from "../stream-coordinator";
 import { vibeHarness, defaultSubAgents } from "../vibe-coder";
-import { SqliteBackend, createAgentStreamResponse } from "../../../../packages/harness-vibes/index";
+import { SqliteBackend, createAgentStreamResponse, validateWorkflow, runWorkflowToStream, createDataStreamWriter } from "../../../../packages/harness-vibes/index";
 import { agent as simpleAgent } from "../simple-agent";
 import { getModel, getAvailableModels, getContextWindow, getDefaultModelId, isKnownModelId } from "../model-factory";
 
@@ -93,14 +96,347 @@ app.get('/agents', (c) => {
     });
 });
 
+/** Discoverable skills (name + description from each skill's SKILL.md frontmatter). */
+app.get('/skills', async (c) => {
+    try {
+        const dir = resolve(process.cwd(), process.env.SKILLS_DIR ?? 'skills');
+        let subdirs: string[] = [];
+        try {
+            subdirs = (await readdir(dir, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name);
+        } catch {
+            return c.json({ success: true, skills: [] }); // no skills dir → empty
+        }
+        const skills: Array<{ name: string; description?: string }> = [];
+        for (const sub of subdirs) {
+            try {
+                const md = await readFile(resolve(dir, sub, 'SKILL.md'), 'utf8');
+                const block = md.match(/^---\s*\n([\s\S]*?)\n---/)?.[1] ?? '';
+                const name = block.match(/^name:\s*(.+)$/m)?.[1]?.trim() || sub;
+                const description = block.match(/^description:\s*(.+)$/m)?.[1]?.trim();
+                skills.push({ name, description });
+            } catch {
+                /* a folder without a SKILL.md isn't a skill */
+            }
+        }
+        return c.json({ success: true, skills });
+    } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to list skills');
+        return c.json({ success: false, error: 'Failed to list skills' }, 500);
+    }
+});
+
+/**
+ * List the saved workflows (WorkflowPlugin library). The plugin persists them
+ * to the shared workspace root as `workflows.json` — the same file every
+ * session reads/writes — so the UI can browse them read-only without going
+ * through a per-session agent instance.
+ */
+const WORKFLOWS_PATH = resolve(process.cwd(), 'workspace/workflows.json');
+
+async function readWorkflowsFile(): Promise<any[]> {
+    try {
+        const parsed = JSON.parse(await readFile(WORKFLOWS_PATH, 'utf8'));
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
+async function writeWorkflowsFile(list: unknown[]): Promise<void> {
+    await mkdir(dirname(WORKFLOWS_PATH), { recursive: true });
+    await writeFile(WORKFLOWS_PATH, JSON.stringify(list, null, 2), 'utf8');
+}
+
+const findWorkflow = (list: any[], nameOrId: string) => list.find((w) => w?.id === nameOrId || w?.name === nameOrId);
+const newWorkflowId = () => `wf_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+app.get('/workflows', async (c) => {
+    try {
+        return c.json({ success: true, workflows: await readWorkflowsFile() });
+    } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to list workflows');
+        return c.json({ success: false, error: 'Failed to list workflows' }, 500);
+    }
+});
+
+/** Validate a (hand-authored) workflow definition without saving it. */
+app.post('/workflows/validate', async (c) => {
+    try {
+        const body = await c.req.json().catch(() => ({}));
+        const { name = 'workflow', inputs = [], steps = [] } = body ?? {};
+        const list = await readWorkflowsFile();
+        const result = validateWorkflow({ name, inputs, steps }, (n) => findWorkflow(list, n));
+        return c.json({ success: true, ...result });
+    } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to validate workflow');
+        return c.json({ success: false, error: 'Failed to validate workflow' }, 500);
+    }
+});
+
+/** Create (or overwrite) a workflow by hand — same validation as the agent's create_workflow. */
+app.post('/workflows', async (c) => {
+    try {
+        const body = await c.req.json().catch(() => ({}));
+        const { name, slug, description = '', inputs = [], steps = [], tags = [], overwrite = false } = body ?? {};
+        if (typeof name !== 'string' || !name.trim()) {
+            return c.json({ success: false, error: 'name is required' }, 400);
+        }
+        const list = await readWorkflowsFile();
+        const existing = findWorkflow(list, name);
+        if (existing && !overwrite) {
+            return c.json({ success: false, error: `A workflow named "${name}" already exists.` }, 409);
+        }
+        const validation = validateWorkflow({ name, inputs, steps }, (n) => findWorkflow(list, n));
+        if (!validation.valid) {
+            return c.json({ success: false, errors: validation.errors, warnings: validation.warnings }, 400);
+        }
+        const now = new Date().toISOString();
+        const workflow = {
+            id: existing?.id ?? newWorkflowId(),
+            name,
+            ...(typeof slug === 'string' && slug.trim() ? { slug: slug.trim() } : {}),
+            description, tags, inputs, steps,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+            version: existing ? (existing.version ?? 1) + 1 : 1,
+        };
+        await writeWorkflowsFile(existing ? list.map((w) => (w.id === existing.id ? workflow : w)) : [...list, workflow]);
+        return c.json({ success: true, workflow, warnings: validation.warnings });
+    } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to create workflow');
+        return c.json({ success: false, error: 'Failed to create workflow' }, 500);
+    }
+});
+
+/** Update a workflow by id. */
+app.put('/workflows/:id', async (c) => {
+    try {
+        const id = c.req.param('id');
+        const body = await c.req.json().catch(() => ({}));
+        const list = await readWorkflowsFile();
+        const existing = list.find((w) => w?.id === id);
+        if (!existing) return c.json({ success: false, error: 'Workflow not found' }, 404);
+        const updated = {
+            ...existing,
+            name: body.name ?? existing.name,
+            slug: body.slug !== undefined ? (typeof body.slug === 'string' && body.slug.trim() ? body.slug.trim() : undefined) : existing.slug,
+            description: body.description ?? existing.description,
+            inputs: body.inputs ?? existing.inputs,
+            steps: body.steps ?? existing.steps,
+            tags: body.tags ?? existing.tags,
+            updatedAt: new Date().toISOString(),
+            version: (existing.version ?? 1) + 1,
+        };
+        const validation = validateWorkflow({ name: updated.name, inputs: updated.inputs, steps: updated.steps }, (n) => findWorkflow(list, n));
+        if (!validation.valid) {
+            return c.json({ success: false, errors: validation.errors, warnings: validation.warnings }, 400);
+        }
+        await writeWorkflowsFile(list.map((w) => (w.id === id ? updated : w)));
+        return c.json({ success: true, workflow: updated, warnings: validation.warnings });
+    } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to update workflow');
+        return c.json({ success: false, error: 'Failed to update workflow' }, 500);
+    }
+});
+
+/** Delete a workflow by id. */
+app.delete('/workflows/:id', async (c) => {
+    try {
+        const id = c.req.param('id');
+        const list = await readWorkflowsFile();
+        const next = list.filter((w) => w?.id !== id);
+        if (next.length === list.length) return c.json({ success: false, error: 'Workflow not found' }, 404);
+        await writeWorkflowsFile(next);
+        return c.json({ success: true });
+    } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to delete workflow');
+        return c.json({ success: false, error: 'Failed to delete workflow' }, 500);
+    }
+});
+
+// ── saved prompts (reusable composer snippets — a slash-command provider) ──────
+const PROMPTS_PATH = resolve(process.cwd(), 'workspace/prompts.json');
+async function readPromptsFile(): Promise<any[]> {
+    try { const parsed = JSON.parse(await readFile(PROMPTS_PATH, 'utf8')); return Array.isArray(parsed) ? parsed : []; }
+    catch { return []; }
+}
+async function writePromptsFile(list: unknown[]): Promise<void> {
+    await mkdir(dirname(PROMPTS_PATH), { recursive: true });
+    await writeFile(PROMPTS_PATH, JSON.stringify(list, null, 2), 'utf8');
+}
+
+app.get('/prompts', async (c) => {
+    try { return c.json({ success: true, prompts: await readPromptsFile() }); }
+    catch (error) { logger.error({ error: String(error) }, 'Failed to list prompts'); return c.json({ success: false, error: 'Failed to list prompts' }, 500); }
+});
+
+app.post('/prompts', async (c) => {
+    try {
+        const body = await c.req.json().catch(() => ({}));
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        const text = typeof body.body === 'string' ? body.body.trim() : '';
+        if (!name || !text) return c.json({ success: false, error: 'name and body are required' }, 400);
+        const list = await readPromptsFile();
+        const now = new Date().toISOString();
+        const prompt = { id: `prm_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name, body: text, tags: Array.isArray(body.tags) ? body.tags : [], createdAt: now, updatedAt: now };
+        await writePromptsFile([...list, prompt]);
+        return c.json({ success: true, prompt });
+    } catch (error) { logger.error({ error: String(error) }, 'Failed to save prompt'); return c.json({ success: false, error: 'Failed to save prompt' }, 500); }
+});
+
+app.delete('/prompts/:id', async (c) => {
+    try {
+        const id = c.req.param('id');
+        const list = await readPromptsFile();
+        const next = list.filter((p) => p?.id !== id);
+        if (next.length === list.length) return c.json({ success: false, error: 'Prompt not found' }, 404);
+        await writePromptsFile(next);
+        return c.json({ success: true });
+    } catch (error) { logger.error({ error: String(error) }, 'Failed to delete prompt'); return c.json({ success: false, error: 'Failed to delete prompt' }, 500); }
+});
+
+// ============ SERVER FILESYSTEM BROWSING (folder picker) ============
+
+/**
+ * Browse server-side directories for the "open folder" workspace flow. A
+ * browser's native dialog can't return a real server path (and the agent runs
+ * here, not on the client), so the picker walks the *server's* filesystem.
+ * Returns the resolved dir, its parent, and the child directories.
+ */
+app.get('/fs/list', async (c) => {
+    try {
+        const raw = c.req.query('path');
+        const target = raw && raw.trim() ? resolve(raw.trim()) : os.homedir();
+        const dirents = await readdir(target, { withFileTypes: true });
+        const entries = dirents
+            .filter((d) => d.isDirectory())
+            .map((d) => ({ name: d.name, isDir: true }))
+            .sort((a, b) => a.name.localeCompare(b.name));
+        const parent = dirname(target);
+        return c.json({
+            success: true,
+            path: target,
+            parent: parent === target ? null : parent,
+            home: os.homedir(),
+            entries,
+        });
+    } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        return c.json({ success: false, error: msg }, 400);
+    }
+});
+
+/**
+ * Native OS folder dialog (macOS only). Pops Finder's "choose folder" on the
+ * server host and returns the chosen absolute path. Useful when the API runs
+ * on the same machine as the user (the local-dev default).
+ */
+app.post('/fs/pick-native', async (c) => {
+    try {
+        if (process.platform !== 'darwin') {
+            return c.json({ success: false, error: 'Native picker is only available on macOS.' }, 400);
+        }
+        const proc = Bun.spawn(['osascript', '-e', 'POSIX path of (choose folder with prompt "Choose a project folder")'], {
+            stdout: 'pipe',
+            stderr: 'pipe',
+        });
+        const out = (await new Response(proc.stdout).text()).trim();
+        await proc.exited;
+        if (!out) return c.json({ success: false, error: 'No folder chosen.' }, 400);
+        return c.json({ success: true, path: out });
+    } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Native folder picker failed');
+        return c.json({ success: false, error: 'Native picker failed.' }, 500);
+    }
+});
+
+// ============ WORKSPACE (project) MANAGEMENT ENDPOINTS ============
+
+/** List all workspaces (with session counts). */
+app.get('/workspaces', async (c) => {
+    try {
+        const workspaces = await vibeHarness.listWorkspaces();
+        return c.json({ success: true, workspaces });
+    } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to list workspaces');
+        return c.json({ success: false, error: 'Failed to list workspaces' }, 500);
+    }
+});
+
+/**
+ * Create a workspace. Body: { name?, rootDir?, metadata? }.
+ *  - app-managed: provide `name` (fresh project dir under workspace/projects).
+ *  - open folder: provide `rootDir` (an EXISTING dir on disk, Codex-style);
+ *    `name` then defaults to the folder's basename.
+ */
+app.post('/workspaces', async (c) => {
+    try {
+        const body = await c.req.json().catch(() => ({}));
+        const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : undefined;
+        const rootDir = typeof body.rootDir === 'string' && body.rootDir.trim() ? body.rootDir.trim() : undefined;
+        if (!name && !rootDir) return c.json({ success: false, error: 'name or rootDir is required' }, 400);
+
+        const workspace = await vibeHarness.createWorkspace({ name, rootDir, metadata: body.metadata || {} });
+        return c.json({ success: true, workspace });
+    } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error({ error: msg }, 'Failed to create workspace');
+        // A bad/missing folder path is a client error, not a server fault.
+        const clientError = /Not a directory/.test(msg);
+        return c.json({ success: false, error: clientError ? msg : 'Failed to create workspace' }, clientError ? 400 : 500);
+    }
+});
+
+/** Get one workspace. */
+app.get('/workspaces/:id', async (c) => {
+    try {
+        const workspace = await vibeHarness.getWorkspace(c.req.param('id'));
+        if (!workspace) return c.json({ success: false, error: 'Workspace not found' }, 404);
+        return c.json({ success: true, workspace });
+    } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to get workspace');
+        return c.json({ success: false, error: 'Failed to get workspace' }, 500);
+    }
+});
+
+/** Rename / update a workspace. Body: { name?, metadata? }. */
+app.patch('/workspaces/:id', async (c) => {
+    try {
+        const id = c.req.param('id');
+        const body = await c.req.json().catch(() => ({}));
+        await vibeHarness.updateWorkspace(id, { name: body.name, metadata: body.metadata });
+        const workspace = await vibeHarness.getWorkspace(id);
+        return c.json({ success: true, workspace });
+    } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to update workspace');
+        return c.json({ success: false, error: 'Failed to update workspace' }, 500);
+    }
+});
+
+/** Delete a workspace, its sessions, and its project directory. */
+app.delete('/workspaces/:id', async (c) => {
+    try {
+        const id = c.req.param('id');
+        if (id === 'default') {
+            return c.json({ success: false, error: 'The Default workspace cannot be deleted.' }, 400);
+        }
+        await vibeHarness.deleteWorkspace(id);
+        return c.json({ success: true });
+    } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to delete workspace');
+        return c.json({ success: false, error: 'Failed to delete workspace' }, 500);
+    }
+});
+
 // ============ SESSION MANAGEMENT ENDPOINTS ============
 
 /**
- * List all sessions
+ * List sessions, optionally scoped to one workspace (?workspace_id=).
  */
 app.get('/sessions', async (c) => {
     try {
-        const sessions = await vibeHarness.listSessions();
+        const workspaceId = c.req.query('workspace_id') || undefined;
+        const sessions = await vibeHarness.listSessions(workspaceId);
         return c.json({
             success: true,
             sessions,
@@ -158,8 +494,9 @@ app.post('/sessions', async (c) => {
         const body = await c.req.json().catch(() => ({}));
         const title = body.title;
         const metadata = body.metadata || {};
+        const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : undefined;
 
-        const sessionId = await vibeHarness.createSession({ title, metadata });
+        const sessionId = await vibeHarness.createSession({ title, metadata, workspaceId });
 
         return c.json({
             success: true,
@@ -625,6 +962,170 @@ app.get('/vibe/:sessionId/stream', async (c) => {
             'x-vibes-stream-id': streamId,
         },
     });
+});
+
+/**
+ * Session-keyed reconnect — what the AI SDK's `useChat().resumeStream()` calls
+ * on wake/online. The client only knows the session id; we resolve its latest
+ * stream, replay the persisted chunks (so the UI is rebuilt from where it left
+ * off), and — if that run is still live in the registry — tail it to completion.
+ * Returns 204 when there's nothing to resume (no stream, or it aged past the
+ * replay TTL). UI message parts reconcile by id, so a full replay is safe.
+ */
+app.get('/vibe/:sessionId/reconnect', async (c) => {
+    const sessionId = c.req.param('sessionId');
+    const backend = new SqliteBackend('workspace/vibes.db', sessionId);
+    const latest = backend.getLatestStream(sessionId);
+    if (!latest) return c.body(null, 204);
+
+    const streamId = latest.streamId;
+    if (latest.endedAt) {
+        const endedAtMs = new Date(latest.endedAt).getTime();
+        if (Date.now() - endedAtMs > RECONNECT_REPLAY_TTL_MS) return c.body(null, 204);
+    }
+
+    const registry = streamCoordinator.streamRegistry;
+    const liveEntry = registry.get(streamId);
+
+    const stream = new ReadableStream<UIMessageChunk<unknown, never>>({
+        start(controller) {
+            let lastReplayedSeq = -1;
+            try {
+                const persisted = backend.readStreamChunks(streamId, 0);
+                for (const row of persisted) {
+                    controller.enqueue(row.payload as UIMessageChunk<unknown, never>);
+                    lastReplayedSeq = Math.max(lastReplayedSeq, row.chunkSeq);
+                }
+            } catch (err) {
+                console.error('[vibe] reconnect replay failed:', err);
+            }
+
+            if (!liveEntry || liveEntry.completed) {
+                controller.close();
+                return;
+            }
+
+            const unsubscribe = registry.subscribe(
+                streamId,
+                (seq, chunk) => {
+                    if (seq <= lastReplayedSeq) return;
+                    try {
+                        controller.enqueue(chunk as UIMessageChunk<unknown, never>);
+                    } catch (err) {
+                        console.error('[vibe] reconnect live forward failed:', err);
+                    }
+                },
+                () => {
+                    try { controller.close(); } catch { /* already closed */ }
+                },
+            );
+
+            const clientSignal = c.req.raw.signal;
+            const onAbort = () => {
+                unsubscribe();
+                try { controller.close(); } catch { /* already closed */ }
+            };
+            if (clientSignal.aborted) onAbort();
+            else clientSignal.addEventListener('abort', onAbort, { once: true });
+        },
+    });
+
+    return createUIMessageStreamResponse({
+        stream,
+        headers: { 'X-Accel-Buffering': 'no', 'x-vibes-stream-id': streamId },
+    });
+});
+
+/**
+ * Direct, token-free workflow run (the slash-command / Run-button path). Runs
+ * the WorkflowEngine for `:nameOrId` with the posted `inputs`, streaming live
+ * `data-workflow` step parts + a canvas artifact + a text breadcrumb into the
+ * session thread. Registered as a resumable stream so the client tails it via
+ * `resumeStream()` (GET …/reconnect). No agent loop — deterministic + cheap.
+ */
+app.post('/vibe/:sessionId/workflows/:nameOrId/run', async (c) => {
+    const sessionId = c.req.param('sessionId');
+    const nameOrId = c.req.param('nameOrId');
+    const body = await c.req.json().catch(() => ({} as any));
+    const inputs: Record<string, unknown> = body?.inputs ?? {};
+
+    const list = await readWorkflowsFile();
+    const workflow = findWorkflow(list, nameOrId);
+    if (!workflow) return c.json({ success: false, error: `No workflow "${nameOrId}".` }, 404);
+
+    const missing = (workflow.inputs ?? [])
+        .filter((i: any) => i.required && i.default === undefined && (inputs[i.name] === undefined || inputs[i.name] === null || inputs[i.name] === ''))
+        .map((i: any) => i.name);
+    if (missing.length) {
+        return c.json({ success: false, error: `Missing required input(s): ${missing.join(', ')}.`, requiredInputs: workflow.inputs }, 400);
+    }
+
+    const modelId = typeof body?.model === 'string' && isKnownModelId(body.model) ? body.model : getDefaultModelId();
+    const model = getModel({ provider: 'openrouter', id: modelId });
+
+    const session = await vibeHarness.session(sessionId);
+    const backend = session.backend!;
+
+    // Register a resumable stream so the client tails it via resumeStream().
+    const streamId = crypto.randomUUID();
+    streamCoordinator.streamRegistry.create(streamId, sessionId);
+    backend.beginStream(streamId, sessionId);
+
+    const onChunk = (chunk: unknown) => {
+        const entry = streamCoordinator.streamRegistry.get(streamId);
+        if (!entry) return;
+        entry.lastSeq += 1;
+        const seq = entry.lastSeq;
+        try { backend.appendStreamChunk(streamId, seq, chunk); } catch (err) { console.error('[wf-run] appendStreamChunk failed:', err); }
+        for (const sub of entry.subscribers) { try { sub(seq, chunk); } catch (err) { console.error('[wf-run] subscriber threw:', err); } }
+    };
+
+    const stream = createUIMessageStream({
+        async execute({ writer }) {
+            const dsw = createDataStreamWriter(writer as any);
+            const outcome = await runWorkflowToStream(workflow as any, {
+                model,
+                inputs,
+                writer: dsw,
+                workspaceDir: 'workspace',
+                resolveWorkflow: (n) => findWorkflow(list, n) as any,
+            });
+            const summary = outcome.success
+                ? `Ran workflow **${workflow.name}**` +
+                  (outcome.outputPath ? ` → output saved to \`${outcome.outputPath}\`${outcome.rendered ? ' (rendered in the canvas)' : ''}` : '') +
+                  (outcome.modelCalls != null ? ` · ${outcome.modelCalls} model call${outcome.modelCalls === 1 ? '' : 's'}` : '') + '.'
+                : `Workflow **${workflow.name}** failed: ${outcome.error ?? 'unknown error'}`;
+            const id = 'wf-breadcrumb';
+            writer.write({ type: 'text-start', id } as any);
+            writer.write({ type: 'text-delta', id, delta: summary } as any);
+            writer.write({ type: 'text-end', id } as any);
+        },
+        onFinish({ messages }) {
+            try { (backend as { setUIMessages?: (m: unknown[]) => void }).setUIMessages?.(messages); } catch (err) { console.error('[wf-run] persist UI messages failed:', err); }
+        },
+    });
+
+    // Drain the stream → persist + fan out to any live reconnect subscriber.
+    void (async () => {
+        const reader = (stream as unknown as ReadableStream<UIMessageChunk<unknown, never>>).getReader();
+        let status: 'completed' | 'failed' = 'completed';
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                onChunk(value);
+            }
+        } catch (err) {
+            status = 'failed';
+            console.error('[wf-run] run errored:', err);
+        } finally {
+            reader.releaseLock();
+            try { backend.endStream(streamId, status); } catch { /* ignore */ }
+            streamCoordinator.streamRegistry.complete(streamId, status);
+        }
+    })();
+
+    return c.json({ success: true, streamId });
 });
 
 app.post('/simple/stream', zValidator('json', vibeSchema), async (c) => {

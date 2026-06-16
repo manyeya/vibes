@@ -151,5 +151,8 @@ export const vibeHarness: Harness = createHarness(
     {
         dbPath: 'workspace/vibes.db',
         sessionsDir: 'workspace/sessions',
+        // Workspaces (projects) get an app-managed shared dir under here; all
+        // sessions in a workspace root their sandbox at workspace/projects/{id}.
+        projectsDir: 'workspace/projects',
     },
 );

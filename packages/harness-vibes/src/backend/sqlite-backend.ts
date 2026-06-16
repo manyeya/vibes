@@ -16,6 +16,26 @@ export interface SessionInfo {
     createdAt?: string;
     updatedAt?: string;
     messageCount?: number;
+    /** The workspace (project) this session belongs to, if any. */
+    workspaceId?: string;
+}
+
+/**
+ * Workspace (project) metadata. A workspace groups multiple sessions that
+ * share one project directory (`rootDir`). See the session manager for how
+ * the shared sandbox + per-session `.vibes/sessions/{id}/` state dirs hang
+ * off `rootDir`.
+ */
+export interface WorkspaceInfo {
+    id: string;
+    name: string;
+    /** Absolute or workspace-relative project directory shared by the sessions. */
+    rootDir: string;
+    metadata?: Record<string, any>;
+    createdAt?: string;
+    updatedAt?: string;
+    /** Number of sessions in this workspace (populated by listWorkspaces). */
+    sessionCount?: number;
 }
 
 /**
@@ -39,7 +59,10 @@ export default class SqliteBackend extends StateBackend {
     }
 
     /** Current schema version. Bump and add a new migration block below. */
-    private static readonly SCHEMA_VERSION = 2;
+    private static readonly SCHEMA_VERSION = 3;
+
+    /** The default workspace every pre-existing session is grouped under. */
+    private static readonly DEFAULT_WORKSPACE_ID = 'default';
 
     private init() {
         const versionRow = this.db.query("PRAGMA user_version").get() as { user_version?: number } | undefined;
@@ -115,6 +138,40 @@ export default class SqliteBackend extends StateBackend {
             currentVersion = 2;
         }
 
+        if (currentVersion < 3) {
+            // Migration 3: workspaces (projects) that group sessions sharing a
+            // project directory. Adds a workspaces table + a nullable
+            // workspace_id on sessions, and backfills a Default workspace that
+            // every pre-existing session is grouped under.
+            this.db.transaction(() => {
+                this.db.run(`
+                    CREATE TABLE IF NOT EXISTS workspaces (
+                        id TEXT PRIMARY KEY,
+                        name TEXT,
+                        root_dir TEXT,
+                        metadata TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                `);
+                // Idempotent column add (mirrors the ui_messages pattern).
+                try { this.db.run(`ALTER TABLE sessions ADD COLUMN workspace_id TEXT`); } catch { /* exists */ }
+                this.db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_workspace_id ON sessions(workspace_id, updated_at)`);
+
+                // Backfill the Default workspace + assign orphaned sessions to it.
+                const now = new Date().toISOString();
+                const defaultId = SqliteBackend.DEFAULT_WORKSPACE_ID;
+                this.db.run(
+                    `INSERT OR IGNORE INTO workspaces (id, name, root_dir, metadata, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?)`,
+                    [defaultId, 'Default', `workspace/projects/${defaultId}`, JSON.stringify({}), now, now]
+                );
+                this.db.run(`UPDATE sessions SET workspace_id = ? WHERE workspace_id IS NULL`, [defaultId]);
+            })();
+            this.db.run(`PRAGMA user_version = 3`);
+            currentVersion = 3;
+        }
+
         void SqliteBackend.SCHEMA_VERSION;
 
         // Forward-compatible column for persisted UI messages (message parts
@@ -122,12 +179,14 @@ export default class SqliteBackend extends StateBackend {
         // existing databases gain the column without a version bump.
         try { this.db.run(`ALTER TABLE sessions ADD COLUMN ui_messages TEXT`); } catch { /* column exists */ }
 
-        // Ensure session exists
+        // Ensure session exists. New rows default to the Default workspace;
+        // SessionStore overrides workspace_id for sessions created inside a
+        // specific workspace (via updateSession).
         const session = this.db.query("SELECT id FROM sessions WHERE id = ?").get(this.sessionId);
         if (!session) {
             const now = new Date().toISOString();
-            this.db.run("INSERT INTO sessions (id, metadata, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                [this.sessionId, JSON.stringify({}), now, now]);
+            this.db.run("INSERT INTO sessions (id, metadata, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                [this.sessionId, JSON.stringify({}), SqliteBackend.DEFAULT_WORKSPACE_ID, now, now]);
         }
     }
 
@@ -227,22 +286,26 @@ export default class SqliteBackend extends StateBackend {
     }
 
     /**
-     * List all sessions with metadata
+     * List all sessions with metadata, optionally scoped to one workspace.
      */
-    async listSessions(): Promise<SessionInfo[]> {
+    async listSessions(workspaceId?: string): Promise<SessionInfo[]> {
+        const where = workspaceId ? `WHERE s.workspace_id = ?` : ``;
+        const params = workspaceId ? [workspaceId] : [];
         const sessions = this.db.query(`
-            SELECT s.id, s.summary, s.metadata, s.created_at, s.updated_at,
+            SELECT s.id, s.summary, s.metadata, s.workspace_id, s.created_at, s.updated_at,
                    COUNT(DISTINCT m.id) as message_count
             FROM sessions s
             LEFT JOIN messages m ON s.id = m.session_id
+            ${where}
             GROUP BY s.id
             ORDER BY s.updated_at DESC
-        `).all() as any[];
+        `).all(...params) as any[];
 
         return sessions.map(row => ({
             id: row.id,
             summary: row.summary || undefined,
             metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+            workspaceId: row.workspace_id || undefined,
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             messageCount: row.message_count || 0
@@ -254,7 +317,7 @@ export default class SqliteBackend extends StateBackend {
      */
     async getSession(sessionId: string): Promise<SessionInfo | null> {
         const row = this.db.query(`
-            SELECT s.id, s.summary, s.metadata, s.created_at, s.updated_at,
+            SELECT s.id, s.summary, s.metadata, s.workspace_id, s.created_at, s.updated_at,
                    COUNT(DISTINCT m.id) as message_count
             FROM sessions s
             LEFT JOIN messages m ON s.id = m.session_id
@@ -268,6 +331,7 @@ export default class SqliteBackend extends StateBackend {
             id: row.id,
             summary: row.summary || undefined,
             metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+            workspaceId: row.workspace_id || undefined,
             createdAt: row.created_at,
             updatedAt: row.updated_at,
             messageCount: row.message_count || 0
@@ -277,7 +341,7 @@ export default class SqliteBackend extends StateBackend {
     /**
      * Create a new session
      */
-    async createSession(title?: string, metadata: Record<string, any> = {}): Promise<string> {
+    async createSession(title?: string, metadata: Record<string, any> = {}, workspaceId?: string): Promise<string> {
         const sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
         const now = new Date().toISOString();
 
@@ -286,8 +350,8 @@ export default class SqliteBackend extends StateBackend {
             : metadata;
 
         this.db.run(
-            "INSERT INTO sessions (id, summary, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            [sessionId, null, JSON.stringify(finalMetadata), now, now]
+            "INSERT INTO sessions (id, summary, metadata, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            [sessionId, null, JSON.stringify(finalMetadata), workspaceId ?? SqliteBackend.DEFAULT_WORKSPACE_ID, now, now]
         );
 
         return sessionId;
@@ -306,7 +370,7 @@ export default class SqliteBackend extends StateBackend {
     /**
      * Update session metadata
      */
-    async updateSession(sessionId: string, updates: { title?: string; summary?: string; metadata?: Record<string, any> }): Promise<void> {
+    async updateSession(sessionId: string, updates: { title?: string; summary?: string; metadata?: Record<string, any>; workspaceId?: string }): Promise<void> {
         const current = await this.getSession(sessionId);
         if (!current) return;
 
@@ -317,15 +381,111 @@ export default class SqliteBackend extends StateBackend {
         }
 
         this.db.run(
-            `UPDATE sessions SET summary = ?, metadata = ?, updated_at = ? WHERE id = ?`,
+            `UPDATE sessions SET summary = ?, metadata = ?, workspace_id = ?, updated_at = ? WHERE id = ?`,
             [
                 updates.summary !== undefined ? updates.summary : current.summary || null,
                 JSON.stringify(finalMetadata),
+                updates.workspaceId !== undefined ? updates.workspaceId : current.workspaceId ?? SqliteBackend.DEFAULT_WORKSPACE_ID,
                 now,
                 sessionId
             ]
         );
     }
+
+    // ============ WORKSPACE (project) MANAGEMENT ============
+
+    /** List all workspaces, newest first, with a live session count. */
+    async listWorkspaces(): Promise<WorkspaceInfo[]> {
+        const rows = this.db.query(`
+            SELECT w.id, w.name, w.root_dir, w.metadata, w.created_at, w.updated_at,
+                   COUNT(s.id) as session_count
+            FROM workspaces w
+            LEFT JOIN sessions s ON s.workspace_id = w.id
+            GROUP BY w.id
+            ORDER BY w.updated_at DESC
+        `).all() as any[];
+        return rows.map(this.mapWorkspaceRow);
+    }
+
+    /** Get a single workspace by id, or null. */
+    async getWorkspace(workspaceId: string): Promise<WorkspaceInfo | null> {
+        const row = this.db.query(`
+            SELECT w.id, w.name, w.root_dir, w.metadata, w.created_at, w.updated_at,
+                   COUNT(s.id) as session_count
+            FROM workspaces w
+            LEFT JOIN sessions s ON s.workspace_id = w.id
+            WHERE w.id = ?
+            GROUP BY w.id
+        `).get(workspaceId) as any;
+        return row ? this.mapWorkspaceRow(row) : null;
+    }
+
+    /**
+     * Create a workspace. The caller supplies the id + rootDir so the session
+     * manager can keep the on-disk project directory and the DB record in sync.
+     */
+    async createWorkspace(workspace: { id: string; name: string; rootDir: string; metadata?: Record<string, any> }): Promise<WorkspaceInfo> {
+        const now = new Date().toISOString();
+        this.db.run(
+            `INSERT INTO workspaces (id, name, root_dir, metadata, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [workspace.id, workspace.name, workspace.rootDir, JSON.stringify(workspace.metadata ?? {}), now, now]
+        );
+        const created = await this.getWorkspace(workspace.id);
+        if (!created) throw new Error(`Failed to create workspace ${workspace.id}`);
+        return created;
+    }
+
+    /**
+     * Point a workspace at a different project directory. Used by the session
+     * manager to reconcile the migration-backfilled Default workspace with the
+     * harness's configured `projectsDir`.
+     */
+    setWorkspaceRootDir(workspaceId: string, rootDir: string): void {
+        const now = new Date().toISOString();
+        this.db.run(`UPDATE workspaces SET root_dir = ?, updated_at = ? WHERE id = ?`, [rootDir, now, workspaceId]);
+    }
+
+    /** Update a workspace's name/metadata. */
+    async updateWorkspace(workspaceId: string, updates: { name?: string; metadata?: Record<string, any> }): Promise<void> {
+        const current = await this.getWorkspace(workspaceId);
+        if (!current) return;
+        const now = new Date().toISOString();
+        this.db.run(
+            `UPDATE workspaces SET name = ?, metadata = ?, updated_at = ? WHERE id = ?`,
+            [
+                updates.name !== undefined ? updates.name : current.name,
+                JSON.stringify(updates.metadata ?? current.metadata ?? {}),
+                now,
+                workspaceId,
+            ]
+        );
+    }
+
+    /**
+     * Delete a workspace and all of its sessions (messages + session rows).
+     * The on-disk project directory is removed by the session manager.
+     */
+    async deleteWorkspace(workspaceId: string): Promise<void> {
+        this.db.transaction(() => {
+            const sessionRows = this.db.query("SELECT id FROM sessions WHERE workspace_id = ?").all(workspaceId) as Array<{ id: string }>;
+            for (const { id } of sessionRows) {
+                this.db.run("DELETE FROM messages WHERE session_id = ?", [id]);
+            }
+            this.db.run("DELETE FROM sessions WHERE workspace_id = ?", [workspaceId]);
+            this.db.run("DELETE FROM workspaces WHERE id = ?", [workspaceId]);
+        })();
+    }
+
+    private mapWorkspaceRow = (row: any): WorkspaceInfo => ({
+        id: row.id,
+        name: row.name,
+        rootDir: row.root_dir,
+        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        sessionCount: row.session_count ?? 0,
+    });
 
     // ============ STREAM PERSISTENCE (resumable streams) ============
 
@@ -400,6 +560,19 @@ export default class SqliteBackend extends StateBackend {
             endedAt: row.ended_at,
             status: row.status,
         };
+    }
+
+    /**
+     * Most-recent stream for a session — used by the session-keyed reconnect
+     * endpoint so the client can resume an interrupted run (after a sleep/wake)
+     * knowing only the session id.
+     */
+    getLatestStream(sessionId: string): { streamId: string; startedAt: string; endedAt: string | null; status: string } | null {
+        const row = this.db.query(
+            `SELECT stream_id, started_at, ended_at, status FROM streams WHERE session_id = ? ORDER BY started_at DESC LIMIT 1`
+        ).get(sessionId) as { stream_id: string; started_at: string; ended_at: string | null; status: string } | undefined;
+        if (!row) return null;
+        return { streamId: row.stream_id, startedAt: row.started_at, endedAt: row.ended_at, status: row.status };
     }
 
     /**

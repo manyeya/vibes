@@ -7,7 +7,7 @@ import type { AgentState } from './types';
 import type { Sandbox } from './sandbox';
 import { SessionStore } from './session/session-manager';
 import type SqliteBackend from '../backend/sqlite-backend';
-import type { SessionInfo } from '../backend/sqlite-backend';
+import type { SessionInfo, WorkspaceInfo } from '../backend/sqlite-backend';
 
 /**
  * Public agent definition (Phase 2).
@@ -33,8 +33,10 @@ export interface HarnessOptions {
     workspaceDir?: string;
     /** SQLite database path for persisted sessions (default: workspace/vibes.db). */
     dbPath?: string;
-    /** Root directory for per-session workspaces (default: workspace/sessions). */
+    /** Root directory for legacy per-session workspaces (default: workspace/sessions). */
     sessionsDir?: string;
+    /** Root directory for workspace (project) dirs (default: workspace/projects). */
+    projectsDir?: string;
 }
 
 export interface SessionOptions {
@@ -53,6 +55,9 @@ export interface SessionOptions {
     title?: string;
     /** Session metadata (persisted sessions). */
     metadata?: Record<string, unknown>;
+    /** Workspace (project) this session belongs to. Sessions in a workspace
+     *  share the workspace's project dir as their sandbox root. */
+    workspaceId?: string;
 }
 
 export interface PromptOptions<T> {
@@ -194,14 +199,19 @@ export class Harness {
         this.store = new SessionStore({
             dbPath: options.dbPath,
             sessionsDir: options.sessionsDir,
+            projectsDir: options.projectsDir,
             // Build the flagship agent for each session, rooted at a sandbox
             // for that session's workspace. A definition-level sandbox (or a
             // harness-level override) wins over the per-session local one.
+            // `stateDir` keeps per-session plugin state isolated even when the
+            // sandbox root is a workspace's shared project dir.
             agentFactory: (ctx) => new VibeAgent({
                 ...this.definition,
                 model: this.model,
                 sessionId: ctx.sessionId,
                 workspaceDir: ctx.workspaceDir,
+                stateDir: ctx.stateDir,
+                sharedDir: ctx.sharedDir,
                 sandbox: this.definition.sandbox ?? options.sandbox ?? ctx.sandbox,
             }),
         });
@@ -224,6 +234,7 @@ export class Harness {
             id: opts.id,
             title: opts.title,
             metadata: opts.metadata as Record<string, any> | undefined,
+            workspaceId: opts.workspaceId,
         });
 
         let session = this.cache.get(stored.id);
@@ -256,14 +267,48 @@ export class Harness {
     // ── Session catalog (single source of truth) ─────────────────────────
 
     /** Create (or return) a persisted session record and return its id. */
-    async createSession(opts: { id?: string; title?: string; metadata?: Record<string, any> } = {}): Promise<string> {
+    async createSession(opts: { id?: string; title?: string; metadata?: Record<string, any>; workspaceId?: string } = {}): Promise<string> {
         const stored = await this.store.getOrCreateSession(opts);
         return stored.id;
     }
 
-    /** List all known sessions. */
-    listSessions(): Promise<SessionInfo[]> {
-        return this.store.listSessions();
+    /** List all known sessions, optionally scoped to one workspace. */
+    listSessions(workspaceId?: string): Promise<SessionInfo[]> {
+        return this.store.listSessions(workspaceId);
+    }
+
+    // ── Workspace (project) catalog ──────────────────────────────────────
+
+    /** List all workspaces (with session counts). */
+    listWorkspaces(): Promise<WorkspaceInfo[]> {
+        return this.store.listWorkspaces();
+    }
+
+    /** Read one workspace, or null. */
+    getWorkspace(id: string): Promise<WorkspaceInfo | null> {
+        return this.store.getWorkspace(id);
+    }
+
+    /**
+     * Create a workspace. Omit `rootDir` for a fresh app-managed project dir,
+     * or pass `rootDir` to open an EXISTING folder on disk (Codex / Claude-
+     * cowork style).
+     */
+    createWorkspace(opts: { id?: string; name?: string; rootDir?: string; metadata?: Record<string, any> }): Promise<WorkspaceInfo> {
+        return this.store.createWorkspace(opts);
+    }
+
+    /** Rename / update a workspace's metadata. */
+    updateWorkspace(id: string, updates: { name?: string; metadata?: Record<string, any> }): Promise<void> {
+        return this.store.updateWorkspace(id, updates);
+    }
+
+    /** Delete a workspace, its sessions, and its on-disk project dir. */
+    async deleteWorkspace(id: string): Promise<void> {
+        // Drop cached Session handles for this workspace's sessions first.
+        const sessions = await this.store.listSessions(id);
+        for (const s of sessions) this.cache.delete(s.id);
+        await this.store.deleteWorkspace(id);
     }
 
     /** Read session metadata without loading the agent. */

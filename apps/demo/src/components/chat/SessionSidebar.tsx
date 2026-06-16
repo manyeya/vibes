@@ -3,7 +3,9 @@ import { AnimatePresence } from 'framer-motion';
 import { X, Plus, Loader2, Search } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { SessionCard } from './SessionCard';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import type { Session } from './session-types';
+import type { Workspace } from './workspace-types';
 
 /** Relative "time ago" label for a session's last activity. */
 function timeAgo(iso?: string): string | undefined {
@@ -32,6 +34,13 @@ interface SessionSidebarProps {
   onCreate: (title: string) => void;
   onDeleteSession: (id: string) => void;
   onClose: () => void;
+  /** Workspace (project) switcher state. */
+  workspaces: Workspace[];
+  currentWorkspaceId: string;
+  onWorkspaceSwitch: (id: string) => void;
+  onWorkspaceCreate: (name: string) => void;
+  onRequestOpenFolder: () => void;
+  onManageWorkspaces: () => void;
 }
 
 export const SessionSidebar = ({
@@ -42,6 +51,12 @@ export const SessionSidebar = ({
   onCreate,
   onDeleteSession,
   onClose,
+  workspaces,
+  currentWorkspaceId,
+  onWorkspaceSwitch,
+  onWorkspaceCreate,
+  onRequestOpenFolder,
+  onManageWorkspaces,
 }: SessionSidebarProps) => {
   const [width, setWidth] = useState<number>(() => {
     const saved = Number(localStorage.getItem('vibes_sidebar_width'));
@@ -109,8 +124,20 @@ export const SessionSidebar = ({
           <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-[color:var(--color-amber)]" />
         </div>
 
+        {/* Workspace switcher */}
+        <div className="px-3 pt-4 pb-2">
+          <WorkspaceSwitcher
+            workspaces={workspaces}
+            currentWorkspaceId={currentWorkspaceId}
+            onSwitch={onWorkspaceSwitch}
+            onCreate={onWorkspaceCreate}
+            onRequestOpenFolder={onRequestOpenFolder}
+            onManage={onManageWorkspaces}
+          />
+        </div>
+
         {/* Header */}
-        <div className="flex items-center justify-between px-4 pt-5 pb-3">
+        <div className="flex items-center justify-between px-4 pb-3 pt-1">
           <div className="flex items-baseline gap-2.5">
             <h2 className="font-display text-[20px] leading-none text-[color:var(--color-ink)]">Sessions</h2>
             {sessions.length > 0 && (
