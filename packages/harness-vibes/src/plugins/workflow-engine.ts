@@ -704,6 +704,11 @@ export class WorkflowEngine {
         }
         state.modelCalls++;
 
+        // v7: a provider/stream error is delivered to `onError` and the
+        // textStream then completes WITHOUT throwing (unlike v6). Capture it
+        // here and rethrow after draining so a failed call still rejects and is
+        // traced as failed, rather than silently returning an empty result.
+        let streamError: unknown;
         const result = streamText({
             model: this.model,
             // We pass the system prompt as a cache-marked system MESSAGE (see
@@ -712,16 +717,18 @@ export class WorkflowEngine {
             // messages in `messages` unless this is set.
             allowSystemInMessages: true,
             messages: cacheableMessages(args.system, args.prompt),
+            onError: ({ error }) => { streamError = error; },
             ...(args.temperature !== undefined ? { temperature: args.temperature } : {}),
             ...(state.handles.abortSignal ? { abortSignal: state.handles.abortSignal } : {}),
         });
 
         let text = '';
-        // Iterating textStream propagates stream errors by throwing (parity with
-        // generateText), so a failed call still rejects and is traced as failed.
         for await (const delta of result.textStream) {
             text += delta;
             args.onText?.(text);
+        }
+        if (streamError) {
+            throw streamError instanceof Error ? streamError : new Error(String(streamError));
         }
         return text;
     }

@@ -37,6 +37,19 @@ function mkStream(text: string) {
     } as any;
 }
 
+/** A doStream that errors mid-stream. In v7 this is delivered to onError and the
+ *  textStream completes WITHOUT throwing, so the engine must detect it explicitly. */
+function mkErrorStream(message: string) {
+    return {
+        stream: simulateReadableStream({
+            chunks: [
+                { type: 'stream-start', warnings: [] },
+                { type: 'error', error: new Error(message) },
+            ],
+        }),
+    } as any;
+}
+
 /** Extract just the user-message text from a recorded doGenerate call. */
 function promptText(options: any): string {
     const parts: string[] = [];
@@ -127,6 +140,20 @@ describe('WorkflowEngine', () => {
         expect(promptText(calls[0])).toContain('otters');     // input interpolated
         expect(promptText(calls[1])).toContain('DRAFT-TEXT');  // prior step interpolated
         expect(result.trace.map((t) => t.stepId)).toEqual(['draft', 'refine']);
+    });
+
+    test('a provider/stream error fails the run (v7 textStream no longer throws)', async () => {
+        const model = new MockLanguageModelV3({
+            doStream: async () => mkErrorStream('upstream rate limit'),
+        });
+        const engine = new WorkflowEngine(model as any);
+        const wf = makeWorkflow([{ id: 'draft', kind: 'prompt', prompt: 'Write about {{input.topic}}' }], [{ name: 'topic' }]);
+
+        const result = await engine.run(wf, { topic: 'otters' });
+
+        // Pre-fix the stream error was swallowed and the step returned '' →
+        // success:true. The engine must surface it as a failed run instead.
+        expect(result.success).toBe(false);
     });
 
     test('parallel branches run and the aggregate sees both outputs', async () => {

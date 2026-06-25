@@ -619,10 +619,22 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
 
         // Call super.stream() for proper AI SDK streaming
         // Use 'messages' parameter consistently (avoid 'prompt' to prevent conflict)
+        // `onError` forwards to the internal streamText: in v7 a provider/stream
+        // error is delivered here and the stream finishes without throwing, then
+        // collapses downstream to a generic "An error occurred." Log the raw
+        // error so the real failure (e.g. a mid-stream rate limit) is visible in
+        // the server logs. (Not on ToolLoopAgentSettings, so passed per-call.)
         const result = await super.stream({
             ...agentOptions,
             ...(modelMessages ? { messages: modelMessages } : {}),
-        });
+            onError: ({ error }: { error: unknown }) => {
+                const e = error as { name?: string; message?: string; statusCode?: number; responseBody?: string; cause?: unknown };
+                console.error('[AgentCore] stream error:', {
+                    name: e?.name, message: e?.message, statusCode: e?.statusCode,
+                    responseBody: e?.responseBody, cause: e?.cause,
+                });
+            },
+        } as any);
 
         // Handle stream completion with plugin hooks
         Promise.resolve(result.response).then(async (finishResult) => {
@@ -635,7 +647,6 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
                 this.activeStreamContext = undefined;
             }
         }).catch((error: Error) => {
-            console.error('[AgentCore] Stream completion error:', error);
             if (this.activeStreamContext === streamContext) {
                 this.activeStreamContext = undefined;
             }
