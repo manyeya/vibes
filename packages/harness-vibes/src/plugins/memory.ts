@@ -129,7 +129,7 @@ export default class MemoryPlugin implements Plugin {
 
     // ── tools ────────────────────────────────────────────────────────────────
 
-    get tools() {
+    get tools(): Record<string, import("ai").Tool> {
         return {
             update_scratchpad: tool({
                 description:

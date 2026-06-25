@@ -35,7 +35,7 @@ export default class ClarificationPlugin implements Plugin {
         this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
-    get tools() {
+    get tools(): Record<string, import("ai").Tool> {
         return {
             [ASK_USER_TOOL_NAME]: tool({
                 description:

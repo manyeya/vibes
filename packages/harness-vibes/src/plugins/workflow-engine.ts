@@ -706,6 +706,11 @@ export class WorkflowEngine {
 
         const result = streamText({
             model: this.model,
+            // We pass the system prompt as a cache-marked system MESSAGE (see
+            // cacheableMessages) rather than the `instructions` option, so the
+            // provider prompt-cache breakpoint lands on it. v7 rejects system
+            // messages in `messages` unless this is set.
+            allowSystemInMessages: true,
             messages: cacheableMessages(args.system, args.prompt),
             ...(args.temperature !== undefined ? { temperature: args.temperature } : {}),
             ...(state.handles.abortSignal ? { abortSignal: state.handles.abortSignal } : {}),

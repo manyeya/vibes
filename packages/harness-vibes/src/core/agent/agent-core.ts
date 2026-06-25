@@ -70,7 +70,7 @@ interface PrepareCallOptions {
  * - Built-in tool loop management
  * - prepareCall hook for custom logic injection
  */
-export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
+export class AgentCore extends ToolLoopAgent<never, ToolSet> {
     protected plugins: Plugin[] = [];
     protected model: LanguageModel;
     protected customSystemPrompt: string;
@@ -165,7 +165,7 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
         // We also wrap onStepFinish to aggregate per-step token usage into
         // `lastStreamUsage` for the stream wrapper to persist.
         const userOnStepFinish = config.onStepFinish;
-        const settings: ToolLoopAgentSettings<never, ToolSet, never> = {
+        const settings: ToolLoopAgentSettings<never, ToolSet> = {
             model: config.model,
             instructions: config.instructions,
             tools: config.tools || {},
@@ -177,9 +177,12 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
                 }
             },
             stopWhen: AgentCore.resolveStopWhen(config),
-            prepareCall: async (baseOptions) => {
+            // v7 typed prepareCall's return as the AgentCallParameters intersection
+            // (incl. toolsContext); our override returns the same object shape with
+            // `instructions`, so cast through `any` rather than restate that type.
+            prepareCall: (async (baseOptions: any) => {
                 return this.prepareCallOverride(baseOptions as any);
-            },
+            }) as any,
             prepareStep: async (stepOptions) => {
                 return this.prepareStepOverride(stepOptions);
             },
@@ -194,9 +197,6 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
                     experimental_telemetry: {
                         isEnabled: true,
                         functionId: config.name ?? 'vibe-agent',
-                        metadata: {
-                            agentName: config.name ?? 'vibe-agent',
-                        },
                     },
                 }
                 : {}),

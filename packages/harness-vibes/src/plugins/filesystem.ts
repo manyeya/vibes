@@ -146,7 +146,7 @@ export default class FilesystemPlugin implements Plugin {
         };
     }
 
-    get tools() {
+    get tools(): Record<string, import("ai").Tool> {
         return {
 
             readFile: tool({

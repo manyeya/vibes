@@ -149,11 +149,11 @@ export class Session {
         if (options.result) {
             const structured = await generateText({
                 model: this.model,
-                experimental_output: Output.object({ schema: options.result }),
+                output: Output.object({ schema: options.result }),
                 prompt: `Convert the assistant's final answer below into a structured object that matches the required schema. Use only information present in the answer.\n\n<answer>\n${text}\n</answer>`,
                 ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
             });
-            data = structured.experimental_output as T;
+            data = structured.output as T;
         }
 
         // Report usage summed across EVERY step (`totalUsage`), not just the

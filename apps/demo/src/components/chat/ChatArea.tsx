@@ -148,7 +148,10 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
     id: sessionId,
     transport: new DefaultChatTransport({
       api: '/api/vibe/stream',
-      headers: { 'Content-Type': 'application/json' },
+      // NB: don't set Content-Type here — AI SDK v7's DefaultChatTransport
+      // already sends `application/json`. Adding our own duplicates the header
+      // ("application/json, application/json"), which the server won't parse as
+      // JSON, so `messages` arrives undefined and validation 400s.
       prepareSendMessagesRequest: ({ body, messages }) => ({
         body: {
           ...(body ?? {}),

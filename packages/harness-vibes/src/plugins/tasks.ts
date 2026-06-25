@@ -99,7 +99,7 @@ export default class TasksPlugin implements Plugin {
         this.emitTaskGraph();
     }
 
-    get tools() {
+    get tools(): Record<string, import("ai").Tool> {
         return {
             create_tasks: tool({
                 description: `Create tasks manually. For AI-generated tasks, use generate_tasks instead.`,

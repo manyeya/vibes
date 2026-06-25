@@ -406,7 +406,7 @@ export default class WorkflowPlugin implements Plugin {
 
     // ── tools ────────────────────────────────────────────────────────────────
 
-    get tools() {
+    get tools(): Record<string, import("ai").Tool> {
         return {
             create_workflow: tool({
                 description:

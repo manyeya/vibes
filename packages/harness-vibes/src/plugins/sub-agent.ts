@@ -1145,7 +1145,7 @@ export default class SubAgentPlugin implements Plugin {
             .join('\n');
     }
 
-    get tools() {
+    get tools(): Record<string, import("ai").Tool> {
         const toolHint = `\n\nAvailable tools for sub-agents: ${Array.from(this.generalPurposeToolNames).join(', ')}.`;
 
         const delegateTool = tool({

@@ -250,7 +250,7 @@ export default class ArtifactPlugin implements Plugin {
         return undefined;
     }
 
-    get tools() {
+    get tools(): Record<string, import("ai").Tool> {
         return {
             create_artifact: tool({
                 description:

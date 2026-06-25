@@ -203,7 +203,7 @@ export default class WebSearchPlugin implements Plugin {
         this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
-    get tools() {
+    get tools(): Record<string, import("ai").Tool> {
         return {
             webSearch: tool({
                 description:

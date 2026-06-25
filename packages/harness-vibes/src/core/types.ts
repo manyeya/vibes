@@ -454,7 +454,7 @@ export interface AgentCoreConfig {
  * Extends GenerateTextResult with additional agent-specific fields
  */
 export interface AgentCoreGenerateResult<TOOLS extends ToolSet = ToolSet>
-    extends GenerateTextResult<TOOLS, never> {
+    extends GenerateTextResult<TOOLS, any, never> {
     /** The current agent state after generation */
     state: AgentState;
     /** Tool errors that occurred during generation (if any) */
@@ -465,4 +465,4 @@ export interface AgentCoreGenerateResult<TOOLS extends ToolSet = ToolSet>
  * Result returned by AgentCore.stream() - same as StreamTextResult from AI SDK
  * Using ToolSet for tool types due to dynamic tool registration
  */
-export type AgentCoreStreamResult = StreamTextResult<ToolSet, never>;
+export type AgentCoreStreamResult = StreamTextResult<ToolSet, any, never>;
