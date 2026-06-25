@@ -679,9 +679,20 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet, never> {
         // the public Session.prompt() facade — receive a populated
         // AgentState rather than `undefined`.
         const responseMessages = (result.response?.messages ?? []) as ModelMessage[];
+        // Surface token usage on the state so the non-streaming route + the
+        // Session.prompt() facade can persist it, matching the streaming path.
+        // `totalUsage` is summed across steps; fall back to the last-step usage.
+        const u = (result.totalUsage ?? result.usage) as
+            | { inputTokens?: number; outputTokens?: number; totalTokens?: number }
+            | undefined;
+        const usage = {
+            inputTokens: u?.inputTokens ?? 0,
+            outputTokens: u?.outputTokens ?? 0,
+            totalTokens: u?.totalTokens ?? (u?.inputTokens ?? 0) + (u?.outputTokens ?? 0),
+        };
         return Object.assign(result, {
             toolErrors: toolErrors.length > 0 ? toolErrors : undefined,
-            state: { messages: responseMessages, metadata: {} },
+            state: { messages: responseMessages, metadata: { usage } },
         }) as unknown as AgentCoreGenerateResult;
     }
 

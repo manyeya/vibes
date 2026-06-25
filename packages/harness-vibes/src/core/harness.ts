@@ -156,14 +156,20 @@ export class Session {
             data = structured.experimental_output as T;
         }
 
+        // Report usage summed across EVERY step (`totalUsage`), not just the
+        // last step (`usage`) — a multi-step tool loop would otherwise badly
+        // undercount. Matches what the streaming path persists.
+        const u = (result.totalUsage ?? result.usage) as
+            | { inputTokens?: number; outputTokens?: number; totalTokens?: number }
+            | undefined;
         return {
             text,
             data,
             steps: result.steps?.length ?? 0,
             usage: {
-                inputTokens: result.usage?.inputTokens ?? 0,
-                outputTokens: result.usage?.outputTokens ?? 0,
-                totalTokens: result.usage?.totalTokens ?? 0,
+                inputTokens: u?.inputTokens ?? 0,
+                outputTokens: u?.outputTokens ?? 0,
+                totalTokens: u?.totalTokens ?? (u?.inputTokens ?? 0) + (u?.outputTokens ?? 0),
             },
             state: result.state,
         };

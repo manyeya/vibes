@@ -229,10 +229,28 @@ export function getDefaultModelId(): string {
 
 /** Context window (tokens) for a model id, with a safe default. Resolves from
  *  the unfiltered window index first (covers any OpenRouter model), then the
- *  curated/selector entries, then the default. */
+ *  curated/selector entries, then the default. SYNC — may return the default
+ *  if the catalog hasn't populated windowIndex yet; prefer
+ *  {@link resolveContextWindow} on the request path. */
 export function getContextWindow(modelId?: string): number {
     if (!modelId) return DEFAULT_CONTEXT_WINDOW;
     return windowIndex.get(modelId) ?? modelIndex.get(modelId)?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+}
+
+/**
+ * Async window resolution for the request path. windowIndex is only populated
+ * by {@link fetchFreeCatalog} (triggered by GET /models), so a stream that
+ * arrives first would resolve EVERY model to the 128k default — making the
+ * context gauge % wrong for any model whose real window isn't 128k. Ensure the
+ * catalog has been fetched once (it indexes the window of every listed model,
+ * paid and free) before falling back to the default.
+ */
+export async function resolveContextWindow(modelId?: string): Promise<number> {
+    if (!modelId) return DEFAULT_CONTEXT_WINDOW;
+    if (!windowIndex.has(modelId) && !modelIndex.get(modelId)?.contextWindow) {
+        await fetchFreeCatalog().catch(() => { /* offline → curated/default */ });
+    }
+    return getContextWindow(modelId);
 }
 
 function resolveDefaultSpec(): ModelSpec {

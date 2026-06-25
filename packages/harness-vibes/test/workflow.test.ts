@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { MockLanguageModelV3 } from 'ai/test';
+import { simulateReadableStream } from 'ai';
 import { join } from 'path';
 import { readFile, writeFile } from 'fs/promises';
 import WorkflowPlugin from '../src/plugins/workflow';
@@ -17,6 +18,22 @@ function mk(text: string) {
         usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
         warnings: [],
         providerMetadata: undefined,
+    } as any;
+}
+
+/** The engine now uses streamText, so the mocks must answer doStream too. One
+ *  text-delta carrying the whole response keeps the assertions identical. */
+function mkStream(text: string) {
+    return {
+        stream: simulateReadableStream({
+            chunks: [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: '0' },
+                { type: 'text-delta', id: '0', delta: text },
+                { type: 'text-end', id: '0' },
+                { type: 'finish', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+            ],
+        }),
     } as any;
 }
 
@@ -45,13 +62,15 @@ function allText(options: any): string {
 function queueModel(responses: string[]) {
     const calls: any[] = [];
     let i = 0;
+    const next = (options: any) => {
+        calls.push(options);
+        const text = responses[Math.min(i, responses.length - 1)];
+        i++;
+        return text;
+    };
     const model = new MockLanguageModelV3({
-        doGenerate: async (options: any) => {
-            calls.push(options);
-            const text = responses[Math.min(i, responses.length - 1)];
-            i++;
-            return mk(text);
-        },
+        doGenerate: async (options: any) => mk(next(options)),
+        doStream: async (options: any) => mkStream(next(options)),
     });
     return { model, calls };
 }
@@ -59,13 +78,15 @@ function queueModel(responses: string[]) {
 /** Content-keyed model: first matching rule wins (robust to concurrency). */
 function keyedModel(rules: Array<[RegExp, string]>, fallback = '') {
     const calls: any[] = [];
+    const pick = (options: any) => {
+        calls.push(options);
+        const text = allText(options);
+        const hit = rules.find(([re]) => re.test(text));
+        return hit ? hit[1] : fallback;
+    };
     const model = new MockLanguageModelV3({
-        doGenerate: async (options: any) => {
-            calls.push(options);
-            const text = allText(options);
-            const hit = rules.find(([re]) => re.test(text));
-            return mk(hit ? hit[1] : fallback);
-        },
+        doGenerate: async (options: any) => mk(pick(options)),
+        doStream: async (options: any) => mkStream(pick(options)),
     });
     return { model, calls };
 }

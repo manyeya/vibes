@@ -375,7 +375,11 @@ export default class SqliteBackend extends StateBackend {
         if (!current) return;
 
         const now = new Date().toISOString();
-        const finalMetadata = updates.metadata || current.metadata || {};
+        // MERGE over the DB's current metadata, never replace. The stream layer
+        // writes token `usage` (and `lastStreamAt`) straight to this column via
+        // setState; a caller persisting title/metadata from an in-memory copy
+        // that predates those keys would otherwise clobber them (usage → 0).
+        const finalMetadata = { ...(current.metadata || {}), ...(updates.metadata || {}) };
         if (updates.title) {
             finalMetadata.title = updates.title;
         }

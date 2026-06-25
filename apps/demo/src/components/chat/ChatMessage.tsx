@@ -255,8 +255,7 @@ export const ChatMessage = ({ message, onApprove, onDeny, live = false }: ChatMe
   });
 
   const hasContent = renderedParts.some((p: React.ReactNode) => p !== null)
-    || toolRows.length > 0
-    || (!isUser && (message as any).usage);
+    || toolRows.length > 0;
 
   if (!isUser && !hasContent) return null;
 
@@ -282,11 +281,6 @@ export const ChatMessage = ({ message, onApprove, onDeny, live = false }: ChatMe
       <div className={cn("flex-1 min-w-0 space-y-2", isUser && "flex flex-col items-end")}>
         {renderedParts}
         {toolLog}
-        {!isUser && (message as any).usage && (
-          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-ink-faint)]">
-            {(message as any).usage.promptTokens + (message as any).usage.completionTokens} tokens
-          </div>
-        )}
       </div>
     </div>
   );

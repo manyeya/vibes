@@ -389,12 +389,12 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
     return Array.from(map.values());
   }, [messages, dataParts]);
 
-  // The artifact currently being *written* by the model. The tool's arguments
-  // (title/kind/content) stream in as `tool-create_artifact` / `tool-update_artifact`
-  // input deltas BEFORE the tool executes, so we can render the source into the
-  // canvas live instead of waiting for the finished file. For updates the id
-  // matches the existing artifact (content streams over it in place); for
-  // creates we use a transient `pending:` id until the real one arrives.
+  // The artifact currently being *written* by the model. Only `create_artifact`
+  // streams full `content` (a new artifact, OR a full regeneration when it carries
+  // an existing `id`), so its title/kind/content deltas render into the canvas
+  // live instead of waiting for the finished file. `edit_artifact` sends a diff
+  // (old/new_string), not content, so it has no live preview — it renders on
+  // completion. New creates use a transient `pending:` id; a regenerate reuses id.
   const streamingArtifact = useMemo<ArtifactData | null>(() => {
     const KINDS = ['html', 'markdown', 'mermaid', 'chart'];
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -403,15 +403,13 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
       const parts = m.parts ?? [];
       for (let j = parts.length - 1; j >= 0; j--) {
         const p = parts[j];
-        const isArtifactTool = p?.type === 'tool-create_artifact' || p?.type === 'tool-update_artifact';
-        if (!isArtifactTool) continue;
+        if (p?.type !== 'tool-create_artifact') continue;
         // Most recent artifact tool call: only a live one (not yet executed) streams.
         if (p.state !== 'input-streaming' && p.state !== 'input-available') return null;
         const input = (p.input ?? {}) as { id?: string; title?: string; kind?: string; content?: string };
         const content = typeof input.content === 'string' ? input.content : '';
         if (!content && !input.title) return null; // nothing meaningful yet
-        const isUpdate = p.type === 'tool-update_artifact';
-        const id = isUpdate && input.id ? input.id : `pending:${p.toolCallId}`;
+        const id = input.id ? input.id : `pending:${p.toolCallId}`;
         const kind = (KINDS.includes(input.kind ?? '') ? input.kind : 'markdown') as ArtifactData['kind'];
         return { id, title: input.title ?? 'Untitled', kind, content, version: 0, status: 'streaming' };
       }

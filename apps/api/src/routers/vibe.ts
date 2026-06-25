@@ -10,7 +10,7 @@ import streamCoordinator from "../stream-coordinator";
 import { vibeHarness, defaultSubAgents } from "../vibe-coder";
 import { SqliteBackend, createAgentStreamResponse, validateWorkflow, runWorkflowToStream, createDataStreamWriter } from "../../../../packages/harness-vibes/index";
 import { agent as simpleAgent } from "../simple-agent";
-import { getModel, getAvailableModels, getContextWindow, getDefaultModelId, isKnownModelId } from "../model-factory";
+import { getModel, getAvailableModels, resolveContextWindow, getDefaultModelId, isKnownModelId } from "../model-factory";
 
 /**
  * Loose message shape accepted by the streaming endpoints. AI SDK in
@@ -62,20 +62,22 @@ app.get('/models', async (c) => {
  * the selector swaps the model for this run; anything else reverts to the
  * agent's constructed default.
  */
-function applyModelOverride(
+async function applyModelOverride(
     agent: {
         setModelOverride: (m?: ReturnType<typeof getModel>) => void;
         setContextWindow: (w: number, r?: number) => void;
     },
     modelId: unknown,
-): void {
+): Promise<void> {
     const id = typeof modelId === 'string' && modelId.trim() ? modelId.trim() : undefined;
     const known = id ? isKnownModelId(id) : false;
     agent.setModelOverride(known ? getModel({ provider: 'openrouter', id: id! }) : undefined);
     // Keep the context gauge + compression threshold aligned with the active
     // model's real window — selector models range from a few k to 1M tokens, so
     // a window frozen to the startup default would make the gauge meaningless.
-    agent.setContextWindow(getContextWindow(known ? id! : getDefaultModelId()));
+    // Await so the OpenRouter catalog is loaded before resolving: a stream that
+    // beats the UI's GET /models would otherwise fall back to the 128k default.
+    agent.setContextWindow(await resolveContextWindow(known ? id! : getDefaultModelId()));
 }
 
 /**
@@ -702,7 +704,7 @@ app.post('/vibe', zValidator('json', vibeSchema), async (c) => {
         logger.info({ messages: body.messages, sessionId }, 'Vibe agent request received');
 
         const agent = (await vibeHarness.session(sessionId)).raw;
-        applyModelOverride(agent, body.model);
+        await applyModelOverride(agent, body.model);
         applySearchProvider(agent, body.search_provider);
 
         const startTime = Date.now();
@@ -769,7 +771,7 @@ app.post('/vibe/stream', zValidator('json', vibeSchema), async (c) => {
         const session = await vibeHarness.session(sessionId);
         const agent = session.raw;
         const sessionBackend = session.backend!;
-        applyModelOverride(agent, body.model);
+        await applyModelOverride(agent, body.model);
         applySearchProvider(agent, body.search_provider);
 
         // Pass originalMessages so AI SDK reuses message IDs when the client

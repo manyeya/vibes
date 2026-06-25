@@ -113,7 +113,14 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
         // navigation, bulk transforms) — rooted at the same directory on disk.
         new BashPlugin(config.sandbox ? { sandbox: config.sandbox } : config.workspaceDir),
         // Renderable artifacts (websites, docs, diagrams, charts) → canvas panel.
-        new ArtifactPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
+        // Rooted at the PER-SESSION stateDir, not the (possibly shared) project
+        // sandbox — artifacts are conversation deliverables, so they belong to
+        // the session like plan/tasks/scratchpad. This keeps sessions in one
+        // project from pooling/colliding artifacts in a shared folder, and keeps
+        // them out of an opened external repo. The canvas renders from the
+        // inline `data-artifact` content (persisted per-session in ui_messages),
+        // so the on-disk location is just a per-session backing copy.
+        new ArtifactPlugin({ baseDir: stateDir }),
         // Ask the user structured clarifying questions (questionnaire above the composer).
         new ClarificationPlugin(),
         new MemoryPlugin({
@@ -176,7 +183,9 @@ export function createSubAgentPlugins(config: DefaultPluginFactoryOptions): Plug
             trackedFilesPath: path.join(stateDir, 'tracked_files.json'),
         }),
         new BashPlugin(config.sandbox ? { sandbox: config.sandbox } : config.workspaceDir),
-        new ArtifactPlugin({ baseDir: config.workspaceDir, sandbox: config.sandbox }),
+        // Per-session artifacts (see createDefaultPlugins) — a delegated worker's
+        // deliverables belong to the same session, not the shared project dir.
+        new ArtifactPlugin({ baseDir: stateDir }),
     ];
 
     // Research-capable workers get web search too, when configured.

@@ -1,4 +1,4 @@
-import { generateText, type LanguageModel } from 'ai';
+import { streamText, type LanguageModel, type ModelMessage } from 'ai';
 import * as path from 'path';
 import type { DataStreamWriter } from '../core/types';
 import type { Sandbox } from '../core/sandbox';
@@ -389,7 +389,7 @@ export class WorkflowEngine {
         progress: StepProgress,
     ): Promise<unknown> {
         switch (step.kind) {
-            case 'prompt': return this.runPrompt(step, state, context);
+            case 'prompt': return this.runPrompt(step, state, context, progress);
             case 'route': return this.runRoute(step, state, context, depth);
             case 'parallel': return this.runParallel(step, state, context, depth);
             case 'orchestrator': return this.runOrchestrator(step, state, context, depth, progress);
@@ -409,18 +409,20 @@ export class WorkflowEngine {
 
     // ── pattern: sequential / prompt ─────────────────────────────────────────
 
-    private async runPrompt(step: PromptStep, state: RunState, context: RunContext): Promise<unknown> {
+    private async runPrompt(step: PromptStep, state: RunState, context: RunContext, progress: StepProgress): Promise<unknown> {
         const system = step.system ? interpolate(step.system, context) : undefined;
         const prompt = interpolate(step.prompt, context);
+        const onText = this.streamInto(state, progress);
         if (step.schema) {
             const text = await this.callModel(state, {
                 system: jsonInstruction(system, `a JSON value matching this JSON Schema:\n${JSON.stringify(step.schema)}`),
                 prompt,
                 temperature: step.temperature,
+                onText,
             });
             return parseJsonValue(text) ?? text;
         }
-        return this.callModel(state, { system, prompt, temperature: step.temperature });
+        return this.callModel(state, { system, prompt, temperature: step.temperature, onText });
     }
 
     // ── pattern: routing ─────────────────────────────────────────────────────
@@ -520,6 +522,7 @@ export class WorkflowEngine {
                         : gen.system ? interpolate(gen.system, context) : undefined,
                     prompt: feedback ? `${base}\n\n## Reviewer feedback to address:\n${feedback}` : base,
                     temperature: gen.temperature,
+                    onText: this.streamInto(state, progress),
                 });
                 produced = gen.schema ? (parseJsonValue(text) ?? text) : text;
                 context.steps[gen.id] = produced;
@@ -676,19 +679,24 @@ export class WorkflowEngine {
     // ── shared model call (budget + abort enforced here) ─────────────────────
 
     /**
-     * Single model call (budget + abort enforced here). Always plain-text
-     * generation — structured steps instruct the model to emit JSON in the
-     * system prompt (see {@link jsonInstruction}) and parse the text with
+     * Single model call — STREAMED (budget + abort enforced here). Always
+     * plain-text generation — structured steps instruct the model to emit JSON
+     * in the system prompt (see {@link jsonInstruction}) and parse the text with
      * {@link parseJsonValue}. We deliberately avoid the SDK's
      * `experimental_output`/`Output.object` here: it THROWS on models/providers
      * without native structured-output support (many free OpenRouter models),
      * which would hard-fail an otherwise-fine run. Manual JSON degrades
      * gracefully — an unparseable response just yields a low/empty result and
      * the run continues.
+     *
+     * `streamText` (not `generateText`) so `onText` can surface tokens live as
+     * the step produces them; the system prompt is sent as a cache-marked
+     * message so repeated calls that share it (evaluator iterations, the N
+     * workers of an orchestrator) reuse the provider's prompt cache.
      */
     private async callModel(
         state: RunState,
-        args: { system?: string; prompt: string; temperature?: number },
+        args: { system?: string; prompt: string; temperature?: number; onText?: (full: string) => void },
     ): Promise<string> {
         if (state.handles.abortSignal?.aborted) throw new WorkflowError('run aborted');
         if (state.modelCalls >= this.maxModelCalls) {
@@ -696,14 +704,39 @@ export class WorkflowEngine {
         }
         state.modelCalls++;
 
-        const result = await generateText({
+        const result = streamText({
             model: this.model,
-            prompt: args.prompt,
-            ...(args.system ? { system: args.system } : {}),
+            messages: cacheableMessages(args.system, args.prompt),
             ...(args.temperature !== undefined ? { temperature: args.temperature } : {}),
             ...(state.handles.abortSignal ? { abortSignal: state.handles.abortSignal } : {}),
         });
-        return result.text ?? '';
+
+        let text = '';
+        // Iterating textStream propagates stream errors by throwing (parity with
+        // generateText), so a failed call still rejects and is traced as failed.
+        for await (const delta of result.textStream) {
+            text += delta;
+            args.onText?.(text);
+        }
+        return text;
+    }
+
+    /**
+     * A throttled per-step token sink: feeds the model's growing output into the
+     * step's live `detail` and re-emits the run snapshot at most ~every 80ms, so
+     * the UI shows text appearing instead of a frozen "running" row. Mirrors the
+     * delta-throttle used when forwarding sub-agent streams.
+     */
+    private streamInto(state: RunState, progress: StepProgress): (full: string) => void {
+        let lastEmit = 0;
+        return (full: string) => {
+            progress.detail = full.length > STREAM_DETAIL_CAP ? `${full.slice(0, STREAM_DETAIL_CAP)}…` : full;
+            const now = Date.now();
+            if (now - lastEmit >= 80) {
+                lastEmit = now;
+                this.emitRun(state, 'running');
+            }
+        };
     }
 
     private bindInputs(workflow: Workflow, provided: Record<string, unknown>): Record<string, unknown> {
@@ -805,6 +838,31 @@ function coerceInput(value: unknown, type: WorkflowInputType | undefined): unkno
         default:
             return typeof value === 'string' ? value : value == null ? value : String(value);
     }
+}
+
+/** Cap for live-streamed step text in the UI snapshot (full output is the step result). */
+const STREAM_DETAIL_CAP = 2500;
+
+/**
+ * Build the message list for a step call with an ephemeral cache breakpoint on
+ * the (stable) system prompt. Repeated calls that share a system — an
+ * evaluator's iterations, the workers of an orchestrator — then hit the
+ * provider's prompt cache. Providers that auto-cache prefixes (OpenAI) or don't
+ * cache at all simply ignore the unknown `providerOptions` keys, so it's safe
+ * across the OpenAI/OpenRouter/Anthropic models this engine runs on.
+ */
+function cacheableMessages(system: string | undefined, prompt: string): ModelMessage[] {
+    const messages: ModelMessage[] = [];
+    if (system) {
+        const cacheControl = { cacheControl: { type: 'ephemeral' } } as const;
+        messages.push({
+            role: 'system',
+            content: system,
+            providerOptions: { anthropic: cacheControl, bedrock: cacheControl, openrouter: cacheControl },
+        });
+    }
+    messages.push({ role: 'user', content: prompt });
+    return messages;
 }
 
 /** Append a strict "respond with only JSON" directive to a system prompt. */

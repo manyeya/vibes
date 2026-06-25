@@ -133,10 +133,20 @@ export async function createAgentStreamResponse(
                     ...(response.messages as ModelMessage[]),
                 ];
 
-                // Add this stream's accumulated token usage to the existing
-                // per-session running total. Pulled out of the agent and
-                // merged with whatever's already on the backend.
-                const streamUsage = agent.consumeLastStreamUsage();
+                // This stream's token usage, added to the per-session running
+                // total. Prefer the SDK's authoritative aggregate
+                // (`result.totalUsage`, summed across every step) — it's ground
+                // truth and doesn't depend on the per-step onStepFinish tally
+                // firing. Fall back to the agent's tally when a provider omits
+                // usage from the final result. Always consume the agent counter
+                // so it resets for the next stream regardless.
+                const tallied = agent.consumeLastStreamUsage();
+                let sdk: { inputTokens?: number; outputTokens?: number; totalTokens?: number } = {};
+                try { sdk = (await result.totalUsage) ?? {}; } catch { /* provider omitted usage */ }
+                const sdkTotal = sdk.totalTokens ?? ((sdk.inputTokens ?? 0) + (sdk.outputTokens ?? 0));
+                const streamUsage = sdkTotal > 0
+                    ? { inputTokens: sdk.inputTokens ?? 0, outputTokens: sdk.outputTokens ?? 0, totalTokens: sdkTotal }
+                    : tallied;
                 const prior = backend.getState();
                 const priorUsage = (prior.metadata?.usage ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 }) as {
                     inputTokens: number;
