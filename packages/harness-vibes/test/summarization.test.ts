@@ -48,7 +48,9 @@ describe('SummarizationPlugin trigger', () => {
     // …but a big system prompt (~2000 chars ≈ 500 tok) pushes it over → compacts.
     const p2 = new SummarizationPlugin(mockModel() as any, { contextWindow: 1000, compressionRatio: 0.7 });
     const withSystem = await p2.prepareStep(step(messages, 'S'.repeat(2000)));
-    expect(withSystem?.messages?.[0]?.role).toBe('system');
-    expect(String(withSystem?.messages?.[0]?.content)).toContain('SUMMARY-OF-OLD-TURNS');
+    // A limit-warning system message may precede the summary once the effective
+    // payload is this tight, so find the summary rather than assuming index 0.
+    const summary = withSystem?.messages?.find((m) => String(m.content).includes('SUMMARY-OF-OLD-TURNS'));
+    expect(summary?.role).toBe('system');
   });
 });

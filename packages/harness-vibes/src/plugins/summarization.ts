@@ -31,6 +31,11 @@ export interface SummarizationConfig {
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_COMPRESSION_RATIO = 0.7;
 const DEFAULT_PER_MESSAGE_CAP = 1200;
+// Above this fraction of the window the model gets a "wrap up" nudge. Set above
+// the compaction ratio on purpose: it measures the EFFECTIVE (post-summary)
+// payload, so it only fires when summarization can't pull the real context back
+// under the line — not on every step once raw history is large.
+const WARN_RATIO = 0.85;
 
 /**
  * Rolling-summary plugin (token-based). Hooks `prepareStep`, emits a live
@@ -106,13 +111,14 @@ export default class SummarizationPlugin implements Plugin {
         // schemas), so folding in the system prompt here keeps the trigger from
         // lagging far behind the gauge — otherwise the gauge can read "full"
         // while this estimate (messages only) stays under the threshold.
-        const used = this.estimateTokens(messages) + Math.round((options.system?.length ?? 0) / 4);
+        const systemChars = options.system?.length ?? 0;
+        const used = this.estimateTokens(messages) + Math.round(systemChars / 4);
         const compressAt = Math.round(this.contextWindow * this.compressionRatio);
 
         // Below the threshold → leave the conversation intact (just carry any
         // existing summary). This is the common case: no flow disruption.
         if (used <= compressAt) {
-            return this.maybePrependSummary(messages);
+            return this.warnIfTight(this.maybePrependSummary(messages), messages, systemChars);
         }
 
         // Over threshold → keep the most recent messages that fit in ~60% of
@@ -132,7 +138,7 @@ export default class SummarizationPlugin implements Plugin {
         const recent = messages.slice(splitAt);
 
         if (oldest.length === 0) {
-            return this.maybePrependSummary(messages);
+            return this.warnIfTight(this.maybePrependSummary(messages), messages, systemChars);
         }
 
         const newOldies = oldest.filter(m => !this.summarizedFingerprints.has(this.fingerprint(m)));
@@ -158,7 +164,33 @@ export default class SummarizationPlugin implements Plugin {
             }
         }
 
-        return this.maybePrependSummary(recent);
+        return this.warnIfTight(this.maybePrependSummary(recent), recent, systemChars);
+    }
+
+    /**
+     * Prepend a one-line "context nearly full" reminder when the payload we're
+     * about to send (summary + tail + system) crosses {@link WARN_RATIO} of the
+     * window, nudging the model to write results to files and wrap up before
+     * older turns get summarized away or hard-truncated. Measures the effective
+     * messages, so it stays quiet whenever summarization is holding the line.
+     */
+    private warnIfTight(
+        result: { messages: ModelMessage[] } | undefined,
+        fallback: ModelMessage[],
+        systemChars: number,
+    ) {
+        const messages = result?.messages ?? fallback;
+        const effective = this.estimateTokens(messages) + Math.round(systemChars / 4);
+        if (effective < Math.round(this.contextWindow * WARN_RATIO)) return result;
+        const pct = Math.round((effective / this.contextWindow) * 100);
+        const warn: ModelMessage = {
+            role: 'system',
+            content:
+                `# Context nearly full (~${pct}% of ${this.contextWindow.toLocaleString()} tokens)\n` +
+                'Wrap up now: save any in-progress work to files and give your final answer. ' +
+                'Older messages will be summarized or dropped if the conversation keeps growing.',
+        };
+        return { messages: [warn, ...messages] };
     }
 
     private maybePrependSummary(messages: ModelMessage[]) {
