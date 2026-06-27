@@ -25,5 +25,9 @@
   "private": true,
   "dependencies": {
     "dotenv-mono": "^1.5.1"
+  },
+  "//overrides": "Force a single ai version: the OpenRouter/Exa/Zhipu providers still peer-depend on ai@^6, which otherwise installs a second ai@6 copy alongside ai@7 and makes editors resolve `ai` types inconsistently (e.g. a stale 3-arg ToolLoopAgent). They emit v3-spec models that ai@7 accepts, so pinning ai to 7 is safe.",
+  "overrides": {
+    "ai": "7.0.1"
   }
 }
