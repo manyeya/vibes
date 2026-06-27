@@ -15,18 +15,18 @@ import {
 } from '../../plugins';
 import MemoryPlugin from '../../plugins/memory';
 import {
-    AgentCoreConfig,
+    AgentHarnessConfig,
     SubAgent,
     Plugin,
     ToolsRequiringApprovalConfig,
 } from '../types';
-import { AgentCore } from './agent-core';
+import { AgentHarness } from './agent-harness';
 import type { Sandbox } from '../sandbox';
 
 /**
  * Configuration for initializing a VibeAgent instance.
  */
-export interface VibeAgentConfig extends Partial<Omit<AgentCoreConfig, 'instructions'>> {
+export interface VibeAgentConfig extends Partial<Omit<AgentHarnessConfig, 'instructions'>> {
     /** Custom instructions to extend the base system prompt */
     systemPrompt?: string;
     /** Registry of sub-agents available for delegation */
@@ -200,7 +200,7 @@ export function createSubAgentPlugins(config: DefaultPluginFactoryOptions): Plug
  * It supports multi-step reasoning, persistent state with task dependencies,
  * real filesystem access, modular skills, and sub-agent delegation.
  */
-export class VibeAgent extends AgentCore {
+export class VibeAgent extends AgentHarness {
     private readonly vibeAgentConfig: VibeAgentConfig;
     private readonly parentCustomTools: Record<string, any>;
     private readonly parentApprovalConfig: ToolsRequiringApprovalConfig;
@@ -337,3 +337,4 @@ export class VibeAgent extends AgentCore {
 export function createVibeAgent(config: VibeAgentConfig = {}): VibeAgent {
     return new VibeAgent(config);
 }
+

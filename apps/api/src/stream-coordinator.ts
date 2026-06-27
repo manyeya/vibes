@@ -5,7 +5,7 @@
  *   - periodic cleanup of the persisted stream_log
  *
  * Session identity, workspaces, persisted message state, and agent
- * instances are owned by the harness (`vibeHarness`) — NOT here. This used
+ * instances are owned by the harness (`vibeRuntime`) — NOT here. This used
  * to be `APISessionManager`, which duplicated the harness's session
  * handling; that responsibility now lives in one place.
  */

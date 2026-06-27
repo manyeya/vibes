@@ -44,7 +44,7 @@ const WARN_RATIO = 0.85;
  * messages into a synthetic system message prepended to the recent tail. The
  * running summary is cached so a run doesn't re-summarise covered content.
  *
- * Pairs with `AgentCore.pruneMessages`, which does lossless large-tool-output
+ * Pairs with `AgentHarness.pruneMessages`, which does lossless large-tool-output
  * compression and only hard-truncates as a last resort near the very top of the
  * window — so this token-based summarisation is the primary mechanism and short
  * conversations are never trimmed by message count.
@@ -77,7 +77,7 @@ export default class SummarizationPlugin implements Plugin {
     /**
      * Update the window/ratio that drive the compression threshold — called by
      * the agent when the UI swaps the active model mid-session. The live gauge
-     * itself is emitted by AgentCore from real provider token counts.
+     * itself is emitted by AgentHarness from real provider token counts.
      */
     setContextWindow(contextWindow: number, compressionRatio?: number): void {
         if (Number.isFinite(contextWindow) && contextWindow > 0) {
@@ -106,7 +106,7 @@ export default class SummarizationPlugin implements Plugin {
     }) {
         const messages = options.messages;
         // Estimate from the message list PLUS the system prompt to decide whether
-        // to compress. The live UI gauge is emitted by AgentCore from the
+        // to compress. The live UI gauge is emitted by AgentHarness from the
         // provider's real token counts (which include the system prompt + tool
         // schemas), so folding in the system prompt here keeps the trigger from
         // lagging far behind the gauge — otherwise the gauge can read "full"

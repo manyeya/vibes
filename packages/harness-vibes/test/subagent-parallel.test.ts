@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import SubAgentPlugin from '../src/plugins/sub-agent';
-import type { Plugin, AgentCoreConfig } from '../src/core/types';
+import type { Plugin, AgentHarnessConfig } from '../src/core/types';
 import {
   completionSteps,
   createStreamResult,
@@ -24,7 +24,7 @@ function createBuiltInPlugins(): Plugin[] {
 function createParallelPlugin(options: {
   workspaceDir: string;
   maxConcurrentAgents: number;
-  generate: (config: AgentCoreConfig, call: { messages?: any[] }) => Promise<any>;
+  generate: (config: AgentHarnessConfig, call: { messages?: any[] }) => Promise<any>;
 }) {
   return new SubAgentPlugin(
     new Map([

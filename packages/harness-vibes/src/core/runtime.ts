@@ -2,7 +2,7 @@ import { generateText, Output, type LanguageModel, type ModelMessage } from 'ai'
 import { openai } from '@ai-sdk/openai';
 import type { ZodType } from 'zod';
 import { VibeAgent, type VibeAgentConfig } from './agent/vibe-agent';
-import { AgentCore } from './agent/agent-core';
+import { AgentHarness } from './agent/agent-harness';
 import type { AgentState } from './types';
 import type { Sandbox } from './sandbox';
 import { SessionStore } from './session/session-manager';
@@ -13,7 +13,7 @@ import type { SessionInfo, WorkspaceInfo } from '../backend/sqlite-backend';
  * Public agent definition (Phase 2).
  *
  * This is the small, Flue-like front door to the harness: describe an
- * agent declaratively, hand it to {@link createHarness}, open a
+ * agent declaratively, hand it to {@link createRuntime}, open a
  * {@link Session}, and call {@link Session.prompt}. Everything underneath
  * (plugins, sandbox, memory, reasoning) is the flagship VibeAgent engine.
  */
@@ -26,7 +26,7 @@ export interface AgentDefinition extends VibeAgentConfig { }
  */
 export type AgentFactory = AgentDefinition | (() => AgentDefinition);
 
-export interface HarnessOptions {
+export interface RuntimeOptions {
     /** Sandbox to back the agent's filesystem + shell. Overrides the definition's sandbox. */
     sandbox?: Sandbox;
     /** Workspace directory. Overrides the definition's workspaceDir. */
@@ -84,7 +84,7 @@ export interface PromptResult<T> {
     state: AgentState;
 }
 
-type GenerateOptions = Parameters<AgentCore['generate']>[0];
+type GenerateOptions = Parameters<AgentHarness['generate']>[0];
 
 /**
  * A conversation scope bound to a single agent instance. The single owner
@@ -98,12 +98,12 @@ export class Session {
     readonly workspaceDir: string;
     /** Persistent backend, present for persisted (non-ephemeral) sessions. */
     readonly backend?: SqliteBackend;
-    private readonly agent: AgentCore;
+    private readonly agent: AgentHarness;
     private readonly model: LanguageModel;
 
     constructor(init: {
         id: string;
-        agent: AgentCore;
+        agent: AgentHarness;
         model: LanguageModel;
         workspaceDir: string;
         backend?: SqliteBackend;
@@ -116,7 +116,7 @@ export class Session {
     }
 
     /** The underlying agent, for advanced/streaming use. */
-    get raw(): AgentCore {
+    get raw(): AgentHarness {
         return this.agent;
     }
 
@@ -193,13 +193,13 @@ export class Session {
  * instance. The HTTP layer (or any other caller) goes through here rather
  * than caching agents or opening backends itself.
  */
-export class Harness {
+export class AgentRuntime {
     private readonly definition: AgentDefinition;
     private readonly model: LanguageModel;
     private readonly store: SessionStore;
     private readonly cache = new Map<string, Session>();
 
-    constructor(definition: AgentDefinition, options: HarnessOptions = {}) {
+    constructor(definition: AgentDefinition, options: RuntimeOptions = {}) {
         this.definition = definition;
         this.model = definition.model ?? openai('gpt-4o');
         this.store = new SessionStore({
@@ -356,22 +356,22 @@ export class Harness {
 
 /**
  * Declare an agent. Returns the definition (or thunk) unchanged so it can
- * be exported from a module and consumed by {@link createHarness}.
+ * be exported from a module and consumed by {@link createRuntime}.
  */
 export function defineAgent(definition: AgentFactory): AgentFactory {
     return definition;
 }
 
 /**
- * Build a {@link Harness} from an agent definition. Equivalent to Flue's
+ * Build a {@link AgentRuntime} from an agent definition. Equivalent to Flue's
  * `init(agent)`.
  */
-export function createHarness(factory: AgentFactory, options: HarnessOptions = {}): Harness {
+export function createRuntime(factory: AgentFactory, options: RuntimeOptions = {}): AgentRuntime {
     const def = typeof factory === 'function' ? factory() : factory;
     const merged: AgentDefinition = {
         ...def,
         ...(options.sandbox ? { sandbox: options.sandbox } : {}),
         ...(options.workspaceDir ? { workspaceDir: options.workspaceDir } : {}),
     };
-    return new Harness(merged, options);
+    return new AgentRuntime(merged, options);
 }

@@ -310,7 +310,7 @@ describe('Plugin streaming', () => {
     plugin.onStreamContextReady(createPluginStreamContext(createCapturingWriter(parts)));
 
     // Small conversation → under threshold → no compression. The live gauge is
-    // now emitted by AgentCore from real provider tokens, not this plugin.
+    // now emitted by AgentHarness from real provider tokens, not this plugin.
     await (plugin.prepareStep as any)({ steps: [], stepNumber: 0, model, messages: [{ role: 'user', content: 'hi' }] });
     expect(parts.some((p) => p.type === 'data-summarization')).toBe(false);
     expect(parts.some((p) => p.type === 'data-context_usage')).toBe(false);

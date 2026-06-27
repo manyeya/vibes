@@ -2,7 +2,7 @@
  * Error log: failures the agent hit are tracked separately from the message
  * stream and never folded into summaries (the "Manus approach"), so the model
  * keeps seeing what went wrong and can avoid repeating it. These are pure
- * helpers over an `ErrorEntry[]` the agent owns; AgentCore holds the array and
+ * helpers over an `ErrorEntry[]` the agent owns; AgentHarness holds the array and
  * delegates the bookkeeping here.
  */
 
@@ -49,7 +49,7 @@ export function recordError(
     }
 
     if (process.env.DEBUG_VIBES) {
-        console.error(`[AgentCore] Error logged:`, { toolName, error, context });
+        console.error(`[AgentHarness] Error logged:`, { toolName, error, context });
     }
 }
 

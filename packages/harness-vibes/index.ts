@@ -2,7 +2,7 @@
 //
 // This file is intentionally thin: the VibeAgent engine lives in
 // src/core/vibe-agent.ts and the public Flue-like facade in
-// src/core/harness.ts. Keeping the barrel free of class definitions avoids
+// src/core/runtime.ts. Keeping the barrel free of class definitions avoids
 // circular imports and keeps the package's surface easy to scan.
 
 import { type InferAgentUIMessage } from 'ai';
@@ -39,7 +39,7 @@ import StateBackend, { InMemoryStateBackend } from './src/backend/state-backend'
 export type { SessionInfo, WorkspaceInfo } from './src/backend/sqlite-backend';
 import {
     type AgentState,
-    type AgentCoreConfig,
+    type AgentHarnessConfig,
     type SubAgent,
     type TaskItem,
     type TaskTemplate,
@@ -49,7 +49,7 @@ import {
     createDataStreamWriter,
     DataStreamWriter,
 } from './src/core/types';
-import { AgentCore } from './src/core/agent/agent-core';
+import { AgentHarness } from './src/core/agent/agent-harness';
 
 export { createAgentStreamResponse } from './src/core/streaming/stream-response';
 export {
@@ -84,16 +84,16 @@ export {
 // ── Phase 2: Public harness facade ──────────────────────────────────────
 export {
     defineAgent,
-    createHarness,
-    Harness,
+    createRuntime,
+    AgentRuntime,
     Session,
     type AgentDefinition,
     type AgentFactory,
-    type HarnessOptions,
+    type RuntimeOptions,
     type SessionOptions,
     type PromptOptions,
     type PromptResult,
-} from './src/core/harness';
+} from './src/core/runtime';
 
 export {
     type AgentState,
@@ -134,7 +134,7 @@ export {
     InMemoryStateBackend,
     SummarizationPlugin,
     type SummarizationConfig,
-    type AgentCoreConfig,
+    type AgentHarnessConfig,
     type SubAgent,
-    AgentCore,
+    AgentHarness,
 };

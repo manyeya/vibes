@@ -372,9 +372,9 @@ export {
 } from './streaming/streaming.js';
 
 /**
- * Configuration for initializing a AgentCore instance.
+ * Configuration for initializing a AgentHarness instance.
  */
-export interface AgentCoreConfig {
+export interface AgentHarnessConfig {
     /** The AI model to use */
     model: LanguageModel;
     /** The base system instructions */
@@ -450,10 +450,10 @@ export interface AgentCoreConfig {
 }
 
 /**
- * Result returned by AgentCore.generate()
+ * Result returned by AgentHarness.generate()
  * Extends GenerateTextResult with additional agent-specific fields
  */
-export interface AgentCoreGenerateResult<TOOLS extends ToolSet = ToolSet>
+export interface AgentHarnessGenerateResult<TOOLS extends ToolSet = ToolSet>
     extends GenerateTextResult<TOOLS, any, never> {
     /** The current agent state after generation */
     state: AgentState;
@@ -462,7 +462,7 @@ export interface AgentCoreGenerateResult<TOOLS extends ToolSet = ToolSet>
 }
 
 /**
- * Result returned by AgentCore.stream() - same as StreamTextResult from AI SDK
+ * Result returned by AgentHarness.stream() - same as StreamTextResult from AI SDK
  * Using ToolSet for tool types due to dynamic tool registration
  */
-export type AgentCoreStreamResult = StreamTextResult<ToolSet, any, never>;
+export type AgentHarnessStreamResult = StreamTextResult<ToolSet, any, never>;

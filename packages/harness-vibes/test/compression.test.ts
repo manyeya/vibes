@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import type { ModelMessage } from 'ai';
-import { AgentCore } from '../src/core/agent/agent-core';
+import { AgentHarness } from '../src/core/agent/agent-harness';
 
 // Expose the protected compression helpers for testing.
-class TestAgent extends AgentCore {
+class TestAgent extends AgentHarness {
   compress(msgs: ModelMessage[]) {
     return this.compressLargeContent(msgs);
   }

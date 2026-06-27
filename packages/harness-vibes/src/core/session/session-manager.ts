@@ -1,5 +1,5 @@
 /**
- * Harness Session Manager - Comprehensive session management with per-session workspaces.
+ * AgentRuntime Session Manager - Comprehensive session management with per-session workspaces.
  *
  * Features:
  * - Each session gets an isolated workspace directory (workspace/sessions/{sessionId}/)
@@ -22,8 +22,8 @@
 
 import * as path from 'path';
 import { stat } from 'fs/promises';
-import { AgentCore } from '../agent/agent-core';
-import type { AgentCoreConfig, AgentState } from '../types';
+import { AgentHarness } from '../agent/agent-harness';
+import type { AgentHarnessConfig, AgentState } from '../types';
 import type { Sandbox } from '../sandbox';
 import { LocalSandbox } from '../../sandbox/local-sandbox';
 import SqliteBackend from '../../backend/sqlite-backend';
@@ -33,7 +33,7 @@ import type { VibesUIMessage } from '../streaming/streaming';
 
 /**
  * Per-session context handed to a {@link SessionAgentFactory}. The factory
- * (typically supplied by `Harness`) builds the actual agent for the
+ * (typically supplied by `AgentRuntime`) builds the actual agent for the
  * session, so the store stays decoupled from any specific agent flavour.
  */
 export interface SessionContext {
@@ -59,7 +59,7 @@ export interface SessionContext {
 }
 
 /** Builds the agent instance for a session from its {@link SessionContext}. */
-export type SessionAgentFactory = (ctx: SessionContext) => AgentCore;
+export type SessionAgentFactory = (ctx: SessionContext) => AgentHarness;
 
 /**
  * Root workspace directory
@@ -88,7 +88,7 @@ export interface SessionConfig {
 /**
  * Agent creation configuration for a session
  */
-export interface SessionAgentConfig extends Partial<AgentCoreConfig> {
+export interface SessionAgentConfig extends Partial<AgentHarnessConfig> {
     /** Workspace directory (will be set to session workspace) */
     workspaceDir?: string;
 }
@@ -100,7 +100,7 @@ export interface StoredSession {
     /** Unique session identifier */
     id: string;
     /** The agent instance for this session */
-    agent: AgentCore;
+    agent: AgentHarness;
     /** Persistent storage backend for this session */
     backend: SqliteBackend;
     /** Session workspace directory (absolute path) */
@@ -128,7 +128,7 @@ export interface CleanupOptions {
 }
 
 /**
- * Harness Session Manager
+ * AgentRuntime Session Manager
  *
  * Manages complete session lifecycle with per-session isolated workspaces.
  * Session working state is isolated while long-term memory stays shared.
@@ -141,7 +141,7 @@ export class SessionStore {
 
     /** Default agent configuration (used only when no agentFactory is set) */
     private defaultAgentConfig?: SessionAgentConfig;
-    /** Builds the agent for each session. When unset, a bare AgentCore is used. */
+    /** Builds the agent for each session. When unset, a bare AgentHarness is used. */
     private agentFactory?: SessionAgentFactory;
     /** Guard so the Default-workspace reconciliation runs at most once. */
     private defaultWorkspaceEnsured = false;
@@ -282,14 +282,14 @@ export class SessionStore {
         // Build the agent. The factory (when provided) constructs the real
         // agent — typically the flagship VibeAgent — rooted at a sandbox for the
         // (possibly shared) workspace dir, with per-session plugin state kept in
-        // stateDir. Without a factory we fall back to a bare AgentCore. The
+        // stateDir. Without a factory we fall back to a bare AgentHarness. The
         // sandbox backs the filesystem/artifact tools (node fs on the real
         // workspace dir); the shell runs through just-bash in BashPlugin, rooted
         // at the same directory, so the two views stay in sync.
         const sandbox = new LocalSandbox(workspaceDir);
         const agent = this.agentFactory
             ? this.agentFactory({ sessionId, workspaceDir, stateDir, sharedDir, sandbox })
-            : new AgentCore(this.buildAgentConfig(sessionId, workspaceDir, stateDir, sharedDir));
+            : new AgentHarness(this.buildAgentConfig(sessionId, workspaceDir, stateDir, sharedDir));
 
         const instance: StoredSession = {
             id: sessionId,
@@ -313,7 +313,7 @@ export class SessionStore {
         workspaceDir: string,
         stateDir: string = workspaceDir,
         sharedDir?: string
-    ): AgentCoreConfig {
+    ): AgentHarnessConfig {
         const baseConfig = this.defaultAgentConfig || {};
 
         // Sandbox-rooted file/shell work uses workspaceDir; per-session plugin
@@ -326,7 +326,7 @@ export class SessionStore {
             ...(sharedDir ? { sharedDir } : {}),
             // Session ID is passed through metadata for plugins to use
             sessionId,
-        } as AgentCoreConfig;
+        } as AgentHarnessConfig;
     }
 
     /**

@@ -9,12 +9,12 @@ import {
     PluginStreamContext,
     SubAgent,
     ToolsRequiringApprovalConfig,
-    AgentCoreConfig,
+    AgentHarnessConfig,
     createScopedUIMessageStreamWriter,
     createDataStreamWriter,
     type DataStreamWriter,
 } from '../core/types';
-import { AgentCore } from '../core/agent/agent-core';
+import { AgentHarness } from '../core/agent/agent-harness';
 
 // Optional structured-handoff tool. Sub-agents are NOT required to call it —
 // a normal final answer is a perfectly good result. Calling it just lets a
@@ -47,7 +47,7 @@ type BuiltInPluginFactory = (options: {
     workspaceDir?: string;
 }) => Plugin[];
 
-type AgentFactory = (config: AgentCoreConfig) => AgentCore;
+type AgentFactory = (config: AgentHarnessConfig) => AgentHarness;
 
 interface DelegationInput extends z.infer<typeof delegationInputSchema> {}
 
@@ -408,7 +408,7 @@ export default class SubAgentPlugin implements Plugin {
     /**
      * The parent agent's context window + compression ratio, so a delegated
      * sub-agent's own gauge is framed against the right model. Seeded by the
-     * parent through `setContextWindow` (the AgentCore fan-out) and refreshed
+     * parent through `setContextWindow` (the AgentHarness fan-out) and refreshed
      * when the UI swaps models mid-session.
      */
     private parentContextWindow = 128_000;
@@ -423,7 +423,7 @@ export default class SubAgentPlugin implements Plugin {
         private readonly workspaceDir: string = 'workspace',
         private readonly cacheTTL: number = 60 * 60 * 1000,
         private readonly maxConcurrentAgents: number = 4,
-        private readonly createAgent: AgentFactory = config => new AgentCore(config)
+        private readonly createAgent: AgentFactory = config => new AgentHarness(config)
     ) {
         this.registry = new DelegationRegistry(cacheTTL);
         this.normalizedSubAgents = this.normalizeSubAgents(subAgents);
@@ -450,7 +450,7 @@ export default class SubAgentPlugin implements Plugin {
     }
 
     /**
-     * Receive the parent's context window/ratio (via AgentCore's fan-out) so
+     * Receive the parent's context window/ratio (via AgentHarness's fan-out) so
      * delegated sub-agents render their own gauge against the same frame.
      */
     setContextWindow(contextWindow: number, compressionRatio?: number): void {
@@ -658,7 +658,7 @@ export default class SubAgentPlugin implements Plugin {
         });
     }
 
-    private buildAgentConfig(subAgent: NormalizedSubAgent, completionTool: Tool<any, any>): AgentCoreConfig {
+    private buildAgentConfig(subAgent: NormalizedSubAgent, completionTool: Tool<any, any>): AgentHarnessConfig {
         const model = subAgent.model || this.baseModel;
         const blockedTools = mergeBlockedTools(subAgent.blockedTools, subAgent.allowSubdelegation);
 

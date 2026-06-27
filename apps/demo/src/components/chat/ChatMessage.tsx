@@ -37,7 +37,7 @@ interface ToolRow {
 // arrive in execution order as:
 //   SDK `tool-<name>` part (one per toolCallId)  →  opens the row
 //   `data-tool_progress` chunks that follow it    →  enrich it (elapsed + msg)
-// The agent-core wrapper always emits a generic "<tool> complete"; plugins may
+// The agent-harness wrapper always emits a generic "<tool> complete"; plugins may
 // add a richer one ("Generated 8 tasks", "Wrote file.txt"). We open on the SDK
 // part and fold every progress chunk up to the next SDK part into it, dropping
 // the generic wrapper text in favour of a specific message when present. That

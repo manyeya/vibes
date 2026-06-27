@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { MockLanguageModelV3 } from 'ai/test';
 import { join } from 'path';
 import { writeFile, readFile, stat } from 'fs/promises';
-import { createHarness, SqliteBackend } from '../index';
+import { createRuntime, SqliteBackend } from '../index';
 import { createTempWorkspace, removeTempWorkspace } from './helpers';
 
 function textModel(text: string) {
@@ -18,7 +18,7 @@ function textModel(text: string) {
 }
 
 function harnessAt(root: string) {
-    return createHarness(
+    return createRuntime(
         { model: textModel('ok') as any, workspaceDir: root },
         {
             dbPath: join(root, 'vibes.db'),

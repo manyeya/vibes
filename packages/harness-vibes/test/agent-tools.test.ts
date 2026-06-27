@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { tool } from 'ai';
 import z from 'zod';
-import { AgentCore } from '../src/core/agent/agent-core';
+import { AgentHarness } from '../src/core/agent/agent-harness';
 import { createPluginStreamContext } from '../src/core/types';
 import { createCapturingWriter, createTool } from './helpers';
 
-class ExposedVibeAgent extends AgentCore {
+class ExposedVibeAgent extends AgentHarness {
   async exposeGetAllTools(allowedTools?: string[]) {
     return this.getAllTools(allowedTools);
   }
@@ -22,7 +22,7 @@ class ExposedVibeAgent extends AgentCore {
   }
 }
 
-describe('AgentCore tool filtering', () => {
+describe('AgentHarness tool filtering', () => {
   test('allowedTools limits the runtime catalog', async () => {
     const agent = new ExposedVibeAgent({
       model: {} as any,

@@ -38,15 +38,15 @@ cd packages/harness-vibes && bun test
 
 ### Agent layering & vocabulary
 
-There are three layers, each with one clear name:
+Three layers, each with a role-obvious name:
 
-| Layer | Name | File | Role |
+| Role | Name | File | What it is |
 |-------|------|------|------|
-| Engine | `AgentCore` | `src/core/agent-core.ts` | Low-level loop extending AI SDK's `ToolLoopAgent`; plugins + context engineering |
-| Flagship | `VibeAgent` (`createVibeAgent`) | `src/core/vibe-agent.ts` | Batteries-included `AgentCore` subclass with all default plugins + sub-agents |
-| Facade | `defineAgent` / `createHarness` / `Harness` / `Session` | `src/core/harness.ts` | Small Flue-like front door: declare → build → `session.prompt({ result })` |
+| **The harness** | `AgentHarness` | `src/core/agent/agent-harness.ts` | The runtime loop around the model (extends AI SDK's `ToolLoopAgent`). Orchestrates collaborators: `ContextManager`, `UsageTracker`, `ToolRegistry`, plus plugin dispatch. New responsibilities go to a collaborator, not onto this class. |
+| **The agent** | `VibeAgent` (`createVibeAgent`) | `src/core/agent/vibe-agent.ts` | Batteries-included `AgentHarness` subclass with all default plugins + sub-agents. This is the thing you talk to. |
+| **The runtime / front door** | `AgentRuntime` / `createRuntime` / `defineAgent` / `Session` | `src/core/runtime.ts` | NOT a harness — the app-level manager that builds & caches per-session agents and owns workspaces. Flue-like: declare → build → `session.prompt({ result })`. |
 
-`AgentCore` (in `src/core/agent-core.ts`) provides:
+`AgentHarness` (in `src/core/agent/agent-harness.ts`) provides:
 
 - **Plugin system** - Extensible capabilities via modular plugins
 - **Restorable compression** - Large content replaced with file/path references
@@ -93,7 +93,7 @@ Sessions are persisted to SQLite (`workspace/vibes.db`) via `SqliteBackend`. The
 - `GET /api/sessions/:id/messages` - Load chat history
 - `POST /api/vibe/stream` - Streaming agent endpoint
 
-Sessions have a single owner: the harness `vibeHarness` (in `apps/api/src/vibe-coder.ts`) owns session lifecycle + agent instances (one cached agent per session id, via `vibeHarness.session(id)`). The API's `streamCoordinator` (in `apps/api/src/stream-coordinator.ts`) holds only HTTP streaming-transport state (abort controllers + the reconnect registry).
+Sessions have a single owner: the harness `vibeRuntime` (in `apps/api/src/vibe-coder.ts`) owns session lifecycle + agent instances (one cached agent per session id, via `vibeRuntime.session(id)`). The API's `streamCoordinator` (in `apps/api/src/stream-coordinator.ts`) holds only HTTP streaming-transport state (abort controllers + the reconnect registry).
 
 ### Sub-Agent System
 

@@ -11,9 +11,9 @@ import {
     type StepResult,
 } from 'ai';
 import {
-    AgentCoreConfig,
-    AgentCoreGenerateResult,
-    AgentCoreStreamResult,
+    AgentHarnessConfig,
+    AgentHarnessGenerateResult,
+    AgentHarnessStreamResult,
     PluginStreamContext,
     Plugin,
     ErrorEntry,
@@ -50,7 +50,7 @@ interface PrepareCallOptions {
 }
 
 /**
- * AgentCore is the agent **harness**: the runtime loop around the model. It
+ * AgentHarness is the agent **harness**: the runtime loop around the model. It
  * extends the AI SDK's `ToolLoopAgent` and orchestrates three collaborators
  * rather than implementing everything itself:
  *
@@ -63,7 +63,7 @@ interface PrepareCallOptions {
  * error log, and wiring the collaborators together. Keep new responsibilities
  * out of this class — give them to a collaborator and orchestrate it from here.
  */
-export class AgentCore extends ToolLoopAgent<never, ToolSet> {
+export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
     protected plugins: Plugin[] = [];
     protected model: LanguageModel;
     protected customSystemPrompt: string;
@@ -108,7 +108,7 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
     protected get contextWindow(): number { return this.context.contextWindow; }
     protected get contextCompressionRatio(): number { return this.context.compressionRatio; }
 
-    protected static resolveStopWhen(config: AgentCoreConfig) {
+    protected static resolveStopWhen(config: AgentHarnessConfig) {
         const maxStepCondition = stepCountIs(config.maxSteps ?? 20);
         if (!config.stopWhen) {
             return maxStepCondition;
@@ -119,7 +119,7 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
             : [config.stopWhen, maxStepCondition];
     }
 
-    constructor(config: AgentCoreConfig) {
+    constructor(config: AgentHarnessConfig) {
         // Initialize ToolLoopAgent with base configuration. We hook both
         // prepareCall (once per stream/generate, assembles stable system
         // instructions) and prepareStep (every step, prunes context, fans
@@ -138,7 +138,7 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
                     await userOnStepFinish(step);
                 }
             },
-            stopWhen: AgentCore.resolveStopWhen(config),
+            stopWhen: AgentHarness.resolveStopWhen(config),
             // v7 typed prepareCall's return as the AgentCallParameters intersection
             // (incl. toolsContext); our override returns the same object shape with
             // `instructions`, so cast through `any` rather than restate that type.
@@ -511,8 +511,8 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
      */
     override async stream(
         options?: any
-    ): Promise<AgentCoreStreamResult> {
-        // Extract AgentCore-specific options (writer)
+    ): Promise<AgentHarnessStreamResult> {
+        // Extract AgentHarness-specific options (writer)
         // Also extract 'prompt' to avoid conflicts with 'messages' in super.stream()
         const { messages, writer, prompt, ...agentOptions } = options || {};
 
@@ -549,7 +549,7 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
             ...(modelMessages ? { messages: modelMessages } : {}),
             onError: ({ error }: { error: unknown }) => {
                 const e = error as { name?: string; message?: string; statusCode?: number; responseBody?: string; cause?: unknown };
-                console.error('[AgentCore] stream error:', {
+                console.error('[AgentHarness] stream error:', {
                     name: e?.name, message: e?.message, statusCode: e?.statusCode,
                     responseBody: e?.responseBody, cause: e?.cause,
                 });
@@ -582,8 +582,8 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
      */
     override async generate(
         options?: AgentCallParameters<never, ToolSet> & { messages?: UIMessage[] | ModelMessage[] }
-    ): Promise<AgentCoreGenerateResult> {
-        // Extract AgentCore-specific options
+    ): Promise<AgentHarnessGenerateResult> {
+        // Extract AgentHarness-specific options
         const { messages, ...agentOptions } = options as any;
 
         // Convert messages if provided
@@ -624,7 +624,7 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
         return Object.assign(result, {
             toolErrors: toolErrors.length > 0 ? toolErrors : undefined,
             state: { messages: responseMessages, metadata: { usage } },
-        }) as unknown as AgentCoreGenerateResult;
+        }) as unknown as AgentHarnessGenerateResult;
     }
 
     // ============ ERROR TRACKING ============
@@ -674,7 +674,7 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
         }
 
         if (process.env.DEBUG_VIBES) {
-            console.log('[AgentCore] Converted Messages:', JSON.stringify(modelMessages, null, 2));
+            console.log('[AgentHarness] Converted Messages:', JSON.stringify(modelMessages, null, 2));
         }
         return modelMessages;
     }

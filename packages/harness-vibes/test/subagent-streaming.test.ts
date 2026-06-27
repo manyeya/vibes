@@ -209,7 +209,7 @@ describe('SubAgentPlugin streaming', () => {
         4,
         (config) => ({
           stream: async (call: { writer?: { write: (part: any) => void } }) => {
-            // Simulate what the real AgentCore.recordStepUsage emits each step:
+            // Simulate what the real AgentHarness.recordStepUsage emits each step:
             // a context-usage gauge with the fixed 'context-usage' id.
             call.writer?.write({
               type: 'data-context_usage',

@@ -2,7 +2,7 @@
  * Tool resolution: turning the plugin/custom tool catalog into the runtime tool
  * set the model loop calls.
  *
- * AgentCore owns the catalog assembly + cache (it's part of understanding the
+ * AgentHarness owns the catalog assembly + cache (it's part of understanding the
  * loop); this module holds the self-contained pieces that orchestration would
  * otherwise bury — per-call approval policy, and the retry + activity-stream
  * instrumentation wrapper each tool's `execute` runs inside.
@@ -166,7 +166,7 @@ export function wrapToolExecute(
                     if (attempt < maxRetries) {
                         // Exponential backoff before retry
                         await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 100));
-                        console.warn(`[AgentCore] Tool ${toolName} failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying...`);
+                        console.warn(`[AgentHarness] Tool ${toolName} failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying...`);
                     }
                 }
             }
@@ -187,7 +187,7 @@ export function wrapToolExecute(
                 try {
                     await plugin.onError?.(lastError!);
                 } catch (hookError) {
-                    console.error(`[AgentCore] Plugin onError hook error:`, hookError);
+                    console.error(`[AgentHarness] Plugin onError hook error:`, hookError);
                 }
             }
 

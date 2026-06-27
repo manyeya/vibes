@@ -10,7 +10,7 @@
  *   - Workspace setup for new sessions
  */
 
-import { createHarness, type Harness, ASK_USER_TOOL_NAME, PLAN_REVIEW_TOOL_NAME } from '../../../packages/harness-vibes/index';
+import { createRuntime, type AgentRuntime, ASK_USER_TOOL_NAME, PLAN_REVIEW_TOOL_NAME } from '../../../packages/harness-vibes/index';
 import type { SubAgent } from '../../../packages/harness-vibes/index';
 import { wrapLanguageModel, hasToolCall, type LanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
@@ -124,12 +124,12 @@ function buildVibeModel(): LanguageModel {
 /**
  * The Vibe harness — the single owner of sessions for the API.
  *
- * `vibeHarness.session(id)` builds (once, then caches) a flagship VibeAgent
+ * `vibeRuntime.session(id)` builds (once, then caches) a flagship VibeAgent
  * rooted at a per-session `LocalSandbox` + SQLite-backed workspace. The HTTP
  * layer routes everything stateful through this; it does not cache agents or
  * open backends itself.
  */
-export const vibeHarness: Harness = createHarness(
+export const vibeRuntime: AgentRuntime = createRuntime(
     {
         model: buildVibeModel(),
         systemPrompt: vibePrompt,

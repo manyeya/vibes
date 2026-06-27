@@ -1,7 +1,7 @@
 /**
  * Message inspection + restorable compression helpers.
  *
- * Pure functions over `ModelMessage`s — no agent state — used by AgentCore's
+ * Pure functions over `ModelMessage`s — no agent state — used by AgentHarness's
  * pruning pipeline. The guiding principle is that compression is LOSSLESS and
  * RESTORABLE: large tool outputs are shrunk to a reference + preview (the full
  * result is one re-run away), message structure is preserved (a tool-result

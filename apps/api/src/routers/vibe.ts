@@ -7,7 +7,7 @@ import os from "node:os";
 import { createUIMessageStream, createUIMessageStreamResponse, type UIMessageChunk } from "ai";
 import { logger } from "../logger";
 import streamCoordinator from "../stream-coordinator";
-import { vibeHarness, defaultSubAgents } from "../vibe-coder";
+import { vibeRuntime, defaultSubAgents } from "../vibe-coder";
 import { SqliteBackend, createAgentStreamResponse, validateWorkflow, runWorkflowToStream, createDataStreamWriter } from "../../../../packages/harness-vibes/index";
 import { agent as simpleAgent } from "../simple-agent";
 import { getModel, getAvailableModels, resolveContextWindow, getDefaultModelId, isKnownModelId } from "../model-factory";
@@ -357,7 +357,7 @@ app.post('/fs/pick-native', async (c) => {
 /** List all workspaces (with session counts). */
 app.get('/workspaces', async (c) => {
     try {
-        const workspaces = await vibeHarness.listWorkspaces();
+        const workspaces = await vibeRuntime.listWorkspaces();
         return c.json({ success: true, workspaces });
     } catch (error) {
         logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to list workspaces');
@@ -378,7 +378,7 @@ app.post('/workspaces', async (c) => {
         const rootDir = typeof body.rootDir === 'string' && body.rootDir.trim() ? body.rootDir.trim() : undefined;
         if (!name && !rootDir) return c.json({ success: false, error: 'name or rootDir is required' }, 400);
 
-        const workspace = await vibeHarness.createWorkspace({ name, rootDir, metadata: body.metadata || {} });
+        const workspace = await vibeRuntime.createWorkspace({ name, rootDir, metadata: body.metadata || {} });
         return c.json({ success: true, workspace });
     } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -392,7 +392,7 @@ app.post('/workspaces', async (c) => {
 /** Get one workspace. */
 app.get('/workspaces/:id', async (c) => {
     try {
-        const workspace = await vibeHarness.getWorkspace(c.req.param('id'));
+        const workspace = await vibeRuntime.getWorkspace(c.req.param('id'));
         if (!workspace) return c.json({ success: false, error: 'Workspace not found' }, 404);
         return c.json({ success: true, workspace });
     } catch (error) {
@@ -406,8 +406,8 @@ app.patch('/workspaces/:id', async (c) => {
     try {
         const id = c.req.param('id');
         const body = await c.req.json().catch(() => ({}));
-        await vibeHarness.updateWorkspace(id, { name: body.name, metadata: body.metadata });
-        const workspace = await vibeHarness.getWorkspace(id);
+        await vibeRuntime.updateWorkspace(id, { name: body.name, metadata: body.metadata });
+        const workspace = await vibeRuntime.getWorkspace(id);
         return c.json({ success: true, workspace });
     } catch (error) {
         logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to update workspace');
@@ -422,7 +422,7 @@ app.delete('/workspaces/:id', async (c) => {
         if (id === 'default') {
             return c.json({ success: false, error: 'The Default workspace cannot be deleted.' }, 400);
         }
-        await vibeHarness.deleteWorkspace(id);
+        await vibeRuntime.deleteWorkspace(id);
         return c.json({ success: true });
     } catch (error) {
         logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to delete workspace');
@@ -438,7 +438,7 @@ app.delete('/workspaces/:id', async (c) => {
 app.get('/sessions', async (c) => {
     try {
         const workspaceId = c.req.query('workspace_id') || undefined;
-        const sessions = await vibeHarness.listSessions(workspaceId);
+        const sessions = await vibeRuntime.listSessions(workspaceId);
         return c.json({
             success: true,
             sessions,
@@ -461,7 +461,7 @@ app.get('/sessions', async (c) => {
 app.get('/sessions/:id', async (c) => {
     try {
         const sessionId = c.req.param('id');
-        const session = await vibeHarness.getSessionInfo(sessionId);
+        const session = await vibeRuntime.getSessionInfo(sessionId);
 
         if (!session) {
             return c.json({
@@ -498,7 +498,7 @@ app.post('/sessions', async (c) => {
         const metadata = body.metadata || {};
         const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : undefined;
 
-        const sessionId = await vibeHarness.createSession({ title, metadata, workspaceId });
+        const sessionId = await vibeRuntime.createSession({ title, metadata, workspaceId });
 
         return c.json({
             success: true,
@@ -522,7 +522,7 @@ app.post('/sessions', async (c) => {
 app.delete('/sessions/:id', async (c) => {
     try {
         const sessionId = c.req.param('id');
-        await vibeHarness.deleteSession(sessionId);
+        await vibeRuntime.deleteSession(sessionId);
 
         return c.json({
             success: true,
@@ -563,13 +563,13 @@ app.patch('/sessions/:id', async (c) => {
         const sessionId = c.req.param('id');
         const body = await c.req.json().catch(() => ({}));
 
-        await vibeHarness.updateSession(sessionId, {
+        await vibeRuntime.updateSession(sessionId, {
             title: body.title,
             summary: body.summary,
             metadata: body.metadata,
         });
 
-        const updated = await vibeHarness.getSessionInfo(sessionId);
+        const updated = await vibeRuntime.getSessionInfo(sessionId);
 
         return c.json({
             success: true,
@@ -596,7 +596,7 @@ app.get('/sessions/:id/files', async (c) => {
 
         return c.json({
             success: true,
-            files: vibeHarness.readState(sessionId).messages,
+            files: vibeRuntime.readState(sessionId).messages,
         });
     } catch (error) {
         logger.error({
@@ -630,14 +630,14 @@ app.get('/sessions/:id/messages', async (c) => {
         // Prefer the persisted full UI messages — their parts include the
         // data-* activity (ToT thoughts, tool progress, delegation, status),
         // so a reload restores the whole thread, not just text.
-        const storedUi = vibeHarness.readUIMessages(sessionId);
+        const storedUi = vibeRuntime.readUIMessages(sessionId);
         if (storedUi && storedUi.length > 0) {
             return c.json({ success: true, messages: storedUi });
         }
 
         // Fallback for sessions persisted before UI-message storage existed:
         // reconstruct the user/assistant text + reasoning from model messages.
-        const state = vibeHarness.readState(sessionId);
+        const state = vibeRuntime.readState(sessionId);
 
         const messages = state.messages
             // Drop role:'tool' messages — UIMessage doesn't have a tool
@@ -703,7 +703,7 @@ app.post('/vibe', zValidator('json', vibeSchema), async (c) => {
 
         logger.info({ messages: body.messages, sessionId }, 'Vibe agent request received');
 
-        const agent = (await vibeHarness.session(sessionId)).raw;
+        const agent = (await vibeRuntime.session(sessionId)).raw;
         await applyModelOverride(agent, body.model);
         applySearchProvider(agent, body.search_provider);
 
@@ -768,7 +768,7 @@ app.post('/vibe/stream', zValidator('json', vibeSchema), async (c) => {
         // The harness owns the agent + backend for this session (built once,
         // then cached). The HTTP layer no longer caches agents or opens its
         // own SQLite connection.
-        const session = await vibeHarness.session(sessionId);
+        const session = await vibeRuntime.session(sessionId);
         const agent = session.raw;
         const sessionBackend = session.backend!;
         await applyModelOverride(agent, body.model);
@@ -1065,7 +1065,7 @@ app.post('/vibe/:sessionId/workflows/:nameOrId/run', async (c) => {
     const modelId = typeof body?.model === 'string' && isKnownModelId(body.model) ? body.model : getDefaultModelId();
     const model = getModel({ provider: 'openrouter', id: modelId });
 
-    const session = await vibeHarness.session(sessionId);
+    const session = await vibeRuntime.session(sessionId);
     const backend = session.backend!;
 
     // Register a resumable stream so the client tails it via resumeStream().

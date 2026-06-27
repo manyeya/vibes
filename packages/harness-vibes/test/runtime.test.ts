@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { MockLanguageModelV3 } from 'ai/test';
 import { join } from 'path';
-import { defineAgent, createHarness } from '../index';
+import { defineAgent, createRuntime } from '../index';
 import { LocalSandbox } from '../src/sandbox/local-sandbox';
 import { createTempWorkspace, removeTempWorkspace } from './helpers';
 
@@ -26,7 +26,7 @@ describe('Public harness facade', () => {
     test('ephemeral session.prompt returns the agent text answer', async () => {
         const root = await createTempWorkspace('harness-prompt');
         try {
-            const harness = createHarness({
+            const harness = createRuntime({
                 model: textModel('The answer is 42.') as any,
                 skipDefaultPlugins: true,
                 workspaceDir: root,
@@ -45,11 +45,11 @@ describe('Public harness facade', () => {
         }
     });
 
-    test('a sandbox passed to createHarness is adopted as the workspace root', async () => {
+    test('a sandbox passed to createRuntime is adopted as the workspace root', async () => {
         const root = await createTempWorkspace('harness-sandbox');
         try {
             const sandbox = new LocalSandbox(root);
-            const harness = createHarness(
+            const harness = createRuntime(
                 { model: textModel('ok') as any, skipDefaultPlugins: true },
                 { sandbox },
             );
@@ -64,7 +64,7 @@ describe('Public harness facade', () => {
     test('persisted sessions are the single owner: same id returns the same instance', async () => {
         const root = await createTempWorkspace('harness-persist');
         try {
-            const harness = createHarness(
+            const harness = createRuntime(
                 { model: textModel('hi') as any, skipDefaultPlugins: true },
                 { dbPath: join(root, 'vibes.db'), sessionsDir: join(root, 'sessions') },
             );
@@ -90,7 +90,7 @@ describe('Public harness facade', () => {
             // the subclass constructor AFTER super().preloadTools(). This used
             // to leave the tool cache stuck with zero plugin tools (only custom
             // tools survived), so the model never saw bash/generate_tasks/etc.
-            const harness = createHarness({ model: textModel('hi') as any, workspaceDir: root });
+            const harness = createRuntime({ model: textModel('hi') as any, workspaceDir: root });
             const session = await harness.session({ persist: false });
             const tools = await (session.raw as any).getAllTools();
             const names = Object.keys(tools);

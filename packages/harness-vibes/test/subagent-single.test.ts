@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { readFile, rm } from 'fs/promises';
 import { join } from 'path';
 import SubAgentPlugin from '../src/plugins/sub-agent';
-import type { Plugin, AgentCoreConfig } from '../src/core/types';
+import type { Plugin, AgentHarnessConfig } from '../src/core/types';
 import {
   completionSteps,
   completionThenTextSteps,
@@ -35,8 +35,8 @@ function createBuiltInPlugins(): Plugin[] {
 function createPlugin(options: {
   workspaceDir: string;
   subAgents: Map<string, any>;
-  capturedConfigs?: AgentCoreConfig[];
-  stream?: (config: AgentCoreConfig, call: { messages?: any[] }) => Promise<any>;
+  capturedConfigs?: AgentHarnessConfig[];
+  stream?: (config: AgentHarnessConfig, call: { messages?: any[] }) => Promise<any>;
 }) {
   const capturedConfigs = options.capturedConfigs ?? [];
   return new SubAgentPlugin(
@@ -68,7 +68,7 @@ function createPlugin(options: {
 describe('SubAgentPlugin single delegation', () => {
   test('legacy string-array tools normalize to a general-purpose subagent', async () => {
     const workspaceDir = await createTempWorkspace('subagent-legacy');
-    const capturedConfigs: AgentCoreConfig[] = [];
+    const capturedConfigs: AgentHarnessConfig[] = [];
 
     try {
       const plugin = createPlugin({
@@ -106,7 +106,7 @@ describe('SubAgentPlugin single delegation', () => {
 
   test('general-purpose delegations get fresh plugin instances per run', async () => {
     const workspaceDir = await createTempWorkspace('subagent-fresh');
-    const capturedConfigs: AgentCoreConfig[] = [];
+    const capturedConfigs: AgentHarnessConfig[] = [];
 
     try {
       const plugin = createPlugin({
@@ -137,7 +137,7 @@ describe('SubAgentPlugin single delegation', () => {
 
   test('custom subagents keep only explicit tools/plugins and block nested delegation', async () => {
     const workspaceDir = await createTempWorkspace('subagent-custom');
-    const capturedConfigs: AgentCoreConfig[] = [];
+    const capturedConfigs: AgentHarnessConfig[] = [];
     const explicitPlugin: Plugin = {
       name: 'ExplicitPlugin',
       tools: {
@@ -351,7 +351,7 @@ describe('SubAgentPlugin single delegation', () => {
 
   test('spawn_agent defines and runs a one-off agent in a single call', async () => {
     const workspaceDir = await createTempWorkspace('subagent-spawn');
-    const capturedConfigs: AgentCoreConfig[] = [];
+    const capturedConfigs: AgentHarnessConfig[] = [];
 
     try {
       const plugin = createPlugin({

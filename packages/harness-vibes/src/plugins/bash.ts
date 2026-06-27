@@ -75,7 +75,7 @@ export default class BashPlugin implements Plugin {
 
     /**
      * Build the `bash-tool` toolkit. Async (createBashTool is async), so it runs
-     * in the plugin readiness phase — AgentCore awaits every `waitReady` before
+     * in the plugin readiness phase — AgentHarness awaits every `waitReady` before
      * it reads `tools`, so the built tool is in place by collection time.
      */
     async waitReady(): Promise<void> {
