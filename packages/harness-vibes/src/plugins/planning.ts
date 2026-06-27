@@ -557,6 +557,10 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                     operation?.milestone('Calling language model to generate project plan', { phase: 'model' });
                     const { text } = await generateText({
                         model: this.model,
+                        // ponytail: 5-min ceiling so a stalled/misbehaving model (some free/alpha
+                        // OpenRouter models never send a finish) fails cleanly instead of hanging
+                        // the whole run forever — well above a legit 2-3 min plan generation.
+                        timeout: 300_000,
                         system: `You are an expert Project Architect and Lead Planner. Your goal is to create a COMPREHENSIVE, SOLID, and HIGHLY DETAILED project plan.
 No matter how simple the request, you must provide a "professional grade" plan that covers all bases.
 
@@ -728,6 +732,7 @@ ${plan.milestones.map(m => `- ${m}`).join('\n')}
                     operation?.milestone(`Generating implementation tasks for "${plan.title}"`, { phase: 'model' });
                     const { text } = await generateText({
                         model: this.model,
+                        timeout: 300_000, // ponytail: anti-hang ceiling (see create_plan)
                         system: `You are an expert Implementation Engineer. Your job is to translate a project plan into high-fidelity, actionable tasks.
 
 RULES:

@@ -225,6 +225,7 @@ The LLM will analyze the request and create specific tasks tied to actual files/
                     operation?.milestone('Calling language model for task breakdown', { phase: 'model' });
                     const { text } = await generateText({
                         model: this.model,
+                        timeout: 300_000, // ponytail: anti-hang ceiling for a stalled model
                         system: `You are a task planner. Break down requests into specific, actionable tasks.
 
 RULES:
