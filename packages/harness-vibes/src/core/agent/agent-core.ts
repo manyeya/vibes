@@ -17,17 +17,12 @@ import {
     PluginStreamContext,
     Plugin,
     ErrorEntry,
-    ToolsRequiringApprovalConfig,
     createPluginStreamContext,
 } from '../types';
 import { recordError, getRecentErrors, formatRecentErrors } from './error-log';
-import {
-    extractMessageContent,
-    isErrorMessage,
-    extractToolInfo,
-    compressMessage,
-} from './message-compression';
-import { resolveApprovalPolicy, wrapToolExecute } from './tool-resolution';
+import { ContextManager } from './context-manager';
+import { UsageTracker } from './usage-tracker';
+import { ToolRegistry } from './tool-registry';
 
 // Re-export ErrorEntry for convenience
 export type { ErrorEntry };
@@ -55,37 +50,25 @@ interface PrepareCallOptions {
 }
 
 /**
- * AgentCore is the core engine for autonomous multi-step reasoning.
- * Extends ToolLoopAgent for proper AI SDK integration and onData callback support.
+ * AgentCore is the agent **harness**: the runtime loop around the model. It
+ * extends the AI SDK's `ToolLoopAgent` and orchestrates three collaborators
+ * rather than implementing everything itself:
  *
- * Deep Agent Features:
- * - Restorable compression: Large content replaced with file/path references
- * - Error preservation: Errors tracked separately, never summarized
- * - KV-cache awareness: Stable prompt prefix for cache optimization
- * - Plugin system for extensible capabilities
+ *   - {@link ContextManager} — window sizing, restorable compression, pruning, gauge math
+ *   - {@link UsageTracker}  — per-stream token accounting
+ *   - {@link ToolRegistry}  — plugin/custom tool assembly, approval, caching
  *
- * By extending ToolLoopAgent, we get:
- * - Proper streaming with toUIMessageStream() support
- * - onData callback working correctly in useChat
- * - Built-in tool loop management
- * - prepareCall hook for custom logic injection
+ * What stays here is genuinely the harness's job: the prepare-call / prepare-step
+ * hooks, plugin lifecycle dispatch, the stream/generate overrides, the separate
+ * error log, and wiring the collaborators together. Keep new responsibilities
+ * out of this class — give them to a collaborator and orchestrate it from here.
  */
 export class AgentCore extends ToolLoopAgent<never, ToolSet> {
     protected plugins: Plugin[] = [];
     protected model: LanguageModel;
     protected customSystemPrompt: string;
-    protected maxContextMessages: number;
-    /** Model context window in tokens (token-based pruning). */
-    protected contextWindow: number;
-    /** Fraction of the window at which we start trimming context (0–1). */
-    protected contextCompressionRatio: number;
     /** Whether to emit the live context-usage gauge (false for sub-agents). */
     protected emitContextGauge: boolean;
-    protected maxRetries: number;
-    protected customTools: Record<string, unknown>;
-    protected toolsRequiringApproval: ToolsRequiringApprovalConfig = [];
-    protected allowedTools?: string[];
-    protected blockedTools?: string[];
     /**
      * Optional per-run model override. When set, every step uses this model
      * instead of the one the agent was constructed with (unless a plugin
@@ -93,38 +76,18 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
      * selectors without rebuilding the cached agent.
      */
     protected modelOverride?: LanguageModel;
-    /** Error log tracked separately from context (never summarized) */
+    /** Error log tracked separately from context (never summarized). */
     protected errorLog: ErrorEntry[] = [];
-    /** Min characters a single payload must reach before in-place compression shrinks it. */
-    protected compressionThreshold: number = 3000;
-    /**
-     * Most recent estimate (chars/4) of the context actually prepared for the
-     * model. Emitted proactively as the gauge before each step, and used as a
-     * fallback for spend + gauge when a provider omits per-step token usage.
-     */
-    protected lastContextEstimate: number = 0;
-    /**
-     * Fraction of the context window the whole conversation must reach before
-     * per-message restorable compression runs at all. Below it, large reads are
-     * kept verbatim regardless of `compressionThreshold` — so a big file read in
-     * an otherwise-empty context isn't gutted. (0 = compress eagerly.)
-     */
-    protected compressionGateRatio: number = 0.7;
-    /** Maximum errors to show in recent errors section */
+    /** Maximum errors to show in the recent-errors section. */
     protected maxRecentErrors: number = 5;
 
-    // Tool cache - initialize with empty object so tools getter always has a value
-    protected toolCache: Record<string, unknown> = {};
-    protected pluginsVersion: number = 0;
-    /**
-     * The plugin count the current `toolCache` was actually built from.
-     * `-1` means "never built / invalidated". The cache is only reused when
-     * this still equals `this.plugins.length`, which prevents a stale cache
-     * from sticking when plugins are added after an early build (e.g. the
-     * base `preloadTools()` racing with a subclass adding default plugins).
-     */
-    protected toolCacheVersion: number = -1;
-    protected toolOwners: Record<string, string> = {};
+    /** Context engineering (window, compression, pruning, gauge payload). */
+    protected context: ContextManager;
+    /** Per-stream token accounting. */
+    protected usage: UsageTracker = new UsageTracker();
+    /** Effective tool set assembly (plugin + custom tools, approval, caching). */
+    protected toolRegistry: ToolRegistry;
+
     protected activeStreamContext?: PluginStreamContext;
     /**
      * The assembled system instructions for the active call. Computed in
@@ -133,18 +96,17 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
      * latest errors are visible without re-running the plugin chain.
      */
     protected currentBaseInstructions: string = '';
-
     /**
-     * Running token usage for the active stream. Reset at the start of each
-     * stream by `consumeLastStreamUsage()`; accumulated in the wrapped
-     * `onStepFinish` callback below. Exposed publicly so the stream wrapper
-     * can persist into the backend's `AgentState.metadata.usage`.
+     * Most recent estimate (chars/4) of the context prepared for the model.
+     * Set in prepareStep, used as the gauge value before the model replies and
+     * as the spend fallback when a provider omits per-step usage. This is the
+     * one scalar the harness passes between ContextManager and UsageTracker.
      */
-    protected lastStreamUsage: { inputTokens: number; outputTokens: number; totalTokens: number } = {
-        inputTokens: 0,
-        outputTokens: 0,
-        totalTokens: 0,
-    };
+    protected lastContextEstimate: number = 0;
+
+    /** Backwards-compatible reads for subclasses (e.g. VibeAgent seeds plugins from these). */
+    protected get contextWindow(): number { return this.context.contextWindow; }
+    protected get contextCompressionRatio(): number { return this.context.compressionRatio; }
 
     protected static resolveStopWhen(config: AgentCoreConfig) {
         const maxStepCondition = stepCountIs(config.maxSteps ?? 20);
@@ -163,7 +125,7 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
         // instructions) and prepareStep (every step, prunes context, fans
         // out to plugin.prepareStep and merges the results).
         // We also wrap onStepFinish to aggregate per-step token usage into
-        // `lastStreamUsage` for the stream wrapper to persist.
+        // the UsageTracker for the stream wrapper to persist.
         const userOnStepFinish = config.onStepFinish;
         const settings: ToolLoopAgentSettings<never, ToolSet> = {
             model: config.model,
@@ -187,11 +149,10 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
                 return this.prepareStepOverride(stepOptions);
             },
             // Forward experimental_telemetry when enabled. The SDK accepts
-            // an opaque TelemetrySettings object; we populate functionId +
-            // a minimal metadata bag so spans are attributable to a session.
-            // Users wanting an OTLP exporter should set
-            // OTEL_EXPORTER_OTLP_ENDPOINT in their environment — the SDK
-            // picks up the global tracer.
+            // an opaque TelemetrySettings object; we populate functionId so
+            // spans are attributable to a session. Users wanting an OTLP
+            // exporter should set OTEL_EXPORTER_OTLP_ENDPOINT in their
+            // environment — the SDK picks up the global tracer.
             ...(config.enableTelemetry
                 ? {
                     experimental_telemetry: {
@@ -204,125 +165,89 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
 
         super(settings);
 
-        // Store model reference for use in summarization and other features
         this.model = config.model;
         this.customSystemPrompt = config.systemPrompt || '';
-        this.maxContextMessages = config.maxContextMessages ?? 50;
-        this.contextWindow = config.contextWindow ?? 128000;
-        this.contextCompressionRatio = config.contextCompressionRatio ?? 0.7;
-        this.compressionThreshold = config.compressionThreshold ?? this.compressionThreshold;
-        this.compressionGateRatio = config.compressionGateRatio ?? this.compressionGateRatio;
         this.emitContextGauge = config.emitContextGauge ?? true;
-        this.maxRetries = config.maxRetries ?? 2;
-        this.customTools = config.tools || {};
-        this.toolsRequiringApproval = config.toolsRequiringApproval || [];
-        this.allowedTools = config.allowedTools;
-        this.blockedTools = config.blockedTools;
+
+        this.context = new ContextManager({
+            contextWindow: config.contextWindow,
+            contextCompressionRatio: config.contextCompressionRatio,
+            compressionThreshold: config.compressionThreshold,
+            compressionGateRatio: config.compressionGateRatio,
+        });
+        this.toolRegistry = new ToolRegistry({
+            customTools: config.tools || {},
+            toolsRequiringApproval: config.toolsRequiringApproval || [],
+            allowedTools: config.allowedTools,
+            blockedTools: config.blockedTools,
+            maxRetries: config.maxRetries ?? 2,
+        });
 
         if (config.plugins) {
             this.addPlugin(config.plugins);
         }
 
-        // Pre-build tools for the base tools getter
+        // Pre-build tools for the base tools getter.
         this.preloadTools();
     }
 
+    // ============ USAGE + GAUGE ============
+
     /**
-     * Return the accumulated token usage for the most recent stream and
-     * reset the internal counter to zero. Intended to be called by
-     * `createAgentStreamResponse` after the stream completes so the
-     * usage can be added to the persisted `AgentState.metadata.usage`.
+     * Return the accumulated token usage for the most recent stream and reset
+     * the counter. Called by `createAgentStreamResponse` after the stream
+     * completes so usage can be added to `AgentState.metadata.usage`.
      */
     consumeLastStreamUsage(): { inputTokens: number; outputTokens: number; totalTokens: number } {
-        const usage = { ...this.lastStreamUsage };
-        this.lastStreamUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-        return usage;
+        return this.usage.consume();
     }
 
     /**
-     * Fold a finished step's token usage into the running totals and, when a
-     * stream writer is active, emit the live context-window gauge. Two distinct
-     * numbers come out of `step.usage`:
-     *
-     *   - **Cumulative spend** (`lastStreamUsage`): summed across every step, so
-     *     it reflects what the provider actually bills — each step re-sends the
-     *     growing context and you pay for all of it.
-     *   - **Context fullness** (the gauge): the *latest* step's input + output is
-     *     the real size of the conversation now in the window. This is the ground
-     *     truth the provider reports — far more accurate than a char-count
-     *     estimate because it includes the system prompt and tool schemas the
-     *     model actually saw, plus the full tool-call/result payloads.
+     * Fold a finished step into the running usage and refresh the live gauge.
+     * Spend accumulates inside the UsageTracker; the value it returns is the
+     * current window fullness (provider ground truth, or the prepared-context
+     * estimate when the provider omits usage).
      */
     protected recordStepUsage(step: StepResult<ToolSet>): void {
-        const u = step.usage;
-        const inputTokens = u?.inputTokens ?? 0;
-        const outputTokens = u?.outputTokens ?? 0;
-        // Some providers report input/output but omit a combined total; derive
-        // it so cumulative spend never sticks at zero.
-        const totalTokens = u?.totalTokens ?? inputTokens + outputTokens;
-
-        if (inputTokens > 0 || outputTokens > 0) {
-            this.lastStreamUsage.inputTokens += inputTokens;
-            this.lastStreamUsage.outputTokens += outputTokens;
-            this.lastStreamUsage.totalTokens += totalTokens;
-            // Live gauge: the freshest step's input+output is how full the
-            // context is now — ground truth from the provider (includes the
-            // system prompt + tool schemas it actually saw).
-            this.writeContextGauge(inputTokens + outputTokens);
-        } else if (this.lastContextEstimate > 0) {
-            // Provider omitted usage entirely (some OpenRouter models do). Fall
-            // back to the prepared-context estimate so neither the gauge nor
-            // cumulative spend silently sticks at zero.
-            this.lastStreamUsage.inputTokens += this.lastContextEstimate;
-            this.lastStreamUsage.totalTokens += this.lastContextEstimate;
-            this.writeContextGauge(this.lastContextEstimate);
-        }
+        const usedTokens = this.usage.record(step, this.lastContextEstimate);
+        if (usedTokens !== null) this.writeContextGauge(usedTokens);
     }
 
     /** Rough token estimate (chars/4) for a system prompt + message list. */
     protected estimateContextTokens(system: string, messages: ModelMessage[]): number {
-        let chars = system.length;
-        for (const m of messages) chars += extractMessageContent(m).length;
-        return Math.round(chars / 4);
+        return this.context.estimateTokens(system, messages);
     }
 
     /**
-     * Emit/refresh the live context-window gauge with the given occupancy.
-     * Uses a stable data-part id so each call overwrites the last — the meter
-     * tracks the current window fullness rather than accumulating.
+     * Emit/refresh the live context-window gauge. The payload math lives in the
+     * ContextManager (it owns the window); the harness owns the writer + the
+     * on/off flag and decides whether to render.
      */
     protected writeContextGauge(usedTokens: number): void {
+        if (!this.emitContextGauge) return;
         const writer = this.activeStreamContext?.writer;
-        if (!this.emitContextGauge || !writer || usedTokens <= 0 || this.contextWindow <= 0) return;
-        writer.writeContextUsage({
-            usedTokens,
-            contextWindow: this.contextWindow,
-            threshold: this.contextCompressionRatio,
-            compressAt: Math.round(this.contextWindow * this.contextCompressionRatio),
-        });
+        if (!writer) return;
+        const payload = this.context.gauge(usedTokens);
+        if (payload) writer.writeContextUsage(payload);
     }
 
     /**
      * Update the context window (and optionally the compression ratio) used by
-     * the live gauge and token-based summarization. Call this when the UI swaps
-     * the active model mid-session for one with a different window — the change
-     * is fanned out to any plugin that tracks its own window (the
-     * SummarizationPlugin) so its compression threshold moves with the model.
+     * the gauge and pruning. Call this when the UI swaps the active model for
+     * one with a different window — the change is fanned out to any plugin that
+     * tracks its own window (the SummarizationPlugin) so its threshold moves too.
      */
     setContextWindow(contextWindow: number, compressionRatio?: number): void {
-        if (Number.isFinite(contextWindow) && contextWindow > 0) {
-            this.contextWindow = contextWindow;
-        }
-        if (compressionRatio !== undefined && compressionRatio > 0 && compressionRatio <= 1) {
-            this.contextCompressionRatio = compressionRatio;
-        }
+        this.context.setWindow(contextWindow, compressionRatio);
         for (const plugin of this.plugins) {
             const p = plugin as { setContextWindow?: (w: number, r?: number) => void };
             if (typeof p.setContextWindow === 'function') {
-                p.setContextWindow(this.contextWindow, this.contextCompressionRatio);
+                p.setContextWindow(this.context.contextWindow, this.context.compressionRatio);
             }
         }
     }
+
+    // ============ PLUGINS + TOOLS ============
 
     addPlugin(plugin: Plugin | Plugin[]) {
         if (Array.isArray(plugin)) {
@@ -330,10 +255,8 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
         } else {
             this.plugins.push(plugin);
         }
-        // Invalidate tool cache when plugin is added
-        this.pluginsVersion = this.plugins.length;
-        this.toolCache = {};
-        this.toolCacheVersion = -1;
+        // Plugin set changed → the tool cache is stale.
+        this.toolRegistry.invalidate();
     }
 
     /**
@@ -366,35 +289,32 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
     }
 
     /**
-     * Override the tools getter to provide dynamic tools from plugins.
-     * This is called by ToolLoopAgent before each generate/stream.
+     * Override the tools getter to provide dynamic tools from plugins. Called by
+     * ToolLoopAgent before each generate/stream; returns the registry's cache.
      */
     override get tools(): ToolSet {
-        return this.toolCache as ToolSet;
+        return this.toolRegistry.cached as ToolSet;
+    }
+
+    /** Preload tools during construction for the initial tools getter value. */
+    protected async preloadTools(): Promise<void> {
+        this.setupPluginDependencies();
+        await this.getAllTools();
     }
 
     /**
-     * Preload tools during construction for initial tools getter value.
+     * Assemble the effective tool set via the ToolRegistry, injecting the
+     * harness-owned runtime hooks (current stream writer + error log).
      */
-    protected async preloadTools(): Promise<void> {
-        // Setup plugin dependencies before any plugin operations
-        this.setupPluginDependencies();
-        this.toolCache = await this.getAllTools();
-    }
-
-    protected resolveAllowedToolSet(allowedTools?: string[]): Set<string> | undefined {
-        const effectiveAllowedTools = allowedTools ?? this.allowedTools;
-        return effectiveAllowedTools ? new Set(effectiveAllowedTools) : undefined;
-    }
-
-    protected getConfiguredCustomTools(): Record<string, unknown> {
-        return { ...this.customTools };
-    }
-
-    protected getToolsRequiringApprovalConfig(): ToolsRequiringApprovalConfig {
-        return Array.isArray(this.toolsRequiringApproval)
-            ? [...this.toolsRequiringApproval]
-            : { ...this.toolsRequiringApproval };
+    protected async getAllTools(allowedTools?: string[]): Promise<Record<string, unknown>> {
+        return this.toolRegistry.build(
+            this.plugins,
+            {
+                getStreamContext: () => this.activeStreamContext,
+                logError: (t, e, c) => this.logError(t, e, c),
+            },
+            allowedTools,
+        );
     }
 
     // ============ PREPARE CALL OVERRIDE ============
@@ -646,7 +566,7 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
             if (this.activeStreamContext === streamContext) {
                 this.activeStreamContext = undefined;
             }
-        }).catch((error: Error) => {
+        }).catch(() => {
             if (this.activeStreamContext === streamContext) {
                 this.activeStreamContext = undefined;
             }
@@ -707,108 +627,6 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
         }) as unknown as AgentCoreGenerateResult;
     }
 
-    // ============ TOOL MANAGEMENT ============
-
-    protected async getAllTools(allowedTools?: string[]): Promise<Record<string, unknown>> {
-        // Reuse the cache only when it was built from the CURRENT plugin set.
-        // Checking the built-at version (not just "non-empty") closes a
-        // constructor race: the base preloadTools() can populate the cache
-        // before a subclass finishes adding its default plugins, which would
-        // otherwise leave a stale, tool-poor cache stuck forever.
-        if (
-            !allowedTools &&
-            this.toolCacheVersion === this.plugins.length &&
-            Object.keys(this.toolCache).length > 0
-        ) {
-            return this.toolCache;
-        }
-
-        const allTools: Record<string, unknown> = {};
-        const toolOwners: Record<string, string> = {};
-
-        // Wait for all plugins to be ready
-        for (const plugin of this.plugins) {
-            if (plugin.waitReady) {
-                await plugin.waitReady();
-            }
-        }
-
-        // Collect tools from all plugins
-        for (const plugin of this.plugins) {
-            if (plugin.tools) {
-                for (const [toolName, toolDef] of Object.entries(plugin.tools)) {
-                    allTools[toolName] = toolDef;
-                    toolOwners[toolName] = plugin.name;
-                }
-            }
-        }
-
-        // Merge custom tools from config
-        for (const [toolName, toolDef] of Object.entries(this.customTools)) {
-            allTools[toolName] = toolDef;
-            toolOwners[toolName] ??= 'custom';
-        }
-
-        const approvalConfig = this.toolsRequiringApproval;
-        const resolvedTools: Record<string, unknown> = {};
-        this.toolOwners = toolOwners;
-
-        for (const [toolName, toolDef] of Object.entries(allTools)) {
-            const toolDefRecord = toolDef as Record<string, unknown>;
-            const originalExecute = toolDefRecord.execute as ((args: unknown, options: unknown) => Promise<unknown>) | undefined;
-            const ownerName = this.toolOwners[toolName] ?? 'custom';
-
-            const resolvedNeedsApproval = resolveApprovalPolicy(approvalConfig, toolName, toolDefRecord);
-
-            // Wrap each executable tool with retry + activity-feed instrumentation
-            // (see tool-resolution.ts). The stream context is read lazily so the
-            // wrapper always sees the run's current writer.
-            resolvedTools[toolName] = {
-                ...(toolDef as Record<string, unknown>),
-                ...(resolvedNeedsApproval !== undefined ? { needsApproval: resolvedNeedsApproval } : {}),
-                execute: originalExecute
-                    ? wrapToolExecute({
-                        toolName,
-                        ownerName,
-                        originalExecute,
-                        plugins: this.plugins,
-                        maxRetries: this.maxRetries,
-                        getStreamContext: () => this.activeStreamContext,
-                        logError: (t, e, c) => this.logError(t, e, c),
-                    })
-                    : undefined,
-            };
-        }
-
-        // Apply blockedTools filter (takes precedence over allowedTools)
-        if (this.blockedTools) {
-            for (const name of this.blockedTools) {
-                delete resolvedTools[name];
-            }
-        }
-
-        const allowedToolSet = this.resolveAllowedToolSet(allowedTools);
-        if (allowedToolSet) {
-            const filtered: Record<string, unknown> = {};
-            for (const name of allowedToolSet) {
-                if (resolvedTools[name]) {
-                    filtered[name] = resolvedTools[name];
-                }
-            }
-            if (!allowedTools) {
-                this.toolCache = filtered;
-                this.pluginsVersion = this.plugins.length;
-                this.toolCacheVersion = this.plugins.length;
-            }
-            return filtered;
-        }
-
-        this.toolCache = resolvedTools;
-        this.pluginsVersion = this.plugins.length;
-        this.toolCacheVersion = this.plugins.length;
-        return resolvedTools;
-    }
-
     // ============ ERROR TRACKING ============
 
     /**
@@ -823,98 +641,21 @@ export class AgentCore extends ToolLoopAgent<never, ToolSet> {
     // ============ MESSAGE PROCESSING ============
 
     /**
-     * Apply restorable compression to large content. User/system messages and
-     * errors are never shrunk (errors are logged separately instead); oversized
-     * assistant/tool payloads are replaced with a reference + preview. See
-     * `message-compression.ts` for the per-message mechanics.
+     * Restorable compression of large content, delegated to the ContextManager.
+     * Kept as a method so the tool wrapper / tests have a stable `this.`-hook;
+     * the error side-effect is routed back into this agent's error log.
      */
     protected async compressLargeContent(messages: ModelMessage[]): Promise<ModelMessage[]> {
-        const compressed: ModelMessage[] = [];
-
-        for (const msg of messages) {
-            // NEVER compress user messages or system messages
-            if (msg.role === 'user' || msg.role === 'system') {
-                compressed.push(msg);
-                continue;
-            }
-
-            // NEVER compress errors - track them separately instead
-            if (isErrorMessage(msg)) {
-                const { toolName } = extractToolInfo(msg);
-                this.logError(toolName, extractMessageContent(msg), `Role: ${msg.role}`);
-                // Still include error in compressed messages, but don't shrink it
-                compressed.push(msg);
-                continue;
-            }
-
-            // Check if content is large enough to compress
-            if (extractMessageContent(msg).length < this.compressionThreshold) {
-                compressed.push(msg);
-                continue;
-            }
-
-            // Apply restorable compression based on message type
-            compressed.push(compressMessage(msg, this.compressionThreshold));
-        }
-
-        return compressed;
+        return this.context.compressLargeContent(messages, (t, e, c) => this.logError(t, e, c));
     }
 
-    /**
-     * Prune messages using a hybrid approach:
-     * 1. First pass: Restorable compression (lossless, replaces large content with references)
-     * 2. Second pass: Truncation to max messages if still over limit
-     */
+    /** Keep the conversation within the window (compress + last-resort truncate). */
     protected async pruneMessages(messages: ModelMessage[]): Promise<ModelMessage[]> {
-        const estimateTokens = (msgs: ModelMessage[]) =>
-            msgs.reduce((acc, msg) => acc + extractMessageContent(msg).length, 0) / 4;
-
-        // Phase 1: lossless restorable compression of large tool outputs — but
-        // only once the WHOLE conversation is approaching the window. While
-        // there's headroom we keep full reads verbatim, so a single large file
-        // read in an otherwise-empty context is no longer gutted to a preview.
-        // (`compressionGateRatio` = 0 restores the old eager behaviour.)
-        const compressionFloor = this.contextWindow * this.compressionGateRatio;
-        const compressed = estimateTokens(messages) >= compressionFloor
-            ? await this.compressLargeContent(messages)
-            : messages;
-
-        // Token-based: the SummarizationPlugin handles compression at the
-        // configured ratio (e.g. 70% of the window). This hard truncation is a
-        // last-resort safety net only — it fires near the very top of the
-        // window so it doesn't pre-empt summarization or trim short
-        // conversations by message count.
-        const emergencyCeiling = this.contextWindow * 0.95;
-        if (estimateTokens(compressed) < emergencyCeiling) {
-            return compressed;
-        }
-
-        // Over the ceiling: keep the most recent messages that fit in ~85% of
-        // the window, dropping the oldest.
-        const keepBudget = this.contextWindow * 0.85;
-        let acc = 0;
-        let splitAt = compressed.length;
-        for (let i = compressed.length - 1; i >= 0; i--) {
-            acc += extractMessageContent(compressed[i]).length / 4;
-            if (acc > keepBudget) break;
-            splitAt = i;
-        }
-        const messagesToKeep = compressed.slice(splitAt);
-
-        // Don't start the window on a dangling tool message.
-        while (messagesToKeep.length > 0 && messagesToKeep[0].role === 'tool') {
-            messagesToKeep.shift();
-        }
-
-        if (process.env.DEBUG_VIBES) {
-            console.log(`[AgentCore] Emergency prune ${messages.length} → ${messagesToKeep.length} messages (>${Math.round(emergencyCeiling)} tok)`);
-        }
-
-        return messagesToKeep;
+        return this.context.prune(messages, (t, e, c) => this.logError(t, e, c));
     }
 
     /**
-     * Convert UIMessage[] to ModelMessage[] using AI SDK's converter
+     * Convert UIMessage[] to ModelMessage[] using AI SDK's converter.
      */
     protected async convertMessages(messages: UIMessage[] | ModelMessage[]): Promise<ModelMessage[]> {
         if (messages.length === 0) return [];
