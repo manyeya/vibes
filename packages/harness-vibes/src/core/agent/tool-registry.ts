@@ -20,6 +20,8 @@ export interface ToolRegistryConfig {
 export interface ToolRegistryDeps {
     getStreamContext: () => PluginStreamContext | undefined;
     logError: (toolName: string | undefined, error: string, context?: string) => void;
+    /** Reserve one unit of the run-wide retry budget (false once exhausted). */
+    consumeRetry?: () => boolean;
 }
 
 /**
@@ -118,6 +120,7 @@ export class ToolRegistry {
                         redactToolIO: this.config.redactToolIO ?? true,
                         getStreamContext: deps.getStreamContext,
                         logError: deps.logError,
+                        consumeRetry: deps.consumeRetry,
                     })
                     : undefined,
             };

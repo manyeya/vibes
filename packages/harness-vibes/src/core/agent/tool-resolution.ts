@@ -94,6 +94,29 @@ export function resolveApprovalPolicy(
     return resolved;
 }
 
+/**
+ * Whether a tool error is worth retrying. Transient = network / rate-limit /
+ * timeout / 5xx — the kind that often succeeds on a second attempt. Deterministic
+ * failures (validation, not-found, permission) are NOT retried: re-running burns
+ * a backoff delay to reproduce the same error.
+ *
+ * ponytail: a conservative pattern + status-code check. Widen the pattern, or
+ * switch to typed error codes, if it ever misclassifies.
+ */
+const TRANSIENT_ERROR_PATTERN =
+    /rate.?limit|429|50[234]|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|fetch failed|network|overloaded|temporarily unavailable|timed? ?out/i;
+
+export function isTransientError(error: unknown): boolean {
+    if (error == null) return false;
+    const e = error as { message?: unknown; code?: unknown; name?: unknown; statusCode?: unknown; status?: unknown };
+    const status = typeof e.statusCode === 'number' ? e.statusCode
+        : typeof e.status === 'number' ? e.status
+            : undefined;
+    if (status === 408 || status === 429 || (status !== undefined && status >= 500)) return true;
+    const haystack = `${String(e.name ?? '')} ${String(e.code ?? '')} ${String(e.message ?? '')}`;
+    return TRANSIENT_ERROR_PATTERN.test(haystack);
+}
+
 /** Everything one tool needs to run safely under retry + instrumentation. */
 export interface ToolExecuteDeps {
     toolName: string;
@@ -108,6 +131,12 @@ export interface ToolExecuteDeps {
     /** Read lazily — the active stream context changes per run. */
     getStreamContext: () => PluginStreamContext | undefined;
     logError: (toolName: string | undefined, error: string, context?: string) => void;
+    /**
+     * Reserve one unit of the run-wide retry budget. Returns false once the
+     * budget is exhausted, so a flaky tool can't keep retrying on every call
+     * across a long run. Omitted = unbounded (per-call `maxRetries` still caps).
+     */
+    consumeRetry?: () => boolean;
 }
 
 /**
@@ -119,7 +148,7 @@ export interface ToolExecuteDeps {
 export function wrapToolExecute(
     deps: ToolExecuteDeps,
 ): (args: unknown, options: unknown) => Promise<unknown> {
-    const { toolName, ownerName, originalExecute, plugins, maxRetries, redactToolIO, getStreamContext, logError } = deps;
+    const { toolName, ownerName, originalExecute, plugins, maxRetries, redactToolIO, getStreamContext, logError, consumeRetry } = deps;
 
     return async (args: unknown, options: unknown) => {
         // `operation` is undefined only when there's no active stream (e.g.
@@ -171,11 +200,20 @@ export function wrapToolExecute(
                     return result;
                 } catch (error) {
                     lastError = error instanceof Error ? error : new Error(String(error));
-                    if (attempt < maxRetries) {
-                        // Exponential backoff before retry
-                        await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 100));
-                        console.warn(`[AgentHarness] Tool ${toolName} failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying...`);
-                    }
+                    // Retry only TRANSIENT errors, and only while the run-wide
+                    // retry budget allows. A deterministic failure (validation,
+                    // not-found, permission) fails fast instead of re-running to
+                    // reproduce the same error after a backoff sleep.
+                    const canRetry =
+                        attempt < maxRetries &&
+                        isTransientError(lastError) &&
+                        (consumeRetry ? consumeRetry() : true);
+                    if (!canRetry) break;
+                    // Exponential backoff + jitter (avoids a thundering herd when
+                    // several tools back off a shared rate limit together).
+                    const delay = Math.pow(2, attempt) * 100 + Math.random() * 100;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    console.warn(`[AgentHarness] Tool ${toolName} failed transiently (attempt ${attempt + 1}/${maxRetries + 1}), retrying...`);
                 }
             }
 

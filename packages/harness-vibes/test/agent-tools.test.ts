@@ -116,7 +116,9 @@ describe('AgentHarness tool filtering', () => {
               inputSchema: z.object({}),
               execute: async () => {
                 attempts += 1;
-                throw new Error(`boom-${attempts}`);
+                // Transient error so the retry path engages (only transient
+                // failures are retried; deterministic ones fail fast).
+                throw new Error(`fetch failed: boom-${attempts}`);
               },
             }),
           },
