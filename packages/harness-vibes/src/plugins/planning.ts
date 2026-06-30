@@ -5,6 +5,7 @@ import {
     generateText,
 } from 'ai';
 import * as path from 'path';
+import * as fs from 'fs';
 import { z } from 'zod';
 import TasksPlugin from './tasks';
 import {
@@ -134,7 +135,6 @@ export class PlanningPlugin implements Plugin {
             name,
             toolName,
             plugin: this.name,
-            heartbeatMessage: `${toolName} is still working`,
         });
     }
 
@@ -353,24 +353,24 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
     /**
      * Save a plan to plan.md
      */
-    private async savePlanToFile(plan: Plan, path?: string): Promise<void> {
-        const savePath = path || this.planPath;
+    private async savePlanToFile(plan: Plan, filePath?: string): Promise<void> {
+        const savePath = filePath || this.planPath;
         const content = this.formatPlanAsMarkdown(plan);
 
-        const fullPath = require('path').resolve(process.cwd(), savePath);
-        Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
-        await Bun.write(fullPath, content);
+        const fullPath = path.resolve(process.cwd(), savePath);
+        fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+        await fs.promises.writeFile(fullPath, content);
     }
 
     /**
      * Load plan from plan.md
      */
-    private async loadPlanFromFile(path?: string): Promise<Plan | null> {
-        const loadPath = path || this.planPath;
-        const fullPath = require('path').resolve(process.cwd(), loadPath);
+    private async loadPlanFromFile(filePath?: string): Promise<Plan | null> {
+        const loadPath = filePath || this.planPath;
+        const fullPath = path.resolve(process.cwd(), loadPath);
 
         try {
-            const content = await Bun.file(fullPath).text();
+            const content = await fs.promises.readFile(fullPath, 'utf8');
             return this.parsePlanFromMarkdown(content);
         } catch {
             return null;
@@ -861,9 +861,9 @@ The planReference field should be a clear path to the plan section so you can tr
                 inputSchema: z.object({
                     path: z.string().optional().describe('File path to save plan (default: workspace/plan.md)'),
                 }),
-                execute: async ({ path }) => {
+                execute: async ({ path: filePath }) => {
                     const operation = this.createOperation('save-plan', 'save_plan');
-                    const savePath = path || this.planPath;
+                    const savePath = filePath || this.planPath;
                     const tasks = await this.tasksPlugin.getTasks();
                     operation?.milestone(`Saving task plan to ${savePath}`, { phase: 'persist' });
 
@@ -902,9 +902,9 @@ The planReference field should be a clear path to the plan section so you can tr
                         }
                     }
 
-                    const fullPath = require('path').resolve(process.cwd(), savePath);
-                    Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
-                    await Bun.write(fullPath, content);
+                    const fullPath = path.resolve(process.cwd(), savePath);
+                    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+                    await fs.promises.writeFile(fullPath, content);
 
                     operation?.complete(`Plan saved to ${savePath}`, { phase: 'complete' });
 
@@ -918,13 +918,13 @@ The planReference field should be a clear path to the plan section so you can tr
                     path: z.string().optional().describe('File path to load plan from (default: workspace/plan.md)'),
                     clearExisting: z.boolean().default(false).describe('Clear existing tasks before loading'),
                 }),
-                execute: async ({ path, clearExisting }) => {
+                execute: async ({ path: filePath, clearExisting }) => {
                     const operation = this.createOperation('load-plan', 'load_plan');
-                    const loadPath = path || this.planPath;
-                    const fullPath = require('path').resolve(process.cwd(), loadPath);
+                    const loadPath = filePath || this.planPath;
+                    const fullPath = path.resolve(process.cwd(), loadPath);
                     try {
                         operation?.milestone(`Loading plan from ${loadPath}`, { phase: 'load' });
-                        const content = await Bun.file(fullPath).text();
+                        const content = await fs.promises.readFile(fullPath, 'utf8');
                         if (clearExisting) {
                             operation?.milestone('Clearing existing tasks before applying loaded plan', {
                                 phase: 'clear',

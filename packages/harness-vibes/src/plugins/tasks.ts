@@ -5,6 +5,8 @@ import {
     type LanguageModel,
 } from 'ai';
 import { z } from 'zod';
+import * as path from 'path';
+import * as fs from 'fs';
 
 import {
     VibesUIMessage,
@@ -68,7 +70,6 @@ export default class TasksPlugin implements Plugin {
             name,
             toolName,
             plugin: this.name,
-            heartbeatMessage: `${toolName} is still working`,
         });
     }
 
@@ -532,9 +533,9 @@ Output ONLY valid JSON, no markdown:
 
     private async persistTasks(): Promise<void> {
         try {
-            const fullPath = require('path').resolve(process.cwd(), this.tasksPath);
-            Bun.spawnSync(['mkdir', '-p', require('path').dirname(fullPath)]);
-            await Bun.write(fullPath, JSON.stringify(this.tasks, null, 2));
+            const fullPath = path.resolve(process.cwd(), this.tasksPath);
+            fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+            await fs.promises.writeFile(fullPath, JSON.stringify(this.tasks, null, 2));
         } catch (e) {
             console.error('Failed to persist tasks:', e);
         }
@@ -542,8 +543,8 @@ Output ONLY valid JSON, no markdown:
 
     private async loadTasks(): Promise<void> {
         try {
-            const fullPath = require('path').resolve(process.cwd(), this.tasksPath);
-            const content = await Bun.file(fullPath).text();
+            const fullPath = path.resolve(process.cwd(), this.tasksPath);
+            const content = await fs.promises.readFile(fullPath, 'utf8');
             this.tasks = JSON.parse(content);
         } catch (e) {
             this.tasks = [];
