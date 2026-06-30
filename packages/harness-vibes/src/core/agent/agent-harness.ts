@@ -9,7 +9,9 @@ import {
     type ToolLoopAgentSettings,
     type AgentCallParameters,
     type StepResult,
+    type StopCondition,
 } from 'ai';
+import { resolveBudgetStops, budgetBreaches, type BudgetConfig } from './budgets';
 import {
     AgentHarnessConfig,
     AgentHarnessGenerateResult,
@@ -47,6 +49,8 @@ interface PrepareCallOptions {
     messages: ModelMessage[];
     tools: ToolSet;
     temperature?: number;
+    /** Per-call stop conditions (v7 prepareCall honors these); used to add budget caps. */
+    stopWhen?: StopCondition<ToolSet> | StopCondition<ToolSet>[];
 }
 
 /**
@@ -89,6 +93,10 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
     protected toolRegistry: ToolRegistry;
 
     protected activeStreamContext?: PluginStreamContext;
+    /** Per-run budgets (token/cost/tool-call caps), enforced via stopWhen. */
+    protected budgets?: BudgetConfig;
+    /** The base stop conditions (maxSteps + user stopWhen); budgets are added per-call. */
+    private baseStopWhen!: StopCondition<ToolSet> | StopCondition<ToolSet>[];
     /**
      * The assembled system instructions for the active call. Computed in
      * prepareCall (modifySystemPrompt chain + customSystemPrompt) and reused
@@ -168,6 +176,8 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
         this.model = config.model;
         this.customSystemPrompt = config.systemPrompt || '';
         this.emitContextGauge = config.emitContextGauge ?? true;
+        this.budgets = config.budgets;
+        this.baseStopWhen = settings.stopWhen as StopCondition<ToolSet> | StopCondition<ToolSet>[];
 
         this.context = new ContextManager({
             contextWindow: config.contextWindow,
@@ -181,6 +191,7 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
             allowedTools: config.allowedTools,
             blockedTools: config.blockedTools,
             maxRetries: config.maxRetries ?? 2,
+            redactToolIO: config.redactToolIO ?? true,
         });
 
         if (config.plugins) {
@@ -357,11 +368,26 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
         // Get all tools with plugin tools and wrapping
         const tools = await this.getAllTools();
 
+        // Per-run budgets are added as native stopWhen conditions here (v7
+        // honors stopWhen returned from prepareCall), kept alongside the base
+        // step cap + user conditions so none is lost.
+        const budgetStops = this.budgets ? resolveBudgetStops(this.budgets) : [];
+
         return {
             ...baseOptions,
             instructions,
             tools: tools as ToolSet,
+            ...(budgetStops.length
+                ? { stopWhen: [...this.asStopArray(this.baseStopWhen), ...budgetStops] }
+                : {}),
         };
+    }
+
+    /** Normalize a stopWhen value to an array for merging. */
+    private asStopArray(
+        stop: StopCondition<ToolSet> | StopCondition<ToolSet>[],
+    ): StopCondition<ToolSet>[] {
+        return Array.isArray(stop) ? stop : [stop];
     }
 
     /**
@@ -561,6 +587,24 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
             for (const plugin of this.plugins) {
                 if (plugin.onStreamFinish) {
                     await plugin.onStreamFinish(finishResult);
+                }
+            }
+            // If a per-run budget halted the loop, tell the user why (the
+            // StopConditions stay pure; the notice is derived from the steps).
+            if (this.budgets && streamContext) {
+                const stepsP = (result as unknown as { steps?: PromiseLike<StepResult<ToolSet>[]> }).steps;
+                const steps = stepsP
+                    ? await Promise.resolve(stepsP).catch(() => undefined)
+                    : undefined;
+                const breaches = steps ? budgetBreaches(this.budgets, steps) : [];
+                if (breaches.length) {
+                    streamContext.writer.writeGuardrail({
+                        id: `budget-${Date.now().toString(36)}`,
+                        stage: 'budget',
+                        guardrail: 'budget',
+                        action: 'exceeded',
+                        message: `Run stopped: ${breaches.join(' and ')} exceeded.`,
+                    });
                 }
             }
             if (this.activeStreamContext === streamContext) {

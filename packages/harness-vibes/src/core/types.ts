@@ -43,6 +43,10 @@ import type {
     VibesUIMessage,
     VibesDataParts,
 } from './streaming/streaming.js';
+import type { BudgetConfig } from './agent/budgets.js';
+
+// Re-export budget types so consumers can build budgets from the package root.
+export type { BudgetConfig, ModelPricing } from './agent/budgets.js';
 
 /**
  * Types of tasks for categorization and filtering.
@@ -447,6 +451,17 @@ export interface AgentHarnessConfig {
     allowedTools?: string[];
     /** Optional blacklist of tool names to block (takes precedence over allowedTools) */
     blockedTools?: string[];
+    /**
+     * Per-run budgets (token / cost / tool-call caps). Enforced as native
+     * `stopWhen` conditions — the loop halts once a cap is reached.
+     */
+    budgets?: BudgetConfig;
+    /**
+     * Redact known secrets (API keys, tokens, env assignments) from tool
+     * results before they reach the model context or the stream (default true).
+     * Set false in a fully trusted environment.
+     */
+    redactToolIO?: boolean;
 }
 
 /**
