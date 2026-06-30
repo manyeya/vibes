@@ -287,7 +287,6 @@ export default class WorkflowPlugin implements Plugin {
             name,
             toolName,
             plugin: this.name,
-            heartbeatMessage: `${toolName} is still working`,
         });
     }
 

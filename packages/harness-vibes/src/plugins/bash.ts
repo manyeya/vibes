@@ -149,7 +149,6 @@ export default class BashPlugin implements Plugin {
             name: 'bash-command',
             toolName: 'bash',
             plugin: this.name,
-            heartbeatMessage: `Shell command is still running in ${this.baseDir}`,
         });
         // bash-tool prepends `cd "<destination>" && ` to every command so it runs
         // in the working dir; strip that bookkeeping from what the UI card shows

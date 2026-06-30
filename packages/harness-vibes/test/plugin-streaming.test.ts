@@ -4,7 +4,6 @@ import { MockLanguageModelV3 } from 'ai/test';
 import { join } from 'path';
 import { createDefaultPlugins } from '../index';
 import { createPluginStreamContext } from '../src/core/types';
-import BashPlugin from '../src/plugins/bash';
 import FilesystemPlugin from '../src/plugins/filesystem';
 import { PlanningPlugin } from '../src/plugins/planning';
 import TasksPlugin from '../src/plugins/tasks';
@@ -55,31 +54,6 @@ describe('Plugin streaming', () => {
         'read',
         'complete',
       ]);
-    } finally {
-      await removeTempWorkspace(workspaceDir);
-    }
-  });
-
-  test('BashPlugin emits heartbeat updates for delayed commands', async () => {
-    const workspaceDir = await createTempWorkspace('bash-stream');
-    const parts: any[] = [];
-
-    try {
-      const plugin = new BashPlugin(workspaceDir);
-      await plugin.waitReady();
-      attachStream(plugin, parts, { heartbeatStartMs: 5, heartbeatIntervalMs: 5 });
-
-      await (plugin.tools.bash as any).execute({
-        command: 'sleep 0.03',
-      });
-
-      const heartbeat = parts.find(
-        part => part.type === 'data-status' && String(part.id).startsWith('heartbeat:'),
-      );
-
-      expect(heartbeat).toBeDefined();
-      expect(heartbeat.transient).toBe(true);
-      expect(heartbeat.data.phase).toBe('heartbeat');
     } finally {
       await removeTempWorkspace(workspaceDir);
     }

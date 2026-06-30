@@ -159,7 +159,6 @@ export default class FilesystemPlugin implements Plugin {
                         name: 'read-file',
                         toolName: 'readFile',
                         plugin: this.name,
-                        heartbeatEnabled: false,
                     });
                     operation?.milestone(`Resolving ${relativePath}`, { phase: 'resolve' });
                     const opId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -186,7 +185,6 @@ export default class FilesystemPlugin implements Plugin {
                         name: 'write-file',
                         toolName: 'writeFile',
                         plugin: this.name,
-                        heartbeatEnabled: false,
                     });
 
                     // sandbox.writeFile creates parent directories; we still
@@ -227,7 +225,6 @@ export default class FilesystemPlugin implements Plugin {
                         name: 'edit-file',
                         toolName: 'edit_file',
                         plugin: this.name,
-                        heartbeatEnabled: false,
                     });
                     const opId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
                     this.writer?.writeFileOperation(opId, 'edit', relativePath, 'running');
@@ -286,7 +283,6 @@ export default class FilesystemPlugin implements Plugin {
                         name: 'list-files',
                         toolName: 'list_files',
                         plugin: this.name,
-                        heartbeatEnabled: false,
                     });
                     operation?.milestone(`Scanning ${directory}${recursive ? ' recursively' : ''}`, { phase: 'scan' });
                     const opId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;

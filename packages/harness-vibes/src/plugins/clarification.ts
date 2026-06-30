@@ -88,7 +88,6 @@ export default class ClarificationPlugin implements Plugin {
                         name: 'ask-user',
                         toolName: ASK_USER_TOOL_NAME,
                         plugin: this.name,
-                        heartbeatEnabled: false,
                     });
                     const id = `ask_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
                     const normalized = questions.map((q, i) => ({

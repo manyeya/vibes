@@ -212,7 +212,7 @@ export const ActivityStream: React.FC<ActivityStreamProps> = ({ parts }) => {
  * Lift a freeform `data-status` part to a compact thinking strip — used
  * when there is no `data-tool_progress` traffic yet but the agent is
  * still talking. Renders the most recent status message (transient ones
- * are typically heartbeats and don't appear in the input here).
+ * don't appear in the input here).
  */
 export const StatusStrip: React.FC<{ parts: ActivityStreamPart[] }> = ({ parts }) => {
     const last = useMemo(() => {

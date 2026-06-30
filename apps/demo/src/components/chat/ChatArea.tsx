@@ -224,13 +224,9 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
           updateLiveDataParts();
           break;
 
-        case 'data-status': {
-          const phase = typeof data === 'object' && data && 'phase' in data
-            ? (data as { phase?: string }).phase
-            : undefined;
-          updateLiveDataParts(phase === 'heartbeat' ? 'replace' : 'append');
+        case 'data-status':
+          updateLiveDataParts('append');
           break;
-        }
 
         default:
           break;

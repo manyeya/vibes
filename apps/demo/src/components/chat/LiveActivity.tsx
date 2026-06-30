@@ -74,7 +74,7 @@ export const LiveActivity: React.FC<{ parts: ActivityStreamPart[] }> = ({ parts 
 
   const cards = parts.filter((p) => !SUPPRESSED.has(p.type));
   // Only render when there's something real: a card (delegation/error/…) or a
-  // tool/status line. Suppressed chatter alone (context-usage, heartbeats)
+  // tool/status line. Suppressed chatter alone (context-usage, status)
   // must NOT pop an empty shell.
   if (cards.length === 0 && !latest) return null;
 

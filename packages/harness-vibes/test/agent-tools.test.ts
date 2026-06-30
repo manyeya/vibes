@@ -11,10 +11,7 @@ class ExposedVibeAgent extends AgentHarness {
   }
 
   exposeSetStreamContext(parts: any[]) {
-    this.activeStreamContext = createPluginStreamContext(createCapturingWriter(parts), {
-      heartbeatStartMs: 5,
-      heartbeatIntervalMs: 5,
-    });
+    this.activeStreamContext = createPluginStreamContext(createCapturingWriter(parts));
   }
 
   async exposePrepareCall(instructions: string) {

@@ -68,7 +68,6 @@ export class McpPlugin implements Plugin {
                                 name: `mcp-${name}-${tool.description}`,
                                 toolName: `${name}_${tool.description}`,
                                 plugin: this.name,
-                                heartbeatEnabled: false,
                             });
                             operation?.milestone(`Calling MCP server "${name}"`, { phase: 'remote' });
                             const result = await client.callTool(tool.description, args);

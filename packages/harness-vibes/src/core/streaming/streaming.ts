@@ -47,13 +47,9 @@ export interface DataStreamOperationScope extends DataStreamMetadata {
     name: string;
     toolName?: string;
     operationId?: string;
-    heartbeatMessage?: string;
-    heartbeatEnabled?: boolean;
 }
 
 export interface DataStreamWriterConfig {
-    heartbeatStartMs?: number;
-    heartbeatIntervalMs?: number;
     now?: () => number;
 }
 
@@ -399,9 +395,6 @@ export interface PluginStreamContext {
  * independent.
  */
 const currentOperationStore = new AsyncLocalStorage<DataStreamOperation>();
-
-const DEFAULT_HEARTBEAT_START_MS = 2000;
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 2000;
 
 let streamCounter = 0;
 let operationCounter = 0;
@@ -851,11 +844,7 @@ export class DataStreamOperation {
     readonly toolName: string;
 
     private readonly metadata: DataStreamMetadata;
-    private readonly heartbeatMessage: string;
-    private readonly heartbeatEnabled: boolean;
     private readonly startTime: number;
-    private heartbeatStartTimer?: ReturnType<typeof setTimeout>;
-    private heartbeatIntervalTimer?: ReturnType<typeof setInterval>;
     private closed = false;
     private lastMessage?: string;
 
@@ -874,10 +863,7 @@ export class DataStreamOperation {
             parentOperationId: scope.parentOperationId,
             phase: scope.phase,
         };
-        this.heartbeatEnabled = scope.heartbeatEnabled !== false;
-        this.heartbeatMessage = scope.heartbeatMessage ?? `${scope.name} is still running...`;
         this.startTime = this.now();
-        this.scheduleHeartbeat();
     }
 
     /**
@@ -895,38 +881,6 @@ export class DataStreamOperation {
 
     private elapsedMs(): number {
         return Math.max(0, this.now() - this.startTime);
-    }
-
-    private scheduleHeartbeat(): void {
-        if (!this.writer.isAvailable || !this.heartbeatEnabled) {
-            return;
-        }
-
-        const startMs = this.config.heartbeatStartMs ?? DEFAULT_HEARTBEAT_START_MS;
-        const intervalMs = this.config.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
-        this.heartbeatStartTimer = setTimeout(() => {
-            if (this.closed) {
-                return;
-            }
-            this.heartbeat();
-            this.heartbeatIntervalTimer = setInterval(() => {
-                if (this.closed) {
-                    return;
-                }
-                this.heartbeat();
-            }, intervalMs);
-        }, startMs);
-    }
-
-    private clearHeartbeat(): void {
-        if (this.heartbeatStartTimer) {
-            clearTimeout(this.heartbeatStartTimer);
-            this.heartbeatStartTimer = undefined;
-        }
-        if (this.heartbeatIntervalTimer) {
-            clearInterval(this.heartbeatIntervalTimer);
-            this.heartbeatIntervalTimer = undefined;
-        }
     }
 
     milestone(message: string, options: DataStreamStatusOptions = {}): void {
@@ -965,21 +919,7 @@ export class DataStreamOperation {
 
         if (stage === 'complete' || stage === 'failed') {
             this.closed = true;
-            this.clearHeartbeat();
         }
-    }
-
-    heartbeat(message?: string, options: DataStreamStatusOptions = {}): void {
-        this.writer.writeStatus(
-            message ?? this.lastMessage ?? this.heartbeatMessage,
-            undefined,
-            undefined,
-            {
-                id: options.id ?? `heartbeat:${this.operationId}`,
-                transient: true,
-                ...mergeMetadata(this.metadata, { ...options, phase: options.phase ?? 'heartbeat' }),
-            }
-        );
     }
 
     complete(message?: string, options: DataStreamToolProgressOptions = {}): void {
@@ -1014,7 +954,6 @@ export class DataStreamOperation {
             attempt: options.attempt,
         });
         this.closed = true;
-        this.clearHeartbeat();
     }
 
     child(scope: DataStreamOperationScope): DataStreamOperation {

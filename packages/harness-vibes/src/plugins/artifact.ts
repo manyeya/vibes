@@ -281,7 +281,6 @@ export default class ArtifactPlugin implements Plugin {
                         name: 'create-artifact',
                         toolName: 'create_artifact',
                         plugin: this.name,
-                        heartbeatEnabled: false,
                     });
                     // Scan before saving. A broken chart can't render at all, so
                     // it's a hard gate (as before); other kinds save + report so
@@ -350,7 +349,6 @@ export default class ArtifactPlugin implements Plugin {
                         name: 'edit-artifact',
                         toolName: 'edit_artifact',
                         plugin: this.name,
-                        heartbeatEnabled: false,
                     });
                     const existing = this.artifacts.get(id) ?? (await this.recover(id));
                     if (!existing) {

@@ -859,7 +859,6 @@ export default class SubAgentPlugin implements Plugin {
             plugin: this.name,
             delegationId,
             agentName: subAgent.name,
-            heartbeatMessage: `${subAgent.name} is still working on the delegated task`,
         });
         const truncatedTask = truncateTask(request.task);
         this.writer?.writeDelegation(delegationId, subAgent.name, truncatedTask, 'starting');
@@ -892,7 +891,6 @@ export default class SubAgentPlugin implements Plugin {
                     agentName: subAgent.name,
                     delegationId,
                     parentOperationId: delegationOperation?.operationId,
-                    heartbeatMessage: `${subAgent.name} is analyzing and executing the delegated task`,
                 })
             : undefined;
 

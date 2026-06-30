@@ -140,7 +140,7 @@ export default class MemoryPlugin implements Plugin {
                     content: z.string().describe('The full new scratchpad content.'),
                 }),
                 execute: async ({ content }) => {
-                    const op = this.streamContext?.createOperation({ name: 'update-scratchpad', toolName: 'update_scratchpad', plugin: this.name, heartbeatEnabled: false });
+                    const op = this.streamContext?.createOperation({ name: 'update-scratchpad', toolName: 'update_scratchpad', plugin: this.name });
                     await this.writeScratchpad(content);
                     op?.complete('Scratchpad updated', { phase: 'complete' });
                     this.writer?.writeMemoryUpdate('note', 'updated', undefined, { title: 'Scratchpad', detail: content.slice(0, 140) });
@@ -159,7 +159,7 @@ export default class MemoryPlugin implements Plugin {
                     tags: z.array(z.string()).optional().describe('Optional tags for retrieval, e.g. ["auth", "convention"].'),
                 }),
                 execute: async ({ title, content, tags }) => {
-                    const op = this.streamContext?.createOperation({ name: 'remember', toolName: 'remember', plugin: this.name, heartbeatEnabled: false });
+                    const op = this.streamContext?.createOperation({ name: 'remember', toolName: 'remember', plugin: this.name });
                     const notes = await this.readNotes();
                     const now = new Date().toISOString();
                     const note: MemoryNote = {

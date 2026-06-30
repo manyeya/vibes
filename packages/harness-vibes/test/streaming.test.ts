@@ -3,12 +3,9 @@ import { createPluginStreamContext } from '../src/core/types';
 import { createCapturingWriter } from './helpers';
 
 describe('DataStreamOperation', () => {
-  test('emits stable ids and transient heartbeats for long-running work', async () => {
+  test('emits stable ids and ordered progress for an operation', async () => {
     const parts: any[] = [];
-    const context = createPluginStreamContext(createCapturingWriter(parts), {
-      heartbeatStartMs: 5,
-      heartbeatIntervalMs: 5,
-    });
+    const context = createPluginStreamContext(createCapturingWriter(parts));
 
     const operation = context.createOperation({
       name: 'long-task',
@@ -18,9 +15,6 @@ describe('DataStreamOperation', () => {
 
     operation.milestone('Preparing long task', { phase: 'prepare' });
     operation.progress('starting', { message: 'Starting long task', attempt: 1 });
-
-    await Bun.sleep(14);
-
     operation.complete('Finished long task', { attempt: 1 });
 
     const milestone = parts.find(
@@ -29,13 +23,6 @@ describe('DataStreamOperation', () => {
     expect(milestone).toBeDefined();
     expect(milestone.data.operationId).toBe(operation.operationId);
     expect(milestone.data.plugin).toBe('TestPlugin');
-
-    const heartbeats = parts.filter(
-      part => part.type === 'data-status' && part.id === `heartbeat:${operation.operationId}`,
-    );
-    expect(heartbeats.length).toBeGreaterThan(0);
-    expect(heartbeats[0].transient).toBe(true);
-    expect(heartbeats[0].data.phase).toBe('heartbeat');
 
     const toolProgress = parts.filter(
       part => part.type === 'data-tool_progress' && part.id === `tool_progress:${operation.operationId}`,
