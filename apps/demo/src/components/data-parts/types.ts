@@ -58,6 +58,7 @@ export type ContextUsageData = VibesDataParts['context_usage'] & {
 export type AgentMessageData = VibesDataParts['agent_message'];
 export type AgentThoughtData = VibesDataParts['agent_thought'];
 export type WorkflowData = VibesDataParts['workflow'];
+export type GuardrailData = VibesDataParts['guardrail'];
 
 // Configuration objects for consistent styling
 export const notificationConfig = {

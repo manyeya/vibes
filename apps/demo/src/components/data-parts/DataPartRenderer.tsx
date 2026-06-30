@@ -17,6 +17,7 @@ import {
   AgentMessagePart,
   AgentThoughtPart,
   WorkflowPart,
+  GuardrailPart,
 } from './index';
 
 // Type for data part wrapper that comes from the stream
@@ -44,6 +45,7 @@ const dataPartRenderers: Record<string, React.FC<{ data: unknown }>> = {
   'data-agent_message': AgentMessagePart as React.FC<{ data: unknown }>,
   'data-agent_thought': AgentThoughtPart as React.FC<{ data: unknown }>,
   'data-workflow': WorkflowPart as React.FC<{ data: unknown }>,
+  'data-guardrail': GuardrailPart as React.FC<{ data: unknown }>,
 };
 
 export interface DataPartRendererProps {

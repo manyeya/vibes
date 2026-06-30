@@ -221,6 +221,7 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
         case 'data-plan_review':
         case 'data-context_usage':
         case 'data-notification':
+        case 'data-guardrail':
           updateLiveDataParts();
           break;
 
