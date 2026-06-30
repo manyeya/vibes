@@ -15,6 +15,7 @@ import type {
     ToolApprovalPolicy,
     DataStreamOperation,
 } from '../types';
+import { redactSecrets } from '../redact';
 
 /**
  * Turn a tool's return value into a short, human-readable completion line for
@@ -102,6 +103,8 @@ export interface ToolExecuteDeps {
     /** Live plugin list, for input/error lifecycle hooks. */
     plugins: Plugin[];
     maxRetries: number;
+    /** Redact known secrets from the tool result before it's returned/streamed. */
+    redactToolIO: boolean;
     /** Read lazily — the active stream context changes per run. */
     getStreamContext: () => PluginStreamContext | undefined;
     logError: (toolName: string | undefined, error: string, context?: string) => void;
@@ -116,7 +119,7 @@ export interface ToolExecuteDeps {
 export function wrapToolExecute(
     deps: ToolExecuteDeps,
 ): (args: unknown, options: unknown) => Promise<unknown> {
-    const { toolName, ownerName, originalExecute, plugins, maxRetries, getStreamContext, logError } = deps;
+    const { toolName, ownerName, originalExecute, plugins, maxRetries, redactToolIO, getStreamContext, logError } = deps;
 
     return async (args: unknown, options: unknown) => {
         // `operation` is undefined only when there's no active stream (e.g.
@@ -151,7 +154,12 @@ export function wrapToolExecute(
                         attempt: attempt + 1,
                     });
 
-                    const result = await originalExecute(args, options);
+                    const rawResult = await originalExecute(args, options);
+                    // Secret masking at the real leak surface: redact the result
+                    // before it reaches the model context, the activity feed, or
+                    // the stream. (Args are model-authored and passed through to
+                    // the tool unmodified — only the OUTPUT is masked.)
+                    const result = redactToolIO ? redactSecrets(rawResult) : rawResult;
                     // If a plugin already closed the shared operation with its
                     // own richer message, keep it; otherwise surface a summary.
                     if (operation && !operation.isClosed) {

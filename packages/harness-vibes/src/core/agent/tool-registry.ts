@@ -12,6 +12,8 @@ export interface ToolRegistryConfig {
     blockedTools?: string[];
     /** Retries for a failing tool before its error is surfaced. */
     maxRetries: number;
+    /** Redact known secrets from tool results before they're returned/streamed (default true). */
+    redactToolIO?: boolean;
 }
 
 /** Runtime hooks the wrapped tools need from the harness. */
@@ -113,6 +115,7 @@ export class ToolRegistry {
                         originalExecute,
                         plugins,
                         maxRetries: this.config.maxRetries,
+                        redactToolIO: this.config.redactToolIO ?? true,
                         getStreamContext: deps.getStreamContext,
                         logError: deps.logError,
                     })
