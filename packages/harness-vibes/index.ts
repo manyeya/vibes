@@ -20,6 +20,13 @@ import {
     type ArtifactPluginConfig,
     ClarificationPlugin,
     ASK_USER_TOOL_NAME,
+    GuardrailsPlugin,
+    GuardrailError,
+    type Guardrail,
+    type GuardrailResult,
+    type GuardrailStage,
+    type GuardrailContext,
+    type GuardrailsConfig,
     WorkflowPlugin,
     type WorkflowPluginConfig,
     type Workflow,
@@ -34,6 +41,16 @@ import {
     type ParallelDelegationResult,
 } from './src/plugins';
 import MemoryPlugin from './src/plugins/memory';
+import {
+    resolveBudgetStops,
+    tokenBudget,
+    toolCallBudget,
+    costBudget,
+    estimateCost,
+    type BudgetConfig,
+    type ModelPricing,
+} from './src/core/agent/budgets';
+import { redactSecrets, redactString } from './src/core/redact';
 import DrizzleBackend from './src/storage/drizzle-backend';
 import StateBackend from './src/storage/state-backend';
 import { connectStore, type StoreConnection, type ConnectOptions } from './src/storage/connect';
@@ -119,6 +136,22 @@ export {
     type ArtifactPluginConfig,
     ClarificationPlugin,
     ASK_USER_TOOL_NAME,
+    GuardrailsPlugin,
+    GuardrailError,
+    type Guardrail,
+    type GuardrailResult,
+    type GuardrailStage,
+    type GuardrailContext,
+    type GuardrailsConfig,
+    resolveBudgetStops,
+    tokenBudget,
+    toolCallBudget,
+    costBudget,
+    estimateCost,
+    type BudgetConfig,
+    type ModelPricing,
+    redactSecrets,
+    redactString,
     WorkflowPlugin,
     type WorkflowPluginConfig,
     type Workflow,
