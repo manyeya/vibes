@@ -10,6 +10,8 @@ import {
     SummarizationPlugin,
     ArtifactPlugin,
     ClarificationPlugin,
+    GuardrailsPlugin,
+    type Guardrail,
     WorkflowPlugin,
     WebSearchPlugin,
 } from '../../plugins';
@@ -46,6 +48,12 @@ export interface VibeAgentConfig extends Partial<Omit<AgentHarnessConfig, 'instr
      * (e.g. a virtual or remote sandbox).
      */
     sandbox?: Sandbox;
+    /**
+     * Content guardrails (input/output validate-block-redact) added to the
+     * GuardrailsPlugin. Secret-masking is on by default regardless; these are
+     * extra caller-defined checks.
+     */
+    guardrails?: Guardrail[];
 }
 
 export interface DefaultPluginFactoryOptions {
@@ -70,6 +78,8 @@ export interface DefaultPluginFactoryOptions {
     contextWindow?: number;
     /** Fraction of the window at which summarization triggers (0–1). */
     compressionRatio?: number;
+    /** Caller-defined content guardrails (secret-masking is on by default). */
+    guardrails?: Guardrail[];
 }
 
 /**
@@ -123,6 +133,10 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
         new ArtifactPlugin({ baseDir: stateDir }),
         // Ask the user structured clarifying questions (questionnaire above the composer).
         new ClarificationPlugin(),
+        // Safety guardrails: secret-masking on input/output prose (on by default)
+        // plus any caller-defined input/output content checks. Tool-output
+        // secrets are masked separately at the tool-execute layer.
+        new GuardrailsPlugin({ guardrails: config.guardrails }),
         new MemoryPlugin({
             scratchpadPath: path.join(stateDir, 'scratchpad.md'),
             notesPath: path.join(sharedWorkspaceDir, 'memories.json'),
@@ -288,6 +302,7 @@ export class VibeAgent extends AgentHarness {
                 sandbox: config.sandbox,
                 contextWindow: this.contextWindow,
                 compressionRatio: this.contextCompressionRatio,
+                ...(config.guardrails ? { guardrails: config.guardrails } : {}),
             }));
         }
 

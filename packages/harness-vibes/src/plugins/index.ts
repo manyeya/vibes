@@ -9,6 +9,14 @@ import MemoryPlugin from "./memory";
 import SummarizationPlugin, { type SummarizationConfig } from "./summarization";
 import ArtifactPlugin, { type ArtifactKind, type ArtifactPluginConfig } from "./artifact";
 import ClarificationPlugin, { ASK_USER_TOOL_NAME } from "./clarification";
+import GuardrailsPlugin, {
+    GuardrailError,
+    type Guardrail,
+    type GuardrailResult,
+    type GuardrailStage,
+    type GuardrailContext,
+    type GuardrailsConfig,
+} from "./guardrails";
 import WorkflowPlugin, {
     type WorkflowPluginConfig,
     type Workflow,
@@ -48,6 +56,13 @@ export {
     type ArtifactPluginConfig,
     ClarificationPlugin,
     ASK_USER_TOOL_NAME,
+    GuardrailsPlugin,
+    GuardrailError,
+    type Guardrail,
+    type GuardrailResult,
+    type GuardrailStage,
+    type GuardrailContext,
+    type GuardrailsConfig,
     WorkflowPlugin,
     type WorkflowPluginConfig,
     type Workflow,
