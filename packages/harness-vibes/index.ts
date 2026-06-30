@@ -34,9 +34,10 @@ import {
     type ParallelDelegationResult,
 } from './src/plugins';
 import MemoryPlugin from './src/plugins/memory';
-import SqliteBackend from './src/backend/sqlite-backend';
-import StateBackend, { InMemoryStateBackend } from './src/backend/state-backend';
-export type { SessionInfo, WorkspaceInfo } from './src/backend/sqlite-backend';
+import DrizzleBackend from './src/storage/drizzle-backend';
+import StateBackend from './src/storage/state-backend';
+import { connectStore, type StoreConnection, type ConnectOptions } from './src/storage/connect';
+export type { SessionInfo, WorkspaceInfo, StreamChunk, StreamMeta, LatestStream } from './src/storage/state-backend';
 import {
     type AgentState,
     type AgentHarnessConfig,
@@ -129,9 +130,11 @@ export {
     type RunWorkflowOptions,
     type RunWorkflowOutcome,
     type ParallelDelegationResult,
-    SqliteBackend,
+    DrizzleBackend,
     StateBackend,
-    InMemoryStateBackend,
+    connectStore,
+    type StoreConnection,
+    type ConnectOptions,
     SummarizationPlugin,
     type SummarizationConfig,
     type AgentHarnessConfig,

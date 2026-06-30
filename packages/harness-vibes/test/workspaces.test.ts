@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { MockLanguageModelV3 } from 'ai/test';
 import { join } from 'path';
 import { writeFile, readFile, stat } from 'fs/promises';
-import { createRuntime, SqliteBackend } from '../index';
+import { createRuntime, connectStore } from '../index';
 import { createTempWorkspace, removeTempWorkspace } from './helpers';
 
 function textModel(text: string) {
@@ -33,7 +33,7 @@ describe('Workspaces (projects that group sessions)', () => {
         const root = await createTempWorkspace('ws-default');
         try {
             const harness = harnessAt(root);
-            // Touch the DB so the SqliteBackend runs its migrations.
+            // Touch the DB so the store ensures its schema + Default workspace.
             await harness.listSessions();
             const workspaces = await harness.listWorkspaces();
             expect(workspaces.some((w) => w.id === 'default')).toBe(true);
@@ -61,8 +61,8 @@ describe('Workspaces (projects that group sessions)', () => {
             expect(await readFile(join(b.workspaceDir, 'hello.txt'), 'utf8')).toBe('shared');
 
             // Per-session plugin state is isolated under .vibes/sessions/{id}/.
-            const stateA = harness.readState('sess-a').metadata?.stateDir as string;
-            const stateB = harness.readState('sess-b').metadata?.stateDir as string;
+            const stateA = (await harness.readState('sess-a')).metadata?.stateDir as string;
+            const stateB = (await harness.readState('sess-b')).metadata?.stateDir as string;
             expect(stateA).toBe(join(ws.rootDir, '.vibes', 'sessions', 'sess-a'));
             expect(stateB).toBe(join(ws.rootDir, '.vibes', 'sessions', 'sess-b'));
             expect(stateA).not.toBe(stateB);
@@ -95,9 +95,10 @@ describe('Workspaces (projects that group sessions)', () => {
             // Simulate a pre-existing session created before workspaces existed:
             // its metadata already records an isolated per-session dir.
             const legacyDir = join(root, 'sessions', 'legacy-1');
-            const backend = new SqliteBackend(join(root, 'vibes.db'), 'legacy-1');
+            const conn = await connectStore({ dbPath: join(root, 'vibes.db') });
+            const backend = conn.makeBackend('legacy-1');
             await backend.updateSession('legacy-1', { metadata: { workspaceDir: legacyDir } });
-            backend.close();
+            await conn.close();
 
             const s = await harness.session('legacy-1');
             expect(s.workspaceDir).toBe(legacyDir);
@@ -123,7 +124,7 @@ describe('Workspaces (projects that group sessions)', () => {
             expect(s.workspaceDir).toBe(repo);
             expect(await readFile(join(s.workspaceDir, 'README.md'), 'utf8')).toBe('# real repo');
             // … but per-session state is kept OUT of the repo (app-managed).
-            const stateDir = harness.readState('in-repo').metadata?.stateDir as string;
+            const stateDir = (await harness.readState('in-repo')).metadata?.stateDir as string;
             expect(stateDir.startsWith(join(root, 'projects', ws.id))).toBe(true);
             expect(stateDir.startsWith(repo)).toBe(false);
         } finally {

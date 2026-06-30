@@ -13,7 +13,7 @@ import type { ModelMessage, UIMessage, ToolSet, UIMessageChunk } from 'ai';
 import type { VibesUIMessage } from './streaming';
 import { createUIMessageStream, createUIMessageStreamResponse, convertToModelMessages } from 'ai';
 import type { AgentState } from '../types';
-import type StateBackend from '../../backend/state-backend';
+import type StateBackend from '../../storage/state-backend';
 
 interface AgentStreamOptions {
     agent: AgentHarness;
@@ -147,7 +147,7 @@ export async function createAgentStreamResponse(
                 const streamUsage = sdkTotal > 0
                     ? { inputTokens: sdk.inputTokens ?? 0, outputTokens: sdk.outputTokens ?? 0, totalTokens: sdkTotal }
                     : tallied;
-                const prior = backend.getState();
+                const prior = await backend.getState();
                 const priorUsage = (prior.metadata?.usage ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 }) as {
                     inputTokens: number;
                     outputTokens: number;
@@ -167,7 +167,7 @@ export async function createAgentStreamResponse(
                     messages: fullMessages,
                     metadata: mergedMetadata,
                 };
-                backend.setState(state);
+                await backend.setState(state);
             }
         },
         // Use the incoming UI messages as the conversation base so onFinish
@@ -176,9 +176,9 @@ export async function createAgentStreamResponse(
         // Persist the complete UI messages. Their parts include the data-*
         // activity (ToT thoughts, tool progress, delegation, status), so
         // reloading a session restores the whole thread, not just text.
-        onFinish({ messages }) {
+        async onFinish({ messages }) {
             try {
-                (backend as { setUIMessages?: (m: unknown[]) => void } | undefined)?.setUIMessages?.(messages);
+                await backend?.setUIMessages?.(messages);
             } catch (err) {
                 console.error('[agent-stream] failed to persist UI messages:', err);
             }

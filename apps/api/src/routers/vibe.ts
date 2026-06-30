@@ -8,7 +8,7 @@ import { createUIMessageStream, createUIMessageStreamResponse, type UIMessageChu
 import { logger } from "../logger";
 import streamCoordinator from "../stream-coordinator";
 import { vibeRuntime, defaultSubAgents } from "../vibe-coder";
-import { SqliteBackend, createAgentStreamResponse, validateWorkflow, runWorkflowToStream, createDataStreamWriter } from "../../../../packages/harness-vibes/index";
+import { createAgentStreamResponse, validateWorkflow, runWorkflowToStream, createDataStreamWriter } from "../../../../packages/harness-vibes/index";
 import { agent as simpleAgent } from "../simple-agent";
 import { getModel, getAvailableModels, resolveContextWindow, getDefaultModelId, isKnownModelId } from "../model-factory";
 
@@ -596,7 +596,7 @@ app.get('/sessions/:id/files', async (c) => {
 
         return c.json({
             success: true,
-            files: vibeRuntime.readState(sessionId).messages,
+            files: (await vibeRuntime.readState(sessionId)).messages,
         });
     } catch (error) {
         logger.error({
@@ -630,14 +630,14 @@ app.get('/sessions/:id/messages', async (c) => {
         // Prefer the persisted full UI messages — their parts include the
         // data-* activity (ToT thoughts, tool progress, delegation, status),
         // so a reload restores the whole thread, not just text.
-        const storedUi = vibeRuntime.readUIMessages(sessionId);
+        const storedUi = await vibeRuntime.readUIMessages(sessionId);
         if (storedUi && storedUi.length > 0) {
             return c.json({ success: true, messages: storedUi });
         }
 
         // Fallback for sessions persisted before UI-message storage existed:
         // reconstruct the user/assistant text + reasoning from model messages.
-        const state = vibeRuntime.readState(sessionId);
+        const state = await vibeRuntime.readState(sessionId);
 
         const messages = state.messages
             // Drop role:'tool' messages — UIMessage doesn't have a tool
@@ -799,7 +799,7 @@ app.post('/vibe/stream', zValidator('json', vibeSchema), async (c) => {
         // both the live-tail and replay paths agree on the same identity.
         const streamId = crypto.randomUUID();
         streamCoordinator.streamRegistry.create(streamId, sessionId);
-        sessionBackend.beginStream(streamId, sessionId);
+        await sessionBackend.beginStream(streamId, sessionId);
 
         const onChunk = (chunk: unknown) => {
             const entry = streamCoordinator.streamRegistry.get(streamId);
@@ -809,20 +809,18 @@ app.post('/vibe/stream', zValidator('json', vibeSchema), async (c) => {
             // subscriber can dedupe by seq.
             entry.lastSeq += 1;
             const seq = entry.lastSeq;
-            try {
-                sessionBackend.appendStreamChunk(streamId, seq, chunk);
-            } catch (err) {
-                console.error('[vibe] appendStreamChunk failed:', err);
-            }
+            // Fire-and-forget: don't block fan-out on the DB write; seq ordering
+            // is carried by `seq`, not insert order.
+            sessionBackend.appendStreamChunk(streamId, seq, chunk)
+                .catch(err => console.error('[vibe] appendStreamChunk failed:', err));
             for (const sub of entry.subscribers) {
                 try { sub(seq, chunk); } catch (err) { console.error('[vibe] subscriber threw:', err); }
             }
         };
 
         const onStreamEnd = (status: 'completed' | 'failed') => {
-            try { sessionBackend.endStream(streamId, status); } catch (err) {
-                console.error('[vibe] endStream failed:', err);
-            }
+            sessionBackend.endStream(streamId, status)
+                .catch(err => console.error('[vibe] endStream failed:', err));
             streamCoordinator.streamRegistry.complete(streamId, status);
             streamCoordinator.clearStreamController(sessionId, streamController);
         };
@@ -885,8 +883,8 @@ app.get('/vibe/:sessionId/stream', async (c) => {
         return c.json({ success: false, error: 'streamId query param required' }, 400);
     }
 
-    const backend = new SqliteBackend('workspace/vibes.db', sessionId);
-    const meta = backend.getStreamMeta(streamId);
+    const backend = await vibeRuntime.backend(sessionId);
+    const meta = await backend.getStreamMeta(streamId);
     if (!meta || meta.sessionId !== sessionId) {
         return c.body(null, 204);
     }
@@ -903,15 +901,18 @@ app.get('/vibe/:sessionId/stream', async (c) => {
     const registry = streamCoordinator.streamRegistry;
     const liveEntry = registry.get(streamId);
 
+    // Pre-fetch persisted chunks here (async) so the sync ReadableStream
+    // start() can enqueue them without awaiting.
+    const persistedChunks = await backend.readStreamChunks(streamId, fromSeq);
+
     const stream = new ReadableStream<UIMessageChunk<unknown, never>>({
         start(controller) {
             // Phase 1: replay persisted chunks up to the current cursor.
             // We capture lastReplayedSeq so the live-tail subscriber can
-            // dedupe any chunk that landed in SQLite between read + emit.
+            // dedupe any chunk that landed between read + emit.
             let lastReplayedSeq = fromSeq - 1;
             try {
-                const persisted = backend.readStreamChunks(streamId, fromSeq);
-                for (const row of persisted) {
+                for (const row of persistedChunks) {
                     controller.enqueue(row.payload as UIMessageChunk<unknown, never>);
                     lastReplayedSeq = Math.max(lastReplayedSeq, row.chunkSeq);
                 }
@@ -976,8 +977,8 @@ app.get('/vibe/:sessionId/stream', async (c) => {
  */
 app.get('/vibe/:sessionId/reconnect', async (c) => {
     const sessionId = c.req.param('sessionId');
-    const backend = new SqliteBackend('workspace/vibes.db', sessionId);
-    const latest = backend.getLatestStream(sessionId);
+    const backend = await vibeRuntime.backend(sessionId);
+    const latest = await backend.getLatestStream(sessionId);
     if (!latest) return c.body(null, 204);
 
     const streamId = latest.streamId;
@@ -989,12 +990,14 @@ app.get('/vibe/:sessionId/reconnect', async (c) => {
     const registry = streamCoordinator.streamRegistry;
     const liveEntry = registry.get(streamId);
 
+    // Pre-fetch persisted chunks (async) for the sync start() below.
+    const persistedChunks = await backend.readStreamChunks(streamId, 0);
+
     const stream = new ReadableStream<UIMessageChunk<unknown, never>>({
         start(controller) {
             let lastReplayedSeq = -1;
             try {
-                const persisted = backend.readStreamChunks(streamId, 0);
-                for (const row of persisted) {
+                for (const row of persistedChunks) {
                     controller.enqueue(row.payload as UIMessageChunk<unknown, never>);
                     lastReplayedSeq = Math.max(lastReplayedSeq, row.chunkSeq);
                 }
@@ -1071,14 +1074,14 @@ app.post('/vibe/:sessionId/workflows/:nameOrId/run', async (c) => {
     // Register a resumable stream so the client tails it via resumeStream().
     const streamId = crypto.randomUUID();
     streamCoordinator.streamRegistry.create(streamId, sessionId);
-    backend.beginStream(streamId, sessionId);
+    await backend.beginStream(streamId, sessionId);
 
     const onChunk = (chunk: unknown) => {
         const entry = streamCoordinator.streamRegistry.get(streamId);
         if (!entry) return;
         entry.lastSeq += 1;
         const seq = entry.lastSeq;
-        try { backend.appendStreamChunk(streamId, seq, chunk); } catch (err) { console.error('[wf-run] appendStreamChunk failed:', err); }
+        backend.appendStreamChunk(streamId, seq, chunk).catch((err: unknown) => console.error('[wf-run] appendStreamChunk failed:', err));
         for (const sub of entry.subscribers) { try { sub(seq, chunk); } catch (err) { console.error('[wf-run] subscriber threw:', err); } }
     };
 
@@ -1102,8 +1105,8 @@ app.post('/vibe/:sessionId/workflows/:nameOrId/run', async (c) => {
             writer.write({ type: 'text-delta', id, delta: summary } as any);
             writer.write({ type: 'text-end', id } as any);
         },
-        onFinish({ messages }) {
-            try { (backend as { setUIMessages?: (m: unknown[]) => void }).setUIMessages?.(messages); } catch (err) { console.error('[wf-run] persist UI messages failed:', err); }
+        async onFinish({ messages }) {
+            try { await backend.setUIMessages(messages); } catch (err) { console.error('[wf-run] persist UI messages failed:', err); }
         },
     });
 
@@ -1122,7 +1125,7 @@ app.post('/vibe/:sessionId/workflows/:nameOrId/run', async (c) => {
             console.error('[wf-run] run errored:', err);
         } finally {
             reader.releaseLock();
-            try { backend.endStream(streamId, status); } catch { /* ignore */ }
+            await backend.endStream(streamId, status).catch(() => { /* ignore */ });
             streamCoordinator.streamRegistry.complete(streamId, status);
         }
     })();
@@ -1137,7 +1140,7 @@ app.post('/simple/stream', zValidator('json', vibeSchema), async (c) => {
 
         // Use custom stream response that integrates with middleware writers
         // This enables onData callbacks and custom data streaming
-        const sessionBackend = new SqliteBackend('workspace/vibes.db', 'default');
+        const sessionBackend = await vibeRuntime.backend('default');
         return createAgentStreamResponse({
             agent: simpleAgent,
             uiMessages: messages as unknown as Parameters<typeof createAgentStreamResponse>[0]['uiMessages'],

@@ -10,8 +10,8 @@
  * handling; that responsibility now lives in one place.
  */
 
-import { SqliteBackend } from '../../../packages/harness-vibes/index';
 import { StreamRegistry } from './stream-registry';
+import { vibeRuntime } from './vibe-coder';
 
 /**
  * Per-session abort controller registry entry.
@@ -42,12 +42,11 @@ class StreamCoordinator {
      * table from growing unbounded; the replay TTL in the reconnect
      * endpoint is shorter (5 min) so this is a safety net.
      */
-    private cleanupStreamLogs(): void {
+    private async cleanupStreamLogs(): Promise<void> {
         try {
             const cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-            const backend = new SqliteBackend('workspace/vibes.db', 'default');
-            const deleted = backend.cleanupStreams(cutoff);
-            backend.close();
+            const backend = await vibeRuntime.backend('default');
+            const deleted = await backend.cleanupStreams(cutoff);
             if (deleted > 0) {
                 console.log(`[StreamCoordinator] Cleaned up ${deleted} old stream_log rows`);
             }

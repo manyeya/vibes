@@ -2,27 +2,35 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import SqliteBackend from '../src/backend/sqlite-backend';
+import { connectStore, type StoreConnection } from '../src/storage/connect';
 
-// Each test gets its own throwaway db file.
+// Each test gets its own throwaway db file + connection.
 const dbs: string[] = [];
+const conns: StoreConnection[] = [];
 function freshDb(): string {
   const dir = mkdtempSync(join(tmpdir(), 'vibes-backend-'));
-  const path = join(dir, 'vibes.db');
   dbs.push(dir);
-  return path;
+  return join(dir, 'vibes.db');
 }
-afterEach(() => { while (dbs.length) rmSync(dbs.pop()!, { recursive: true, force: true }); });
+async function open(dbPath: string): Promise<StoreConnection> {
+  const conn = await connectStore({ dbPath });
+  conns.push(conn);
+  return conn;
+}
+afterEach(async () => {
+  while (conns.length) await conns.pop()!.close();
+  while (dbs.length) rmSync(dbs.pop()!, { recursive: true, force: true });
+});
 
 describe('Session usage persistence (C2 — no clobber)', () => {
   test('updateSession MERGES metadata, preserving stream-written usage', async () => {
-    const dbPath = freshDb();
-    const backend = new SqliteBackend(dbPath, 'default');
+    const conn = await open(freshDb());
+    const backend = conn.makeBackend('default');
     const id = await backend.createSession('My session', {}, undefined);
 
     // The streaming path writes token usage straight to sessions.metadata.
-    const sess = new SqliteBackend(dbPath, id);
-    sess.setState({ metadata: { usage: { inputTokens: 300, outputTokens: 50, totalTokens: 350 }, lastStreamAt: 't0' } });
+    const sess = conn.makeBackend(id);
+    await sess.setState({ metadata: { usage: { inputTokens: 300, outputTokens: 50, totalTokens: 350 }, lastStreamAt: 't0' } });
 
     // The session manager later persists title/metadata from an in-memory copy
     // that knows nothing about usage. This must NOT drop usage.
@@ -32,28 +40,23 @@ describe('Session usage persistence (C2 — no clobber)', () => {
     expect(after?.metadata?.usage).toEqual({ inputTokens: 300, outputTokens: 50, totalTokens: 350 });
     expect(after?.metadata?.workspaceDir).toBe('/tmp/x'); // caller's key applied
     expect(after?.metadata?.title).toBe('Renamed');
-
-    sess.close();
-    backend.close();
   });
 
   test('setState merges usage onto prior metadata across streams (cumulative)', async () => {
-    const dbPath = freshDb();
-    const root = new SqliteBackend(dbPath, 'default');
+    const conn = await open(freshDb());
+    const root = conn.makeBackend('default');
     const id = await root.createSession('s', {}, undefined);
-    const sess = new SqliteBackend(dbPath, id);
+    const sess = conn.makeBackend(id);
 
     // Stream 1.
-    let prior = sess.getState();
-    sess.setState({ metadata: { ...(prior.metadata ?? {}), usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 } } });
+    let prior = await sess.getState();
+    await sess.setState({ metadata: { ...(prior.metadata ?? {}), usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 } } });
     // Stream 2 (caller accumulates, as stream-response does).
-    prior = sess.getState();
+    prior = await sess.getState();
     const p = prior.metadata!.usage as { inputTokens: number; outputTokens: number; totalTokens: number };
-    sess.setState({ metadata: { ...prior.metadata, usage: { inputTokens: p.inputTokens + 200, outputTokens: p.outputTokens + 30, totalTokens: p.totalTokens + 230 } } });
+    await sess.setState({ metadata: { ...prior.metadata, usage: { inputTokens: p.inputTokens + 200, outputTokens: p.outputTokens + 30, totalTokens: p.totalTokens + 230 } } });
 
-    const after = sess.getState();
+    const after = await sess.getState();
     expect(after.metadata!.usage).toEqual({ inputTokens: 300, outputTokens: 50, totalTokens: 350 });
-    sess.close();
-    root.close();
   });
 });

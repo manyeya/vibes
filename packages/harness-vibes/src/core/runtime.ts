@@ -6,8 +6,8 @@ import { AgentHarness } from './agent/agent-harness';
 import type { AgentState } from './types';
 import type { Sandbox } from './sandbox';
 import { SessionStore } from './session/session-manager';
-import type SqliteBackend from '../backend/sqlite-backend';
-import type { SessionInfo, WorkspaceInfo } from '../backend/sqlite-backend';
+import type StateBackend from '../storage/state-backend';
+import type { SessionInfo, WorkspaceInfo } from '../storage/state-backend';
 
 /**
  * Public agent definition (Phase 2).
@@ -31,7 +31,12 @@ export interface RuntimeOptions {
     sandbox?: Sandbox;
     /** Workspace directory. Overrides the definition's workspaceDir. */
     workspaceDir?: string;
-    /** SQLite database path for persisted sessions (default: workspace/vibes.db). */
+    /**
+     * Postgres connection string. When set, sessions persist to Postgres;
+     * otherwise they fall back to a local SQLite file at {@link dbPath}.
+     */
+    databaseUrl?: string;
+    /** SQLite file path for persisted sessions when no `databaseUrl` is set (default: workspace/vibes.db). */
     dbPath?: string;
     /** Root directory for legacy per-session workspaces (default: workspace/sessions). */
     sessionsDir?: string;
@@ -97,7 +102,7 @@ export class Session {
     /** Absolute workspace directory for this session. */
     readonly workspaceDir: string;
     /** Persistent backend, present for persisted (non-ephemeral) sessions. */
-    readonly backend?: SqliteBackend;
+    readonly backend?: StateBackend;
     private readonly agent: AgentHarness;
     private readonly model: LanguageModel;
 
@@ -106,7 +111,7 @@ export class Session {
         agent: AgentHarness;
         model: LanguageModel;
         workspaceDir: string;
-        backend?: SqliteBackend;
+        backend?: StateBackend;
     }) {
         this.id = init.id;
         this.agent = init.agent;
@@ -203,6 +208,7 @@ export class AgentRuntime {
         this.definition = definition;
         this.model = definition.model ?? openai('gpt-4o');
         this.store = new SessionStore({
+            databaseUrl: options.databaseUrl,
             dbPath: options.dbPath,
             sessionsDir: options.sessionsDir,
             projectsDir: options.projectsDir,
@@ -334,18 +340,27 @@ export class AgentRuntime {
     }
 
     /** Read persisted state (messages/summary/metadata) cheaply, no agent build. */
-    readState(id: string): AgentState {
+    readState(id: string): Promise<AgentState> {
         return this.store.readState(id);
     }
 
     /** Read persisted UI messages (full parts incl. data-* activity), or null. */
-    readUIMessages(id: string): unknown[] | null {
+    readUIMessages(id: string): Promise<unknown[] | null> {
         return this.store.readUIMessages(id);
     }
 
     /** Absolute workspace directory for a session id. */
-    getSessionWorkspace(id: string): string {
+    getSessionWorkspace(id: string): Promise<string> {
         return this.store.getSessionWorkspace(id);
+    }
+
+    /**
+     * A persistence backend bound to a session id, over the store's shared
+     * connection. For callers that only know a session id (e.g. reconnect /
+     * cleanup endpoints) and don't want to load the agent.
+     */
+    backend(id: string): Promise<StateBackend> {
+        return this.store.openBackend(id);
     }
 
     /** Escape hatch: the underlying store, for advanced lifecycle control. */

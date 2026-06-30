@@ -21,13 +21,15 @@
  */
 
 import * as path from 'path';
-import { stat } from 'fs/promises';
+import * as fs from 'fs';
+import { stat, mkdir, rm } from 'fs/promises';
 import { AgentHarness } from '../agent/agent-harness';
 import type { AgentHarnessConfig, AgentState } from '../types';
 import type { Sandbox } from '../sandbox';
 import { LocalSandbox } from '../../sandbox/local-sandbox';
-import SqliteBackend from '../../backend/sqlite-backend';
-import type { SessionInfo, WorkspaceInfo } from '../../backend/sqlite-backend';
+import type StateBackend from '../../storage/state-backend';
+import type { SessionInfo, WorkspaceInfo } from '../../storage/state-backend';
+import { connectStore, type StoreConnection } from '../../storage/connect';
 import type { UIMessageStreamWriter } from 'ai';
 import type { VibesUIMessage } from '../streaming/streaming';
 
@@ -102,7 +104,7 @@ export interface StoredSession {
     /** The agent instance for this session */
     agent: AgentHarness;
     /** Persistent storage backend for this session */
-    backend: SqliteBackend;
+    backend: StateBackend;
     /** Session workspace directory (absolute path) */
     workspaceDir: string;
     /** Last access timestamp for cleanup */
@@ -135,9 +137,12 @@ export interface CleanupOptions {
  */
 export class SessionStore {
     private sessions: Map<string, StoredSession> = new Map();
+    private databaseUrl?: string;
     private dbPath: string;
     private sessionsDir: string;
     private projectsDir: string;
+    /** Lazily-built shared storage connection (one pool per store). */
+    private connPromise?: Promise<StoreConnection>;
 
     /** Default agent configuration (used only when no agentFactory is set) */
     private defaultAgentConfig?: SessionAgentConfig;
@@ -147,7 +152,9 @@ export class SessionStore {
     private defaultWorkspaceEnsured = false;
 
     constructor(config?: {
-        /** Path to SQLite database (default: workspace/vibes.db) */
+        /** Postgres connection string. When set, persists to Postgres instead of SQLite. */
+        databaseUrl?: string;
+        /** Path to the SQLite file (used when no `databaseUrl` is given; default: workspace/vibes.db) */
         dbPath?: string;
         /** Directory for legacy per-session workspaces (default: workspace/sessions) */
         sessionsDir?: string;
@@ -158,6 +165,7 @@ export class SessionStore {
         /** Factory that builds the per-session agent (e.g. the flagship VibeAgent). */
         agentFactory?: SessionAgentFactory;
     }) {
+        this.databaseUrl = config?.databaseUrl;
         this.dbPath = config?.dbPath || path.join(WORKSPACE_ROOT, 'vibes.db');
         this.sessionsDir = config?.sessionsDir || SESSIONS_DIR;
         this.projectsDir = config?.projectsDir || PROJECTS_DIR;
@@ -166,6 +174,27 @@ export class SessionStore {
 
         // Ensure sessions directory exists
         this.ensureSessionsDirectory();
+    }
+
+    /**
+     * The shared storage connection — built once, reused for the store's life.
+     * Postgres when `databaseUrl` is set, otherwise a local SQLite file.
+     */
+    private store(): Promise<StoreConnection> {
+        if (!this.connPromise) {
+            this.connPromise = connectStore({ databaseUrl: this.databaseUrl, dbPath: this.dbPath });
+        }
+        return this.connPromise;
+    }
+
+    /** A per-session backend view over the shared connection. Cheap. */
+    private async makeBackend(sessionId: string): Promise<StateBackend> {
+        return (await this.store()).makeBackend(sessionId);
+    }
+
+    /** Public accessor for a per-session backend over the shared connection. */
+    openBackend(sessionId: string): Promise<StateBackend> {
+        return this.makeBackend(sessionId);
     }
 
     /**
@@ -222,12 +251,9 @@ export class SessionStore {
     ): Promise<StoredSession> {
         const createdAt = new Date();
 
-        // Create SQLite backend for this session. NOTE: the SqliteBackend
-        // constructor eagerly inserts a bare session row, so a "create only if
-        // missing" guard never fires — which silently dropped the caller's
-        // title. Persist title/metadata via updateSession instead so the
-        // user-provided title is actually saved.
-        const backend = new SqliteBackend(this.dbPath, sessionId);
+        // Persist title/metadata via updateSession (which upserts the session
+        // row) so a freshly-created session's user-provided title is saved.
+        const backend = await this.makeBackend(sessionId);
         const existingSession = await backend.getSession(sessionId);
         const existingMeta = existingSession?.metadata ?? {};
 
@@ -238,7 +264,10 @@ export class SessionStore {
         //   1. persisted metadata.workspaceDir  → reuse (legacy or workspace)
         //   2. config.workspaceId / stored workspace_id → shared project dir
         //   3. fallback → legacy per-session dir
-        const workspaceId = config.workspaceId ?? existingSession?.workspaceId;
+        // A session with no explicit workspace joins the Default workspace
+        // (the old backend got this for free from an eager insert that defaulted
+        // workspace_id to 'default'; we now make it explicit).
+        const workspaceId = config.workspaceId ?? existingSession?.workspaceId ?? 'default';
         // Cross-session shared state (memories.json / workflows.json) is global,
         // one level up from the projects dir — NEVER inside an opened repo.
         const sharedDir = path.dirname(this.projectsDir);
@@ -335,7 +364,8 @@ export class SessionStore {
     unloadSession(sessionId: string): boolean {
         const instance = this.sessions.get(sessionId);
         if (instance) {
-            instance.backend.close();
+            // The connection is shared and owned by the store, so there is no
+            // per-session handle to close here — just drop the cached instance.
             return this.sessions.delete(sessionId);
         }
         return false;
@@ -349,9 +379,8 @@ export class SessionStore {
         this.unloadSession(sessionId);
 
         // Delete from database
-        const backend = new SqliteBackend(this.dbPath, 'default');
+        const backend = await this.makeBackend('default');
         await backend.deleteSession(sessionId);
-        backend.close();
 
         // Delete session workspace directory
         const workspaceDir = path.join(this.sessionsDir, sessionId);
@@ -362,10 +391,8 @@ export class SessionStore {
      * List all sessions (including unloaded ones)
      */
     async listSessions(workspaceId?: string): Promise<SessionInfo[]> {
-        const backend = new SqliteBackend(this.dbPath, 'default');
-        const sessions = await backend.listSessions(workspaceId);
-        backend.close();
-        return sessions;
+        const backend = await this.makeBackend('default');
+        return backend.listSessions(workspaceId);
     }
 
     /**
@@ -373,32 +400,26 @@ export class SessionStore {
      * loading the session or building its agent. Cheap, read-only — intended
      * for HTTP endpoints that just render history.
      */
-    readState(sessionId: string): AgentState {
-        const backend = new SqliteBackend(this.dbPath, sessionId);
-        const state = backend.getState();
-        backend.close();
-        return state;
+    async readState(sessionId: string): Promise<AgentState> {
+        const backend = await this.makeBackend(sessionId);
+        return backend.getState();
     }
 
     /**
      * Read the persisted UI messages (parts include data-* activity) for a
      * session, or null if none were stored. Cheap, read-only.
      */
-    readUIMessages(sessionId: string): unknown[] | null {
-        const backend = new SqliteBackend(this.dbPath, sessionId);
-        const ui = backend.getUIMessages();
-        backend.close();
-        return ui;
+    async readUIMessages(sessionId: string): Promise<unknown[] | null> {
+        const backend = await this.makeBackend(sessionId);
+        return backend.getUIMessages();
     }
 
     /**
      * Get session info without loading into memory
      */
     async getSessionInfo(sessionId: string): Promise<SessionInfo | null> {
-        const backend = new SqliteBackend(this.dbPath, sessionId);
-        const info = await backend.getSession(sessionId);
-        backend.close();
-        return info;
+        const backend = await this.makeBackend(sessionId);
+        return backend.getSession(sessionId);
     }
 
     /**
@@ -412,7 +433,7 @@ export class SessionStore {
             metadata?: Record<string, any>;
         }
     ): Promise<void> {
-        const backend = new SqliteBackend(this.dbPath, 'default');
+        const backend = await this.makeBackend('default');
         await backend.updateSession(sessionId, updates);
 
         // Update in-memory instance if loaded
@@ -423,51 +444,41 @@ export class SessionStore {
                 instance.metadata = { ...instance.metadata, ...updates.metadata };
             }
         }
-
-        backend.close();
     }
 
     // ── Workspace (project) lifecycle ────────────────────────────────────
 
     /**
-     * Reconcile the migration-backfilled Default workspace with this store's
-     * configured `projectsDir`. The SqliteBackend migration can only hardcode a
-     * conventional `workspace/projects/default`; if the store is rooted
-     * elsewhere (tests, alternative deployments) we repoint it here. No-op in
-     * the common case where the paths already match.
+     * Ensure a Default workspace exists and points at this store's configured
+     * `projectsDir`. `connectStore` creates the schema but seeds no rows, so we
+     * create the Default workspace on first use; if the store is rooted
+     * elsewhere (tests, alternative deployments) we repoint it here. No-op once
+     * the workspace already matches.
      */
     private async ensureDefaultWorkspace(): Promise<void> {
         if (this.defaultWorkspaceEnsured) return;
         this.defaultWorkspaceEnsured = true;
         const desiredRoot = path.join(this.projectsDir, 'default');
-        const backend = new SqliteBackend(this.dbPath, 'default');
-        try {
-            const ws = await backend.getWorkspace('default');
-            if (!ws) {
-                await backend.createWorkspace({ id: 'default', name: 'Default', rootDir: desiredRoot });
-            } else if (ws.rootDir !== desiredRoot) {
-                backend.setWorkspaceRootDir('default', desiredRoot);
-            }
-        } finally {
-            backend.close();
+        const backend = await this.makeBackend('default');
+        const ws = await backend.getWorkspace('default');
+        if (!ws) {
+            await backend.createWorkspace({ id: 'default', name: 'Default', rootDir: desiredRoot });
+        } else if (ws.rootDir !== desiredRoot) {
+            await backend.setWorkspaceRootDir('default', desiredRoot);
         }
     }
 
     /** List all workspaces (with session counts). */
     async listWorkspaces(): Promise<WorkspaceInfo[]> {
         await this.ensureDefaultWorkspace();
-        const backend = new SqliteBackend(this.dbPath, 'default');
-        const workspaces = await backend.listWorkspaces();
-        backend.close();
-        return workspaces;
+        const backend = await this.makeBackend('default');
+        return backend.listWorkspaces();
     }
 
     /** Get one workspace, or null. */
     async getWorkspace(workspaceId: string): Promise<WorkspaceInfo | null> {
-        const backend = new SqliteBackend(this.dbPath, 'default');
-        const ws = await backend.getWorkspace(workspaceId);
-        backend.close();
-        return ws;
+        const backend = await this.makeBackend('default');
+        return backend.getWorkspace(workspaceId);
     }
 
     /**
@@ -498,17 +509,14 @@ export class SessionStore {
             if (!name) name = 'Untitled workspace';
         }
 
-        const backend = new SqliteBackend(this.dbPath, 'default');
-        const ws = await backend.createWorkspace({ id, name, rootDir, metadata });
-        backend.close();
-        return ws;
+        const backend = await this.makeBackend('default');
+        return backend.createWorkspace({ id, name, rootDir, metadata });
     }
 
     /** Rename / update a workspace's metadata. */
     async updateWorkspace(workspaceId: string, updates: { name?: string; metadata?: Record<string, any> }): Promise<void> {
-        const backend = new SqliteBackend(this.dbPath, 'default');
+        const backend = await this.makeBackend('default');
         await backend.updateWorkspace(workspaceId, updates);
-        backend.close();
     }
 
     /**
@@ -516,11 +524,10 @@ export class SessionStore {
      * on-disk project directory.
      */
     async deleteWorkspace(workspaceId: string): Promise<void> {
-        const backend = new SqliteBackend(this.dbPath, 'default');
+        const backend = await this.makeBackend('default');
         const sessions = await backend.listSessions(workspaceId);
         for (const s of sessions) this.unloadSession(s.id);
         await backend.deleteWorkspace(workspaceId);
-        backend.close();
 
         // Remove only the APP-MANAGED directory (per-session `.vibes` state, and
         // for an app-managed workspace its project files too). We deliberately
@@ -575,71 +582,13 @@ export class SessionStore {
      * at creation (so workspace sessions resolve to their shared project dir),
      * falling back to the legacy per-session path.
      */
-    getSessionWorkspace(sessionId: string): string {
+    async getSessionWorkspace(sessionId: string): Promise<string> {
         try {
-            const backend = new SqliteBackend(this.dbPath, sessionId);
-            const meta = backend.getState().metadata as { workspaceDir?: unknown } | undefined;
-            backend.close();
+            const backend = await this.makeBackend(sessionId);
+            const meta = (await backend.getState()).metadata as { workspaceDir?: unknown } | undefined;
             if (meta && typeof meta.workspaceDir === 'string') return meta.workspaceDir;
         } catch { /* fall through to the computed default */ }
         return path.join(this.sessionsDir, sessionId);
-    }
-
-    /**
-     * Check if a session workspace exists
-     */
-    sessionWorkspaceExists(sessionId: string): boolean {
-        const workspaceDir = this.getSessionWorkspace(sessionId);
-        // Simple check using Bun filesystem
-        try {
-            return Bun.file(workspaceDir).size >= 0; // Directory check
-        } catch {
-            return false;
-        }
-    }
-
-    /**
-     * Export session data to a zip file (for backup/transfer)
-     */
-    async exportSession(sessionId: string): Promise<Blob> {
-        const workspaceDir = this.getSessionWorkspace(sessionId);
-
-        // Create a tar.gz of the session directory
-        const proc = Bun.spawn(['tar', '-czf', '-', '-C', this.sessionsDir, sessionId], {
-            stdout: 'pipe',
-        });
-
-        const blob = await new Response(proc.stdout).blob();
-        await proc.exited;
-
-        return blob;
-    }
-
-    /**
-     * Import session data from a zip file
-     */
-    async importSession(archiveData: ArrayBuffer, newSessionId?: string): Promise<string> {
-        const sessionId = newSessionId || this.generateSessionId();
-        const workspaceDir = this.getSessionWorkspace(sessionId);
-
-        await this.ensureDirectory(workspaceDir);
-
-        // Extract the archive
-        const proc = Bun.spawn([
-            'tar',
-            '-xzf',
-            '-',
-            '-C',
-            this.sessionsDir,
-            '--strip-components=0',
-        ], {
-            stdin: new Blob([archiveData]),
-        });
-
-        await proc.exited;
-
-        // Rename extracted directory to new session ID if needed
-        return sessionId;
     }
 
     /**
@@ -660,26 +609,21 @@ export class SessionStore {
      * Ensure the sessions directory exists
      */
     private ensureSessionsDirectory(): void {
-        const proc = Bun.spawnSync(['mkdir', '-p', this.sessionsDir]);
-        if (proc.exitCode !== 0) {
-            throw new Error(`Failed to create sessions directory: ${this.sessionsDir}`);
-        }
+        fs.mkdirSync(this.sessionsDir, { recursive: true });
     }
 
     /**
      * Ensure a directory exists
      */
     private async ensureDirectory(dirPath: string): Promise<void> {
-        const proc = Bun.spawn(['mkdir', '-p', dirPath]);
-        await proc.exited;
+        await mkdir(dirPath, { recursive: true });
     }
 
     /**
      * Delete a directory recursively
      */
     private async deleteDirectory(dirPath: string): Promise<void> {
-        const proc = Bun.spawn(['rm', '-rf', dirPath]);
-        await proc.exited;
+        await rm(dirPath, { recursive: true, force: true });
     }
 
     /**
@@ -689,12 +633,11 @@ export class SessionStore {
         const instance = this.sessions.get(sessionId);
         if (!instance) return;
 
-        const backend = new SqliteBackend(this.dbPath, 'default');
+        const backend = await this.makeBackend('default');
         await backend.updateSession(sessionId, {
             title: instance.title,
             metadata: instance.metadata,
         });
-        backend.close();
     }
 }
 
