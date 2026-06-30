@@ -12,6 +12,9 @@ import {
     type StopCondition,
 } from 'ai';
 import { resolveBudgetStops, budgetBreaches, type BudgetConfig } from './budgets';
+import { resolveLoopStops, loopBreaches, type LoopDetectionConfig } from './loop-detection';
+import { classifyComplexity, reasoningProviderOptions, type AdaptiveReasoningConfig } from './reasoning';
+import { extractMessageContent } from './message-compression';
 import {
     AgentHarnessConfig,
     AgentHarnessGenerateResult,
@@ -95,6 +98,14 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
     protected activeStreamContext?: PluginStreamContext;
     /** Per-run budgets (token/cost/tool-call caps), enforced via stopWhen. */
     protected budgets?: BudgetConfig;
+    /** Stuck-loop detection (halt on repeated identical tool calls), via stopWhen. */
+    protected loopDetection?: LoopDetectionConfig;
+    /** Run-wide cap on total tool retries; bounds a flaky tool over a whole run. */
+    protected maxTotalRetries: number;
+    /** Tool retries consumed in the current run; reset at the top of each run. */
+    protected retriesUsed: number = 0;
+    /** Adaptive reasoning effort (off when undefined); maps task complexity → providerOptions. */
+    protected adaptiveReasoning?: AdaptiveReasoningConfig;
     /** The base stop conditions (maxSteps + user stopWhen); budgets are added per-call. */
     private baseStopWhen!: StopCondition<ToolSet> | StopCondition<ToolSet>[];
     /**
@@ -177,6 +188,12 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
         this.customSystemPrompt = config.systemPrompt || '';
         this.emitContextGauge = config.emitContextGauge ?? true;
         this.budgets = config.budgets;
+        this.loopDetection = config.loopDetection;
+        this.maxTotalRetries = config.toolRetry?.maxTotalRetries ?? 20;
+        // `true` → on with defaults; an object → on with options; else off.
+        this.adaptiveReasoning = config.adaptiveReasoning === true
+            ? {}
+            : (config.adaptiveReasoning || undefined);
         this.baseStopWhen = settings.stopWhen as StopCondition<ToolSet> | StopCondition<ToolSet>[];
 
         this.context = new ContextManager({
@@ -323,9 +340,47 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
             {
                 getStreamContext: () => this.activeStreamContext,
                 logError: (t, e, c) => this.logError(t, e, c),
+                // Lazy like getStreamContext: the wrapped tools are cached, so
+                // this closure must read the live per-run counter, not a snapshot.
+                consumeRetry: () => this.consumeRetry(),
             },
             allowedTools,
         );
+    }
+
+    /**
+     * Reserve one unit of the run-wide tool-retry budget. Returns false once the
+     * budget is exhausted, so a transiently-failing tool can't keep retrying on
+     * every call across a long run (the per-call `maxRetries` still caps each
+     * individual call). Reset to zero at the start of every run.
+     */
+    protected consumeRetry(): boolean {
+        if (this.retriesUsed >= this.maxTotalRetries) return false;
+        this.retriesUsed++;
+        return true;
+    }
+
+    /**
+     * Provider-namespaced reasoning-effort options for this step, derived from the
+     * current task's apparent complexity — or undefined when adaptive reasoning is
+     * off. Keys off the latest user message (stable across a turn) plus whether the
+     * run has errored recently (struggling → think harder). Set on `providerOptions`
+     * in {@link prepareStepOverride}; providers that don't support reasoning ignore it.
+     */
+    protected resolveReasoningEffort(messages: ModelMessage[]): Record<string, unknown> | undefined {
+        if (!this.adaptiveReasoning) return undefined;
+        let userText = '';
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === 'user') { userText = extractMessageContent(messages[i]); break; }
+        }
+        // "Recently erroring" = a fresh error within the last ~2 minutes (the
+        // error log retains older entries, so a recency filter avoids escalating
+        // forever after a single past failure).
+        const hasRecentError = this.errorLog.some(
+            e => Date.now() - new Date(e.timestamp).getTime() < 120_000,
+        );
+        const tier = classifyComplexity(userText, hasRecentError);
+        return reasoningProviderOptions(tier, this.adaptiveReasoning);
     }
 
     // ============ PREPARE CALL OVERRIDE ============
@@ -368,17 +423,20 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
         // Get all tools with plugin tools and wrapping
         const tools = await this.getAllTools();
 
-        // Per-run budgets are added as native stopWhen conditions here (v7
-        // honors stopWhen returned from prepareCall), kept alongside the base
-        // step cap + user conditions so none is lost.
-        const budgetStops = this.budgets ? resolveBudgetStops(this.budgets) : [];
+        // Per-run budgets and stuck-loop detection are added as native stopWhen
+        // conditions here (v7 honors stopWhen returned from prepareCall), kept
+        // alongside the base step cap + user conditions so none is lost.
+        const extraStops = [
+            ...(this.budgets ? resolveBudgetStops(this.budgets) : []),
+            ...(this.loopDetection ? resolveLoopStops(this.loopDetection) : []),
+        ];
 
         return {
             ...baseOptions,
             instructions,
             tools: tools as ToolSet,
-            ...(budgetStops.length
-                ? { stopWhen: [...this.asStopArray(this.baseStopWhen), ...budgetStops] }
+            ...(extraStops.length
+                ? { stopWhen: [...this.asStopArray(this.baseStopWhen), ...extraStops] }
                 : {}),
         };
     }
@@ -526,6 +584,13 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
             merged.model = this.modelOverride;
         }
 
+        // Adaptive reasoning effort → providerOptions (no-op when disabled or on
+        // models without reasoning support).
+        const reasoning = this.resolveReasoningEffort(prunedMessages);
+        if (reasoning) {
+            merged.providerOptions = { ...(merged.providerOptions ?? {}), ...reasoning };
+        }
+
         return merged;
     }
 
@@ -538,6 +603,9 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
     override async stream(
         options?: any
     ): Promise<AgentHarnessStreamResult> {
+        // Fresh run → reset the run-wide tool-retry budget.
+        this.retriesUsed = 0;
+
         // Extract AgentHarness-specific options (writer)
         // Also extract 'prompt' to avoid conflicts with 'messages' in super.stream()
         const { messages, writer, prompt, ...agentOptions } = options || {};
@@ -589,22 +657,37 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
                     await plugin.onStreamFinish(finishResult);
                 }
             }
-            // If a per-run budget halted the loop, tell the user why (the
-            // StopConditions stay pure; the notice is derived from the steps).
-            if (this.budgets && streamContext) {
+            // If a per-run budget or the loop detector halted the loop, tell the
+            // user why (the StopConditions stay pure; the notices are derived
+            // from the steps). Fetch the steps once for both checks.
+            if ((this.budgets || this.loopDetection) && streamContext) {
                 const stepsP = (result as unknown as { steps?: PromiseLike<StepResult<ToolSet>[]> }).steps;
                 const steps = stepsP
                     ? await Promise.resolve(stepsP).catch(() => undefined)
                     : undefined;
-                const breaches = steps ? budgetBreaches(this.budgets, steps) : [];
-                if (breaches.length) {
-                    streamContext.writer.writeGuardrail({
-                        id: `budget-${Date.now().toString(36)}`,
-                        stage: 'budget',
-                        guardrail: 'budget',
-                        action: 'exceeded',
-                        message: `Run stopped: ${breaches.join(' and ')} exceeded.`,
-                    });
+                if (steps) {
+                    const breaches = this.budgets ? budgetBreaches(this.budgets, steps) : [];
+                    if (breaches.length) {
+                        streamContext.writer.writeGuardrail({
+                            id: `budget-${Date.now().toString(36)}`,
+                            stage: 'budget',
+                            guardrail: 'budget',
+                            action: 'exceeded',
+                            message: `Run stopped: ${breaches.join(' and ')} exceeded.`,
+                        });
+                    }
+                    const loops = this.loopDetection ? loopBreaches(this.loopDetection, steps) : [];
+                    if (loops.length) {
+                        const unique = Array.from(new Set(loops));
+                        streamContext.writer.writeGuardrail({
+                            id: `loop-${Date.now().toString(36)}`,
+                            // 'budget' = the generic "run halted" notice family.
+                            stage: 'budget',
+                            guardrail: 'loop',
+                            action: 'exceeded',
+                            message: `Run stopped: repeated ${unique.join(', ')} call (possible loop).`,
+                        });
+                    }
                 }
             }
             if (this.activeStreamContext === streamContext) {
@@ -627,6 +710,9 @@ export class AgentHarness extends ToolLoopAgent<never, ToolSet> {
     override async generate(
         options?: AgentCallParameters<never, ToolSet> & { messages?: UIMessage[] | ModelMessage[] }
     ): Promise<AgentHarnessGenerateResult> {
+        // Fresh run → reset the run-wide tool-retry budget.
+        this.retriesUsed = 0;
+
         // Extract AgentHarness-specific options
         const { messages, ...agentOptions } = options as any;
 

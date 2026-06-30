@@ -44,9 +44,13 @@ import type {
     VibesDataParts,
 } from './streaming/streaming.js';
 import type { BudgetConfig } from './agent/budgets.js';
+import type { LoopDetectionConfig } from './agent/loop-detection.js';
+import type { AdaptiveReasoningConfig } from './agent/reasoning.js';
 
-// Re-export budget types so consumers can build budgets from the package root.
+// Re-export config types so consumers can configure them from the root.
 export type { BudgetConfig, ModelPricing } from './agent/budgets.js';
+export type { LoopDetectionConfig } from './agent/loop-detection.js';
+export type { AdaptiveReasoningConfig } from './agent/reasoning.js';
 
 /**
  * Types of tasks for categorization and filtering.
@@ -421,8 +425,15 @@ export interface AgentHarnessConfig {
     emitContextGauge?: boolean;
     /** Model temperature for controlling randomness */
     temperature?: number;
-    /** Maximum retries for API failures (default: 2) */
+    /** Maximum retries for a single failing tool call (default: 2) */
     maxRetries?: number;
+    /**
+     * Tool-retry policy. `maxTotalRetries` caps retries across the WHOLE run
+     * (default 20), so a transiently-failing tool can't keep retrying on every
+     * call. Only transient errors (network / rate-limit / timeout / 5xx) are
+     * retried at all; deterministic failures fail fast.
+     */
+    toolRetry?: { maxTotalRetries?: number };
     /** Callback for step progress updates (matches AI SDK's StepResult) */
     onStepFinish?: (stepResult: StepResult<ToolSet>) => void | Promise<void>;
     /** Custom plugins to extend agent behavior */
@@ -456,6 +467,19 @@ export interface AgentHarnessConfig {
      * `stopWhen` conditions — the loop halts once a cap is reached.
      */
     budgets?: BudgetConfig;
+    /**
+     * Stuck-loop detection: halt the run when the agent repeats the same tool
+     * call (same name + input) too many times in a short window. Enforced as a
+     * native `stopWhen` condition, like {@link budgets}.
+     */
+    loopDetection?: LoopDetectionConfig;
+    /**
+     * Adaptive reasoning effort: pick a model reasoning-effort tier from the
+     * request's apparent complexity and pass it via provider-namespaced
+     * `providerOptions`. `true` enables it with defaults; an object enables it
+     * with options; omit/false to disable. No-op on models without reasoning.
+     */
+    adaptiveReasoning?: boolean | AdaptiveReasoningConfig;
     /**
      * Redact known secrets (API keys, tokens, env assignments) from tool
      * results before they reach the model context or the stream (default true).
