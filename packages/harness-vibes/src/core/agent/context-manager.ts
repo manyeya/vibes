@@ -4,6 +4,7 @@ import {
     isErrorMessage,
     extractToolInfo,
     compressMessage,
+    repairToolPairs,
 } from './message-compression';
 
 /** Payload for the live context-window gauge data part. */
@@ -136,7 +137,8 @@ export class ContextManager {
 
         const emergencyCeiling = this.contextWindow * 0.95;
         if (estimateTokens(compressed) < emergencyCeiling) {
-            return compressed;
+            // Repair any orphans from interrupted/aborted history before sending.
+            return repairToolPairs(compressed);
         }
 
         // Over the ceiling: keep the most recent messages that fit in ~85% of the window.
@@ -150,15 +152,13 @@ export class ContextManager {
         }
         const messagesToKeep = compressed.slice(splitAt);
 
-        // Don't start the window on a dangling tool message.
-        while (messagesToKeep.length > 0 && messagesToKeep[0].role === 'tool') {
-            messagesToKeep.shift();
-        }
-
         if (process.env.DEBUG_VIBES) {
             console.log(`[ContextManager] Emergency prune ${messages.length} → ${messagesToKeep.length} messages (>${Math.round(emergencyCeiling)} tok)`);
         }
 
-        return messagesToKeep;
+        // Slicing a recent window can split a tool-call from its result (or start
+        // on a dangling result). repairToolPairs makes the window valid again —
+        // it supersedes the old "shift leading tool message" guard.
+        return repairToolPairs(messagesToKeep);
     }
 }

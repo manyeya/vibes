@@ -129,6 +129,68 @@ export function compressMessage(msg: ModelMessage, threshold: number): ModelMess
     return msg;
 }
 
+/**
+ * Repair orphaned tool calls/results so the message list is always a valid
+ * provider payload. Providers (Anthropic, OpenAI) reject a conversation where an
+ * assistant `tool-call` has no matching `tool-result`, or a `tool-result` has no
+ * preceding `tool-call` — and emergency truncation (slicing a recent window) or
+ * an interrupted run can leave exactly those orphans.
+ *
+ * Two fixes, in one pass:
+ *   1. An assistant `tool-call` whose id has no result anywhere → synthesize a
+ *      placeholder `tool-result` immediately after that assistant message (keeps
+ *      the call ↔ result pairing the provider requires).
+ *   2. A `tool-result` whose id has no preceding `tool-call` → drop that part
+ *      (and the whole tool message if it becomes empty). This generalizes the
+ *      old "shift a leading dangling tool message" guard.
+ *
+ * A well-formed list passes through unchanged.
+ */
+export function repairToolPairs(messages: ModelMessage[]): ModelMessage[] {
+    const callIds = new Set<string>();
+    const resultIds = new Set<string>();
+    for (const msg of messages) {
+        if (!Array.isArray(msg.content)) continue;
+        for (const part of msg.content as Array<{ type?: string; toolCallId?: string }>) {
+            if (part?.type === 'tool-call' && part.toolCallId) callIds.add(part.toolCallId);
+            if (part?.type === 'tool-result' && part.toolCallId) resultIds.add(part.toolCallId);
+        }
+    }
+
+    const out: ModelMessage[] = [];
+    for (const msg of messages) {
+        // (2) Drop tool-result parts with no matching call.
+        if (msg.role === 'tool' && Array.isArray(msg.content)) {
+            const parts = msg.content as Array<{ type?: string; toolCallId?: string }>;
+            const kept = parts.filter(p => p?.type !== 'tool-result' || (p.toolCallId != null && callIds.has(p.toolCallId)));
+            if (kept.length === 0) continue; // whole message was orphaned results
+            out.push(kept.length === parts.length ? msg : ({ ...msg, content: kept } as ModelMessage));
+            continue;
+        }
+
+        out.push(msg);
+
+        // (1) Synthesize placeholder results for an assistant's orphaned calls.
+        if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+            const orphaned = (msg.content as Array<{ type?: string; toolCallId?: string; toolName?: string }>)
+                .filter(p => p?.type === 'tool-call' && p.toolCallId != null && !resultIds.has(p.toolCallId));
+            if (orphaned.length > 0) {
+                out.push({
+                    role: 'tool',
+                    content: orphaned.map(call => ({
+                        type: 'tool-result',
+                        toolCallId: call.toolCallId,
+                        toolName: call.toolName,
+                        output: { type: 'error-text', value: '[result unavailable: trimmed from context]' },
+                    })),
+                } as ModelMessage);
+            }
+        }
+    }
+
+    return out;
+}
+
 /** A brief first-lines/last-lines summary of large content, for the reference. */
 export function summarizeLargeContent(content: string): string {
     const lines = content.split('\n');
