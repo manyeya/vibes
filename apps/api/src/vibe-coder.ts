@@ -147,6 +147,14 @@ export const vibeRuntime: AgentRuntime = createRuntime(
         // that genuinely needs this many tokens/tools is already pathological.
         // Add `maxCostUsd` + `pricing` to cap spend in dollars.
         budgets: { maxTotalTokens: 3_000_000, maxToolCalls: 150 },
+        // Break out of stuck loops: halt if the agent repeats the same tool call
+        // (same name + input) 3× within the last 6 steps.
+        loopDetection: { maxRepeats: 3, window: 6 },
+        // Run-wide tool-retry budget (only transient errors are retried at all).
+        toolRetry: { maxTotalRetries: 20 },
+        // Scale model reasoning effort to the task's apparent complexity. No-op on
+        // models without reasoning support, so it's safe to leave on by default.
+        adaptiveReasoning: true,
         // Secret-masking of tool output is on by default (redactToolIO ?? true);
         // content guardrails (input/output prose checks) are opt-in via `guardrails`.
         // `webSearch` is now provided by the WebSearchPlugin (default + sub-agent

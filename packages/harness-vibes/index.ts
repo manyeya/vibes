@@ -50,6 +50,18 @@ import {
     type BudgetConfig,
     type ModelPricing,
 } from './src/core/agent/budgets';
+import {
+    resolveLoopStops,
+    loopStop,
+    loopBreaches,
+    type LoopDetectionConfig,
+} from './src/core/agent/loop-detection';
+import {
+    classifyComplexity,
+    reasoningProviderOptions,
+    type ReasoningTier,
+    type AdaptiveReasoningConfig,
+} from './src/core/agent/reasoning';
 import { redactSecrets, redactString } from './src/core/redact';
 import DrizzleBackend from './src/storage/drizzle-backend';
 import StateBackend from './src/storage/state-backend';
@@ -150,6 +162,14 @@ export {
     estimateCost,
     type BudgetConfig,
     type ModelPricing,
+    resolveLoopStops,
+    loopStop,
+    loopBreaches,
+    type LoopDetectionConfig,
+    classifyComplexity,
+    reasoningProviderOptions,
+    type ReasoningTier,
+    type AdaptiveReasoningConfig,
     redactSecrets,
     redactString,
     WorkflowPlugin,
