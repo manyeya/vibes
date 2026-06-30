@@ -142,6 +142,13 @@ export const vibeRuntime: AgentRuntime = createRuntime(
         // (`ask_user`) or puts a plan up for approval (`request_plan_review`):
         // the run halts so the user can answer / approve before it continues.
         stopWhen: [hasToolCall(ASK_USER_TOOL_NAME), hasToolCall(PLAN_REVIEW_TOOL_NAME)],
+        // Per-run safety budgets (enforced as native stopWhen). Generous
+        // backstops against a runaway turn, not tight limits — a single turn
+        // that genuinely needs this many tokens/tools is already pathological.
+        // Add `maxCostUsd` + `pricing` to cap spend in dollars.
+        budgets: { maxTotalTokens: 3_000_000, maxToolCalls: 150 },
+        // Secret-masking of tool output is on by default (redactToolIO ?? true);
+        // content guardrails (input/output prose checks) are opt-in via `guardrails`.
         // `webSearch` is now provided by the WebSearchPlugin (default + sub-agent
         // plugin sets), which auto-detects a provider from EXA_API_KEY /
         // TAVILY_API_KEY / BRAVE_API_KEY and streams a sources card.
