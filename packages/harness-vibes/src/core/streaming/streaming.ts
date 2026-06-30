@@ -283,6 +283,23 @@ export interface VibesDataParts extends Record<string, unknown> {
     };
 
     /**
+     * A safety guardrail firing: an input/output content guardrail that blocked
+     * or redacted, or a per-run budget that was exceeded. Rendered as a small
+     * notice banner so the user understands why a turn was halted or altered.
+     */
+    guardrail: {
+        id: string;
+        /** Where it fired. 'budget' = a token/cost/tool-call cap. */
+        stage: 'input' | 'output' | 'budget';
+        /** Name of the guardrail (or 'budget'). */
+        guardrail: string;
+        /** What happened. */
+        action: 'blocked' | 'redacted' | 'exceeded';
+        /** Human-readable explanation shown to the user. */
+        message: string;
+    };
+
+    /**
      * A sub-agent's LIVE narration/output (its streamed final answer), forwarded
      * from the delegated run so the UI can show what the sub-agent is actually
      * doing under its own tab. Accumulating: re-emitted with a stable id as text
@@ -801,6 +818,16 @@ export class DataStreamWriter {
             type: 'data-clarification',
             id: `clarification-${clarification.id}`,
             data: clarification,
+        } as const);
+    }
+
+    /** Write a guardrail/budget notice (input/output blocked-or-redacted, or budget exceeded). */
+    writeGuardrail(guardrail: VibesDataParts['guardrail']): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-guardrail',
+            id: `guardrail-${guardrail.id}`,
+            data: guardrail,
         } as const);
     }
 
