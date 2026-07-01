@@ -6,6 +6,7 @@ import {
     PlanningPlugin,
     FilesystemPlugin,
     BashPlugin,
+    RepoContextPlugin,
     SubAgentPlugin,
     SummarizationPlugin,
     ArtifactPlugin,
@@ -122,6 +123,9 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
         // Bash shell for running commands and exploring the workspace (search,
         // navigation, bulk transforms) — rooted at the same directory on disk.
         new BashPlugin(config.sandbox ? { sandbox: config.sandbox } : config.workspaceDir),
+        // Auto-load human-authored repo guidance (CLAUDE.md / AGENTS.md) into the
+        // system prompt — same workspace root as bash/filesystem.
+        new RepoContextPlugin(config.sandbox ? { sandbox: config.sandbox } : config.workspaceDir),
         // Renderable artifacts (websites, docs, diagrams, charts) → canvas panel.
         // Rooted at the PER-SESSION stateDir, not the (possibly shared) project
         // sandbox — artifacts are conversation deliverables, so they belong to

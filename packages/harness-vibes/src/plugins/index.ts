@@ -4,6 +4,7 @@ import PlanningPlugin, { PLAN_REVIEW_TOOL_NAME } from "./planning";
 import SkillsPlugin from "./skills";
 import FilesystemPlugin from "./filesystem";
 import BashPlugin from "./bash";
+import RepoContextPlugin from "./repo-context";
 import SubAgentPlugin, { type ParallelDelegationResult } from "./sub-agent";
 import MemoryPlugin from "./memory";
 import SummarizationPlugin, { type SummarizationConfig } from "./summarization";
@@ -46,6 +47,7 @@ export {
     SkillsPlugin,
     FilesystemPlugin,
     BashPlugin,
+    RepoContextPlugin,
     SubAgentPlugin,
     type ParallelDelegationResult,
     MemoryPlugin,
