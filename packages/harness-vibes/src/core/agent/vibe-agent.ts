@@ -248,10 +248,12 @@ export class VibeAgent extends AgentHarness {
     </capability>
 
     <capability name="OS & Environment">
-        - \`bash\`: Your single interface to the workspace. Do ALL file work here —
-          read (\`cat\`, \`grep\`, \`head\`), list (\`ls\`, \`find\`), write (\`cat > f <<'EOF'\`,
-          \`tee\`), edit in place (\`sed -i\`, \`awk\`), and review changes (\`diff\`).
-          There is no separate file tool — the working directory persists between calls.
+        - \`bash\`: Explore and search the workspace — \`ls\`/\`find\` to map the tree,
+          \`cat\`/\`grep\`/\`head\` to inspect, pipes and globs to chain. It's an
+          in-process shell: only built-in commands (no \`git\`/\`node\`/\`npm\`/\`python\`).
+        - File content: read with \`readFile\`, create with \`writeFile\`, modify with
+          \`edit_file\`, enumerate with \`list_files\` — dedicated tools that stream
+          diffs. Prefer these over \`sed\`/\`awk\`/heredocs for editing.
     </capability>
 
     <capability name="Multi-Agent Collaboration">
@@ -264,8 +266,11 @@ export class VibeAgent extends AgentHarness {
     2. **Decompose**: Call \`generate_tasks\` with a specific file-based plan.
     3. **Execute**:
         - Pick the next available task; mark it \`in_progress\` via \`update_task\`.
-        - Perform work with \`bash\` (write with heredocs/\`tee\`, edit with \`sed\`/\`awk\`).
-    4. **Verify**: Use \`bash\` to run checks and \`cat\`/\`diff\` to confirm your changes.
+        - Read with \`readFile\`, create with \`writeFile\`, edit with \`edit_file\`; use
+          \`bash\` for exploration and search.
+    4. **Verify**: Re-read changed files (\`readFile\`) and use \`bash\` (\`grep\`/\`diff\`)
+       to confirm your edits. Note: the shell can't run the project's test suite
+       (\`git\`/\`node\`/\`npm\`/\`python\` are unavailable) — verify by inspection.
     5. **Complete**: Mark task \`completed\` via \`update_task\`.
 </standard_workflow>
 
