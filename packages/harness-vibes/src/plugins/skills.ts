@@ -4,6 +4,8 @@ import {
     experimental_createSkillTool as createSkillTool,
     type SkillToolkit,
 } from "bash-tool";
+import { tool } from "ai";
+import { z } from "zod";
 import { Plugin } from "../core/types";
 
 export interface SkillsPluginConfig {
@@ -13,22 +15,59 @@ export interface SkillsPluginConfig {
     workspaceDir?: string;
 }
 
+/** The slice of a discovered skill we expose for discovery. */
+export interface SkillInfo {
+    name: string;
+    description: string;
+}
+
+/**
+ * Rank skills by relevance to a query — a name hit outweighs a description hit.
+ * Pure (no plugin state) so it's unit-testable. An empty query returns the full
+ * catalog. ponytail: case-insensitive term-substring scoring; swap for a fuzzy
+ * matcher only if real skill libraries start missing.
+ */
+export function matchSkills(skills: SkillInfo[], query: string): SkillInfo[] {
+    const q = (query ?? '').trim().toLowerCase();
+    const all = skills.map(s => ({ name: s.name, description: s.description }));
+    if (!q) return all;
+    const terms = q.split(/\s+/);
+    return all
+        .map(s => {
+            const name = s.name.toLowerCase();
+            const desc = (s.description ?? '').toLowerCase();
+            let score = 0;
+            for (const t of terms) {
+                if (name.includes(t)) score += 2;
+                if (desc.includes(t)) score += 1;
+            }
+            return { s, score };
+        })
+        .filter(({ score }) => score > 0)
+        .sort((a, b) => b.score - a.score || a.s.name.localeCompare(b.s.name))
+        .map(({ s }) => s);
+}
+
 /**
  * Skills via Vercel Labs' `bash-tool`. It discovers skill folders (a SKILL.md
- * plus optional scripts/assets), exposes a `skill` tool that loads a skill's
- * instructions on demand, and drops the skill files into the workspace so the
- * agent can read their references and run their scripts through `bash`.
+ * plus optional scripts/assets), drops the files into the workspace (so their
+ * scripts/assets are reachable from bash), and exposes them *progressively*:
  *
- * This replaces the old Bun.Glob/Bun.file loader — discovery is now Node-clean —
- * and fits the full-bash model: a skill's scripts are just files in the
- * workspace the shell can execute.
+ *   - `search_skills(query)` — find relevant skills by name/description
+ *   - `skill(name)`          — load (activate) a skill's full instructions
+ *   - `list_skills()`        — the whole catalog when wanted
+ *
+ * The system prompt carries only skill NAMES, not every SKILL.md blurb, so the
+ * prompt stays small as the skill library grows — the agent searches, then loads
+ * on demand. (Unloading is out of scope: loaded instructions live in the message
+ * history, which the harness's restorable compression already reclaims.)
  */
 export default class SkillsPlugin implements Plugin {
     name = 'SkillsPlugin';
     private readonly skillsDir: string;
     private readonly workspaceDir: string;
     private skillTool?: SkillToolkit['skill'];
-    private instructions = '';
+    private skills: SkillInfo[] = [];
     private ready?: Promise<void>;
 
     constructor(config: SkillsPluginConfig = {}) {
@@ -72,23 +111,52 @@ export default class SkillsPlugin implements Plugin {
         );
 
         this.skillTool = toolkit.skill;
-        this.instructions = toolkit.instructions;
+        this.skills = toolkit.skills.map(s => ({ name: s.name, description: s.description }));
     }
 
     get tools(): Record<string, any> {
-        return this.skillTool ? { skill: this.skillTool } : {};
+        if (!this.skillTool) return {};
+        return {
+            skill: this.skillTool,
+            search_skills: tool({
+                description:
+                    'Find skills relevant to a query, ranked by relevance. Returns names + descriptions; ' +
+                    'load the one you want with skill("<name>"). Prefer this over loading skills blindly.',
+                inputSchema: z.object({
+                    query: z.string().describe('What you need help with, e.g. "parse a csv" or "git commit".'),
+                }),
+                execute: async ({ query }) => {
+                    const matches = matchSkills(this.skills, query);
+                    return {
+                        query,
+                        count: matches.length,
+                        skills: matches,
+                        guidance: matches.length
+                            ? 'Load the most relevant one with skill("<name>") before using it.'
+                            : 'No skill matched. Use list_skills() to see the full catalog, or proceed without one.',
+                    };
+                },
+            }),
+            list_skills: tool({
+                description: 'List every available skill (name + description). Use search_skills for a focused query.',
+                inputSchema: z.object({}),
+                execute: async () => ({ count: this.skills.length, skills: this.skills }),
+            }),
+        };
     }
 
     modifySystemPrompt(prompt: string): string {
-        if (!this.skillTool) return prompt;
+        if (!this.skillTool || this.skills.length === 0) return prompt;
+        const names = this.skills.map(s => s.name).join(', ');
         return `${prompt}
 
 ## Skills
-Reusable capabilities live under \`./skills/\` in your workspace. Call the
-\`skill("<name>")\` tool to load a skill's instructions before using it, then
-follow them as authoritative — its scripts and assets are already in the
-workspace, readable and runnable via bash.
+Reusable capabilities live under \`./skills/\` in your workspace. Available skills:
+${names}
 
-${this.instructions}`;
+Call \`search_skills("<query>")\` to find the right one (or \`list_skills()\` for
+the full catalog), then \`skill("<name>")\` to load its instructions and follow
+them as authoritative — its scripts and assets are already in the workspace,
+readable and runnable via bash.`;
     }
 }
