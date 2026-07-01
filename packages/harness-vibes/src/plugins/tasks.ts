@@ -1,7 +1,7 @@
 import {
     tool,
     type UIMessageStreamWriter,
-    generateText,
+    generateObject,
     type LanguageModel,
 } from 'ai';
 import { z } from 'zod';
@@ -21,6 +21,30 @@ import {
 type TaskStatus = TaskItem['status'];
 
 const TASK_STATUS_VALUES = ['pending', 'blocked', 'in_progress', 'completed', 'failed'] as const;
+const PRIORITY_VALUES = ['low', 'medium', 'high', 'critical'] as const;
+
+/**
+ * A single task as supplied to create_tasks or produced by generate_tasks.
+ * `blockedBy` references other tasks IN THE SAME BATCH by their 0-based index,
+ * which {@link TasksPlugin.createTasksFromDefs} resolves to real ids — so a batch
+ * can describe an arbitrary dependency DAG, not just a linear chain.
+ */
+const taskDefSchema = z.object({
+    title: z.string().describe('Short, specific task title'),
+    description: z.string().describe('Detailed description of what to do'),
+    status: z.enum(TASK_STATUS_VALUES).optional(),
+    priority: z.enum(PRIORITY_VALUES).optional(),
+    blockedBy: z.array(z.union([z.string(), z.number()])).optional()
+        .describe('Tasks this one depends on, by their 0-based index in this list (e.g. [0, 1]). Omit for an independent/parallel task.'),
+    fileReferences: z.array(z.string()).optional().describe('Relevant file paths'),
+    tags: z.array(z.string()).optional(),
+});
+type TaskDef = z.infer<typeof taskDefSchema>;
+
+/** Structured-output schema for generate_tasks. */
+const generatedTasksSchema = z.object({
+    tasks: z.array(taskDefSchema).min(1).max(12),
+});
 
 function createTaskBatchId(): string {
     return `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -105,84 +129,16 @@ export default class TasksPlugin implements Plugin {
             create_tasks: tool({
                 description: `Create tasks manually. For AI-generated tasks, use generate_tasks instead.`,
                 inputSchema: z.object({
-                    tasks: z.array(z.object({
-                        title: z.string().describe('Short, specific task title'),
-                        description: z.string().describe('Detailed description of what to do'),
-                        status: z.enum(TASK_STATUS_VALUES).optional(),
-                        priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
-                        blockedBy: z.array(z.string()).optional().describe('Task IDs this task depends on'),
-                        fileReferences: z.array(z.string()).optional().describe('Relevant file paths'),
-                        tags: z.array(z.string()).optional(),
-                    })),
+                    tasks: z.array(taskDefSchema),
                 }),
                 execute: async ({ tasks }) => {
                     const operation = this.createOperation('create-tasks', 'create_tasks');
-                    const now = new Date().toISOString();
-                    const createdTasks: TaskItem[] = [];
-                    const batchId = createTaskBatchId();
-                    const taskIds = new Map<string, string>();
-
                     operation?.milestone(`Creating ${tasks.length} task${tasks.length === 1 ? '' : 's'}`, {
                         phase: 'prepare',
                     });
 
-                    // Generate task IDs
-                    tasks.forEach((_task, index) => {
-                        taskIds.set(index.toString(), `${batchId}_${index}`);
-                    });
+                    const createdTasks = await this.createTasksFromDefs(tasks);
 
-                    // Create tasks with proper IDs
-                    for (let i = 0; i < tasks.length; i++) {
-                        const taskDef = tasks[i];
-                        const id = taskIds.get(i.toString())!;
-
-                        // Resolve index-based blockedBy references
-                        const resolvedBlockedBy = (taskDef.blockedBy || []).map(ref => {
-                            if (/^\d+$/.test(ref)) {
-                                return taskIds.get(ref) || ref;
-                            }
-                            return ref;
-                        });
-
-                        const status = taskDef.status || (resolvedBlockedBy.length > 0 ? 'blocked' : 'pending');
-
-                        const newTask: TaskItem = {
-                            id,
-                            type: TaskType.SubTask,
-                            title: taskDef.title,
-                            description: taskDef.description,
-                            status,
-                            priority: taskDef.priority || 'medium',
-                            createdAt: now,
-                            updatedAt: now,
-                            blocks: [],
-                            blockedBy: resolvedBlockedBy,
-                            fileReferences: taskDef.fileReferences || [],
-                            taskReferences: [],
-                            urlReferences: [],
-                            metadata: {},
-                            tags: taskDef.tags || [],
-                        };
-
-                        // Set inverse references
-                        for (const depId of resolvedBlockedBy) {
-                            const depTask = createdTasks.find(t => t.id === depId);
-                            if (depTask) {
-                                depTask.blocks.push(id);
-                            }
-                        }
-
-                        createdTasks.push(newTask);
-                        await this.addTask(newTask);
-
-                        this.writer?.writeTaskUpdate(newTask.id, newTask.status, newTask.title);
-                    }
-
-                    operation?.milestone(`Persisting ${createdTasks.length} task${createdTasks.length === 1 ? '' : 's'}`, {
-                        phase: 'persist',
-                    });
-                    await this.persistTasks();
-                    this.emitTaskGraph();
                     operation?.complete(`Created ${createdTasks.length} task${createdTasks.length === 1 ? '' : 's'}`, {
                         phase: 'complete',
                     });
@@ -220,118 +176,45 @@ The LLM will analyze the request and create specific tasks tied to actual files/
                     }
 
                     const operation = this.createOperation('generate-tasks', 'generate_tasks');
-                    operation?.milestone('Generating task breakdown', { phase: 'prepare' });
-
-                    // Use LLM to generate specific, actionable tasks
                     operation?.milestone('Calling language model for task breakdown', { phase: 'model' });
-                    const { text } = await generateText({
-                        model: this.model,
-                        timeout: 300_000, // ponytail: anti-hang ceiling for a stalled model
-                        system: `You are a task planner. Break down requests into specific, actionable tasks.
+
+                    // Structured output: the model returns the task list directly,
+                    // schema-validated — no brittle JSON-from-prose extraction.
+                    let taskDefs: TaskDef[];
+                    try {
+                        const { object } = await generateObject({
+                            model: this.model,
+                            schema: generatedTasksSchema,
+                            // generateObject doesn't take `timeout`; an abort signal is
+                            // the anti-hang ceiling for a stalled/misbehaving model.
+                            abortSignal: AbortSignal.timeout(300_000),
+                            system: `You are a task planner. Break down requests into specific, actionable tasks.
 
 RULES:
 1. Create 3-8 tasks maximum
 2. Each task must be SPECIFIC and ACTIONABLE
 3. Include actual file paths when relevant
-4. Tasks should be sequential (later tasks depend on earlier ones)
+4. Express dependencies with each task's \`blockedBy\` = the 0-based indices of the tasks that must finish first (e.g. a task depending on the first task uses [0]). Tasks that can run in parallel have no blockedBy.
 5. DO NOT create generic tasks like "analyze requirements" or "implement logic"
-6. Focus on WHAT files to change and WHAT changes to make
-
-Output ONLY valid JSON, no markdown:
-\`\`\`
-{
-  "tasks": [
-    {
-      "title": "Read and understand X file",
-      "description": "Read path/to/file.ts to understand current implementation",
-      "fileReferences": ["path/to/file.ts"],
-      "priority": "high"
-    },
-    {
-      "title": "Modify Y function to do Z",
-      "description": "In path/to/file.ts, update the foo() function to add bar() logic",
-      "fileReferences": ["path/to/file.ts"],
-      "priority": "high"
-    }
-  ]
-}
-\`\`\``,
-                        prompt: `Break down this request into specific, actionable tasks:\n\n${request}`,
-                    });
-
-                    // Parse JSON response
-                    let tasksData: { tasks: any[] };
-                    try {
-                        // Extract JSON from response (handle markdown wrapping)
-                        const jsonMatch = text.match(/```json\s*(\{[\s\S]*\})\s*```/) ||
-                            text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
-                            text.match(/(\{[\s\S]*\})/);
-                        if (!jsonMatch) {
-                            throw new Error('No JSON found in response');
-                        }
-                        tasksData = JSON.parse(jsonMatch[1]);
+6. Focus on WHAT files to change and WHAT changes to make`,
+                            prompt: `Break down this request into specific, actionable tasks:\n\n${request}`,
+                        });
+                        taskDefs = object.tasks;
                     } catch (e) {
-                        this.writer?.writeError(`Failed to parse task generation: ${e}`, {
+                        this.writer?.writeError(`Failed to generate tasks: ${e}`, {
                             toolName: 'generate_tasks',
                             recoverable: true,
-                            context: text.slice(0, 200),
                         });
                         return {
                             success: false,
-                            error: `Failed to parse task generation: ${e}. Response was: ${text.slice(0, 200)}`,
+                            error: `Failed to generate tasks: ${e}`,
                         };
                     }
 
-                    // Create the tasks using create_tasks logic
-                    const now = new Date().toISOString();
-                    const createdTasks: TaskItem[] = [];
-                    const batchId = createTaskBatchId();
-                    const taskIds = tasksData.tasks.map((_, i) => `${batchId}_${i}`);
-                    operation?.milestone(`Parsed ${tasksData.tasks.length} generated task${tasksData.tasks.length === 1 ? '' : 's'}`, {
-                        phase: 'parse',
-                    });
-
-                    for (let i = 0; i < tasksData.tasks.length; i++) {
-                        const taskDef = tasksData.tasks[i];
-                        const id = taskIds[i];
-
-                        // Handle dependencies (previous tasks)
-                        const blockedBy = i > 0 ? [taskIds[i - 1]] : [];
-
-                        const newTask: TaskItem = {
-                            id,
-                            type: TaskType.SubTask,
-                            title: taskDef.title,
-                            description: taskDef.description,
-                            status: i === 0 ? 'pending' : 'blocked',
-                            priority: taskDef.priority || 'medium',
-                            createdAt: now,
-                            updatedAt: now,
-                            blocks: [],
-                            blockedBy,
-                            fileReferences: taskDef.fileReferences || [],
-                            taskReferences: [],
-                            urlReferences: [],
-                            metadata: {},
-                            tags: taskDef.tags || [],
-                        };
-
-                        // Update previous task's blocks
-                        if (i > 0 && createdTasks[i - 1]) {
-                            createdTasks[i - 1].blocks.push(id);
-                        }
-
-                        createdTasks.push(newTask);
-                        await this.addTask(newTask);
-
-                        this.writer?.writeTaskUpdate(newTask.id, newTask.status, newTask.title);
-                    }
-
-                    operation?.milestone(`Persisting ${createdTasks.length} generated task${createdTasks.length === 1 ? '' : 's'}`, {
+                    operation?.milestone(`Creating ${taskDefs.length} generated task${taskDefs.length === 1 ? '' : 's'}`, {
                         phase: 'persist',
                     });
-                    await this.persistTasks();
-                    this.emitTaskGraph();
+                    const createdTasks = await this.createTasksFromDefs(taskDefs);
                     operation?.complete(`Generated ${createdTasks.length} task${createdTasks.length === 1 ? '' : 's'}`, {
                         phase: 'complete',
                     });
@@ -350,10 +233,12 @@ Output ONLY valid JSON, no markdown:
                 inputSchema: z.object({
                     id: z.string(),
                     status: z.enum(TASK_STATUS_VALUES).optional(),
-                    priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+                    priority: z.enum(PRIORITY_VALUES).optional(),
                     description: z.string().optional(),
                     error: z.string().optional(),
                     addFileReferences: z.array(z.string()).optional(),
+                    blockedBy: z.array(z.string()).optional()
+                        .describe('Replace this task\'s dependencies (existing task IDs). Inverse edges are maintained and blocked/pending status is recomputed.'),
                 }),
                 execute: async (input) => {
                     const operation = this.createOperation('update-task', 'update_task');
@@ -375,6 +260,32 @@ Output ONLY valid JSON, no markdown:
                     if (input.error !== undefined) updates.error = input.error;
                     if (input.addFileReferences) {
                         updates.fileReferences = [...new Set([...current.fileReferences, ...input.addFileReferences])];
+                    }
+                    if (input.blockedBy !== undefined) {
+                        // Re-wire dependencies: maintain the inverse `blocks` edges on
+                        // the dependency tasks, then recompute this task's blocked/
+                        // pending status from the new deps.
+                        const oldDeps = new Set(current.blockedBy);
+                        const newDeps = new Set(input.blockedBy.filter(depId => depId !== current.id));
+                        for (const depId of oldDeps) {
+                            if (newDeps.has(depId)) continue;
+                            const dep = this.tasks.find(t => t.id === depId);
+                            if (dep) dep.blocks = dep.blocks.filter(b => b !== current.id);
+                        }
+                        for (const depId of newDeps) {
+                            if (oldDeps.has(depId)) continue;
+                            const dep = this.tasks.find(t => t.id === depId);
+                            if (dep && !dep.blocks.includes(current.id)) dep.blocks.push(current.id);
+                        }
+                        updates.blockedBy = [...newDeps];
+                        // Recompute status unless explicitly set or the task is already
+                        // terminal / in-progress.
+                        if (input.status === undefined &&
+                            current.status !== 'completed' && current.status !== 'failed' && current.status !== 'in_progress') {
+                            const completedIds = new Set(this.tasks.filter(t => t.status === 'completed').map(t => t.id));
+                            const stillBlocked = updates.blockedBy.some(depId => !completedIds.has(depId));
+                            updates.status = stillBlocked ? 'blocked' : 'pending';
+                        }
                     }
 
                     const { task: updatedTask, unblocked } = await this.updateTask(input.id, updates);
@@ -469,6 +380,64 @@ Output ONLY valid JSON, no markdown:
     }
 
     // Task management internal methods
+
+    /**
+     * Create a batch of tasks from defs, resolving each def's index-based
+     * `blockedBy` into the generated ids and wiring the inverse `blocks` edges.
+     * Shared by create_tasks and generate_tasks so dependency handling (the DAG)
+     * lives in one place. Persists + streams the graph; returns the new tasks.
+     */
+    private async createTasksFromDefs(taskDefs: TaskDef[]): Promise<TaskItem[]> {
+        const now = new Date().toISOString();
+        const batchId = createTaskBatchId();
+        const created: TaskItem[] = [];
+        const idByIndex = new Map<string, string>();
+        taskDefs.forEach((_, i) => idByIndex.set(String(i), `${batchId}_${i}`));
+
+        for (let i = 0; i < taskDefs.length; i++) {
+            const def = taskDefs[i];
+            const id = idByIndex.get(String(i))!;
+            // A numeric ref is an index into this batch; anything else is passed
+            // through (an already-existing task id).
+            const resolvedBlockedBy = (def.blockedBy ?? []).map(ref => {
+                const key = String(ref);
+                return /^\d+$/.test(key) ? (idByIndex.get(key) ?? key) : key;
+            });
+            const status: TaskStatus = def.status ?? (resolvedBlockedBy.length > 0 ? 'blocked' : 'pending');
+
+            const newTask: TaskItem = {
+                id,
+                type: TaskType.SubTask,
+                title: def.title,
+                description: def.description,
+                status,
+                priority: def.priority || 'medium',
+                createdAt: now,
+                updatedAt: now,
+                blocks: [],
+                blockedBy: resolvedBlockedBy,
+                fileReferences: def.fileReferences || [],
+                taskReferences: [],
+                urlReferences: [],
+                metadata: {},
+                tags: def.tags || [],
+            };
+
+            // Inverse edges for already-created deps (backward references).
+            for (const depId of resolvedBlockedBy) {
+                const depTask = created.find(t => t.id === depId);
+                if (depTask) depTask.blocks.push(id);
+            }
+
+            created.push(newTask);
+            await this.addTask(newTask);
+            this.writer?.writeTaskUpdate(newTask.id, newTask.status, newTask.title);
+        }
+
+        await this.persistTasks();
+        this.emitTaskGraph();
+        return created;
+    }
 
     async addTask(task: TaskItem): Promise<void> {
         this.tasks.push(task);

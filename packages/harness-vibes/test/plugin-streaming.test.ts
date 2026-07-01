@@ -200,8 +200,8 @@ describe('Plugin streaming', () => {
             text: JSON.stringify({
               tasks: [
                 { title: 'Create package manifest', description: 'Create package.json', fileReferences: ['package.json'] },
-                { title: 'Create server entry', description: 'Create src/index.ts', fileReferences: ['src/index.ts'] },
-                { title: 'Run verification', description: 'Run the test/build command', fileReferences: [] },
+                { title: 'Create server entry', description: 'Create src/index.ts', fileReferences: ['src/index.ts'], blockedBy: [0] },
+                { title: 'Run verification', description: 'Run the test/build command', fileReferences: [], blockedBy: [1] },
               ],
             }),
           },
