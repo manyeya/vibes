@@ -152,9 +152,13 @@ export const vibeRuntime: AgentRuntime = createRuntime(
         loopDetection: { maxRepeats: 3, window: 6 },
         // Run-wide tool-retry budget (only transient errors are retried at all).
         toolRetry: { maxTotalRetries: 20 },
-        // Scale model reasoning effort to the task's apparent complexity. No-op on
-        // models without reasoning support, so it's safe to leave on by default.
-        adaptiveReasoning: true,
+        // Adaptive reasoning is OFF by default. It forces provider reasoning
+        // effort on every turn, which starves output on token-constrained
+        // reasoning models (e.g. free-tier gpt-oss on OpenRouter): the model
+        // spends its budget on hidden reasoning and the stream ends with no
+        // step → NoOutputGeneratedError. Only enable it for a model with ample
+        // output headroom that benefits from it.
+        adaptiveReasoning: false,
         // Secret-masking of tool output is on by default (redactToolIO ?? true);
         // content guardrails (input/output prose checks) are opt-in via `guardrails`.
         // `webSearch` is now provided by the WebSearchPlugin (default + sub-agent
