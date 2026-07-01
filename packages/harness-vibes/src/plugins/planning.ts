@@ -2,7 +2,7 @@ import {
     tool,
     type UIMessageStreamWriter,
     type LanguageModel,
-    generateText,
+    generateObject,
 } from 'ai';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -67,17 +67,34 @@ export interface Plan {
 }
 
 /**
- * Plan data returned by LLM
+ * Structured-output schema for create_plan — validated by generateObject, so the
+ * model can no longer wrap or chatter around the JSON.
  */
-interface PlanLLMOutput {
-    title: string;
-    problem: string;
-    solution: string;
-    requirements: string[];
-    phases: Array<{ name: string; goal: string; steps?: string[] }>;
-    milestones: string[];
-    risks: string[];
-}
+const planSchema = z.object({
+    title: z.string(),
+    problem: z.string(),
+    solution: z.string(),
+    requirements: z.array(z.string()).optional(),
+    phases: z.array(z.object({
+        name: z.string(),
+        goal: z.string(),
+        steps: z.array(z.string()).optional(),
+    })).optional(),
+    milestones: z.array(z.string()).optional(),
+    risks: z.array(z.string()).optional(),
+});
+
+/** Structured-output schema for generate_tasks_from_plan. */
+const plannedTasksSchema = z.object({
+    tasks: z.array(z.object({
+        title: z.string(),
+        description: z.string(),
+        planPhase: z.string().optional(),
+        planReference: z.string().optional(),
+        priority: z.enum(['low', 'medium', 'high', 'critical']).optional(),
+        fileReferences: z.array(z.string()).optional(),
+    })).min(1),
+});
 
 /**
  * PlanningPlugin composes TasksPlugin with deep agent planning features:
@@ -555,13 +572,16 @@ Remember: Focus on the current task. Mark it complete before moving to the next.
                     operation?.milestone('Preparing plan generation context', { phase: 'prepare' });
 
                     operation?.milestone('Calling language model to generate project plan', { phase: 'model' });
-                    const { text } = await generateText({
-                        model: this.model,
-                        // ponytail: 5-min ceiling so a stalled/misbehaving model (some free/alpha
-                        // OpenRouter models never send a finish) fails cleanly instead of hanging
-                        // the whole run forever — well above a legit 2-3 min plan generation.
-                        timeout: 300_000,
-                        system: `You are an expert Project Architect and Lead Planner. Your goal is to create a COMPREHENSIVE, SOLID, and HIGHLY DETAILED project plan.
+                    // Structured output: schema-validated plan, no JSON-from-prose parsing.
+                    let planData: z.infer<typeof planSchema>;
+                    try {
+                        const { object } = await generateObject({
+                            model: this.model,
+                            schema: planSchema,
+                            // generateObject doesn't take `timeout`; an abort signal is the
+                            // anti-hang ceiling (some free/alpha OpenRouter models never finish).
+                            abortSignal: AbortSignal.timeout(300_000),
+                            system: `You are an expert Project Architect and Lead Planner. Your goal is to create a COMPREHENSIVE, SOLID, and HIGHLY DETAILED project plan.
 No matter how simple the request, you must provide a "professional grade" plan that covers all bases.
 
 ### Rarity & Rigor
@@ -573,52 +593,22 @@ No matter how simple the request, you must provide a "professional grade" plan t
 1. **Problem Statement**: Deep analysis of context, constraints, and success criteria.
 2. **Proposed Solution**: Architectural overview, design patterns, and core logic.
 3. **Detailed Requirements**: A list of specific functional and non-functional requirements.
-4. **Implementation Phases**: 3-6 phases. Each phase MUST have:
-   - A name and a high-level goal.
-   - A list of **specific steps** or sub-tasks that will turn that goal into reality.
+4. **Implementation Phases**: 3-6 phases. Each phase MUST have a name, a high-level goal, and a list of specific steps that turn that goal into reality.
 5. **Measurable Milestones**: Concrete deliverables with clear criteria.
 6. **Detailed Risk Analysis**: Identify technical/domain risks and provide specific mitigations.
 
-Output ONLY valid JSON matching this schema:
-{
-  "title": "Professional Project Title",
-  "problem": "Comprehensive multi-paragraph problem analysis...",
-  "solution": "Detailed architectural solution describing the 'how'...",
-  "requirements": ["Requirement 1", "Requirement 2", ...],
-  "phases": [
-    {
-      "name": "Phase Name", 
-      "goal": "Broad objective",
-      "steps": ["Detailed sub-step 1", "Detailed sub-step 2", ...]
-    }
-  ],
-  "milestones": ["Deliverable/Checkpoint 1", ...],
-  "risks": ["Risk description with mitigation strategy", ...]
-}
-
 NEVER be concise. Be exhaustive. Break every objective down into its smallest actionable components.`,
-                        prompt: `Create a project plan for:\n\n${request}`,
-                    });
-
-                    // Parse JSON response
-                    let planData: PlanLLMOutput;
-                    try {
-                        const jsonMatch = text.match(/```json\s*(\{[\s\S]*\})\s*```/) ||
-                            text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
-                            text.match(/(\{[\s\S]*\})/);
-                        if (!jsonMatch) {
-                            throw new Error('No JSON found in response');
-                        }
-                        planData = JSON.parse(jsonMatch[1]);
+                            prompt: `Create a project plan for:\n\n${request}`,
+                        });
+                        planData = object;
                     } catch (e) {
-                        this.writer?.writeError(`Failed to parse plan generation: ${e}`, {
+                        this.writer?.writeError(`Failed to generate plan: ${e}`, {
                             toolName: 'create_plan',
                             recoverable: true,
-                            context: text.slice(0, 200),
                         });
                         return {
                             success: false,
-                            error: `Failed to parse plan generation: ${e}. Response was: ${text.slice(0, 200)}`,
+                            error: `Failed to generate plan: ${e}`,
                         };
                     }
                     operation?.milestone('Parsed structured plan response', { phase: 'parse' });
@@ -730,10 +720,13 @@ ${plan.milestones.map(m => `- ${m}`).join('\n')}
 `;
 
                     operation?.milestone(`Generating implementation tasks for "${plan.title}"`, { phase: 'model' });
-                    const { text } = await generateText({
-                        model: this.model,
-                        timeout: 300_000, // ponytail: anti-hang ceiling (see create_plan)
-                        system: `You are an expert Implementation Engineer. Your job is to translate a project plan into high-fidelity, actionable tasks.
+                    let tasksData: z.infer<typeof plannedTasksSchema>;
+                    try {
+                        const { object } = await generateObject({
+                            model: this.model,
+                            schema: plannedTasksSchema,
+                            abortSignal: AbortSignal.timeout(300_000), // anti-hang ceiling (see create_plan)
+                            system: `You are an expert Implementation Engineer. Your job is to translate a project plan into high-fidelity, actionable tasks.
 
 RULES:
 1. Create 3-${maxTasks} tasks.
@@ -744,43 +737,18 @@ RULES:
 6. If the plan mentions specific requirements or architecture, incorporate those into the task details.
 7. Focus on DELIVERABLES and concrete CHANGES.
 
-Output ONLY valid JSON, no markdown formatting:
-{
-  "tasks": [
-    {
-      "title": "Clear technical title",
-      "description": "Deeply detailed implementation instructions including logic, styles, and edge cases.",
-      "planPhase": "Phase name this task belongs to",
-      "planReference": "Specific plan section (e.g., Phase 1 -> Step 2)",
-      "priority": "high",
-      "fileReferences": ["path/to/file"]
-    }
-  ]
-}
-
 The planReference field should be a clear path to the plan section so you can trace back exactly why this task exists.`,
-                        prompt: `Generate tasks from this plan:\n\n${planContext}`,
-                    });
-
-                    // Parse JSON response
-                    let tasksData: { tasks: any[] };
-                    try {
-                        const jsonMatch = text.match(/```json\s*(\{[\s\S]*\})\s*```/) ||
-                            text.match(/```\s*(\{[\s\S]*\})\s*```/) ||
-                            text.match(/(\{[\s\S]*\})/);
-                        if (!jsonMatch) {
-                            throw new Error('No JSON found in response');
-                        }
-                        tasksData = JSON.parse(jsonMatch[1]);
+                            prompt: `Generate tasks from this plan:\n\n${planContext}`,
+                        });
+                        tasksData = object;
                     } catch (e) {
-                        this.writer?.writeError(`Failed to parse task generation: ${e}`, {
+                        this.writer?.writeError(`Failed to generate tasks: ${e}`, {
                             toolName: 'generate_tasks_from_plan',
                             recoverable: true,
-                            context: text.slice(0, 200),
                         });
                         return {
                             success: false,
-                            error: `Failed to parse task generation: ${e}. Response was: ${text.slice(0, 200)}`,
+                            error: `Failed to generate tasks: ${e}`,
                         };
                     }
                     operation?.milestone(`Parsed ${tasksData.tasks.length} planned task${tasksData.tasks.length === 1 ? '' : 's'}`, {
