@@ -104,6 +104,35 @@ describe('SubAgentPlugin single delegation', () => {
     }
   });
 
+  test('delegated agents are bounded by loop detection + budgets, not just maxSteps', async () => {
+    const workspaceDir = await createTempWorkspace('subagent-bounds');
+    const capturedConfigs: AgentHarnessConfig[] = [];
+
+    try {
+      const plugin = createPlugin({
+        workspaceDir,
+        capturedConfigs,
+        subAgents: new Map([
+          ['Explorer', {
+            name: 'Explorer',
+            description: 'Codebase explorer',
+            systemPrompt: 'Explore the codebase.',
+            tools: ['readFile'],
+          }],
+        ]),
+      });
+
+      await (plugin.tools.delegate as any).execute({ agent_name: 'Explorer', task: 'Inspect' });
+
+      expect(capturedConfigs).toHaveLength(1);
+      expect(capturedConfigs[0].loopDetection).toBeDefined();
+      expect(capturedConfigs[0].budgets?.maxToolCalls).toBeGreaterThan(0);
+      expect(capturedConfigs[0].budgets?.maxTotalTokens).toBeGreaterThan(0);
+    } finally {
+      await removeTempWorkspace(workspaceDir);
+    }
+  });
+
   test('general-purpose delegations get fresh plugin instances per run', async () => {
     const workspaceDir = await createTempWorkspace('subagent-fresh');
     const capturedConfigs: AgentHarnessConfig[] = [];

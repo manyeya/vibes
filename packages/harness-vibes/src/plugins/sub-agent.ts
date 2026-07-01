@@ -20,6 +20,17 @@ import { AgentHarness } from '../core/agent/agent-harness';
 // a normal final answer is a perfectly good result. Calling it just lets a
 // sub-agent hand back a clean summary + the files it touched.
 const COMPLETION_TOOL_NAME = 'report_result';
+
+/**
+ * Reliability backstops every delegated sub-agent runs with. The parent agent's
+ * loop detection / budgets don't propagate to child agents, so without these a
+ * delegated run is bounded only by maxSteps and can spin on a repeated tool call
+ * or overspend within those steps. Scaled below the parent's caps since a single
+ * delegated task is narrower in scope.
+ */
+const SUBAGENT_LOOP_DETECTION = { maxRepeats: 3, window: 6 } as const;
+const SUBAGENT_BUDGETS = { maxTotalTokens: 1_000_000, maxToolCalls: 60 } as const;
+
 const DELEGATION_TOOL_NAMES = ['task', 'delegate', 'parallel_delegate', 'create_agent', 'spawn_agent', 'list_agents'] as const;
 const DELEGATION_TOOL_NAME_SET = new Set<string>(DELEGATION_TOOL_NAMES);
 
@@ -679,8 +690,11 @@ export default class SubAgentPlugin implements Plugin {
                 model,
                 instructions: buildSubAgentSystemPrompt(subAgent),
                 // Run the normal agent loop; the model stops when it gives a
-                // final answer. maxSteps is the only runaway guard.
+                // final answer. maxSteps caps step count; loopDetection + budgets
+                // catch a spinning or runaway delegated run within those steps.
                 maxSteps: subAgent.maxSteps ?? 25,
+                loopDetection: SUBAGENT_LOOP_DETECTION,
+                budgets: SUBAGENT_BUDGETS,
                 plugins: this.createBuiltInPluginsForSubagent({ model, workspaceDir: this.workspaceDir }),
                 tools,
                 allowedTools: subAgent.allowedTools
@@ -705,6 +719,8 @@ export default class SubAgentPlugin implements Plugin {
             model,
             instructions: buildSubAgentSystemPrompt(subAgent),
             maxSteps: subAgent.maxSteps ?? 25,
+            loopDetection: SUBAGENT_LOOP_DETECTION,
+            budgets: SUBAGENT_BUDGETS,
             plugins: [...subAgent.plugins],
             tools: {
                 ...subAgent.tools,
