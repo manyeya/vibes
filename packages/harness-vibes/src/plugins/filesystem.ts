@@ -310,7 +310,6 @@ You have access to a sandboxed workspace directory.
 - Use readFile() and writeFile() to manage files in your workspace.
 - Use edit_file() to change an existing file: an exact old_string→new_string swap (no regex/escaping, shows a diff). Prefer it over rewriting a whole file with writeFile().
 - Use list_files() to explore your workspace structure.
-- **Sub-agent results** are saved to \`subagent_results/\` within your workspace. Use the structured delegation result first; read the artifact only when the summary is insufficient or you need audit/debug detail.
 - Treat this workspace as your primary repository for manuscripts, code, and findings.`;
     }
 }

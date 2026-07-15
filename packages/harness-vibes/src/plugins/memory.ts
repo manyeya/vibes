@@ -261,7 +261,7 @@ export default class MemoryPlugin implements Plugin {
 
         let section = '\n\n# Memory\n';
         section += '\n## Scratchpad (your live working notes — overwrite with `update_scratchpad`)\n';
-        section += scratchpad.trim() ? scratchpad.trim() : '_(empty)_';
+        section += '<scratchpad>\n' + (scratchpad.trim() || '(empty)') + '\n</scratchpad>';
 
         const recent = [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         section += `\n\n## Long-term memory — ${notes.length} note${notes.length === 1 ? '' : 's'}`;

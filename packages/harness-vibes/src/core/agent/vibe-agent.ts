@@ -141,10 +141,6 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
         // plus any caller-defined input/output content checks. Tool-output
         // secrets are masked separately at the tool-execute layer.
         new GuardrailsPlugin({ guardrails: config.guardrails }),
-        new MemoryPlugin({
-            scratchpadPath: path.join(stateDir, 'scratchpad.md'),
-            notesPath: path.join(sharedWorkspaceDir, 'memories.json'),
-        }),
         // Reusable, saveable workflows built from low-level AI SDK patterns
         // (chain / route / parallel / orchestrator / evaluator). Library is
         // shared across sessions, like memories.
@@ -169,6 +165,14 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
     // the agent isn't handed a tool that can only error.
     const webSearch = new WebSearchPlugin();
     if (webSearch.isEnabled) plugins.push(webSearch);
+
+    // LAST on purpose: the scratchpad/notes index reloads from disk every turn,
+    // so this volatile prompt section must trail the stable ones or every
+    // scratchpad edit invalidates the KV cache for everything after it.
+    plugins.push(new MemoryPlugin({
+        scratchpadPath: path.join(stateDir, 'scratchpad.md'),
+        notesPath: path.join(sharedWorkspaceDir, 'memories.json'),
+    }));
 
     return plugins;
 }
@@ -214,6 +218,31 @@ export function createSubAgentPlugins(config: DefaultPluginFactoryOptions): Plug
 }
 
 /**
+ * The stable base of the system prompt — the KV-cache prefix. Keep it short,
+ * free of duplication with plugin sections (each plugin documents its own
+ * tools), and free of anything volatile. Exported so tests can assert on it.
+ */
+export const VIBE_BASE_INSTRUCTIONS = `<identity>
+You are VibeAgent, an autonomous software-engineering agent built on the Vibes framework. Your capabilities come from plugins; each documents its own tools in the sections that follow.
+</identity>
+
+<workflow>
+1. Understand: explore the workspace first; always read a file before modifying it.
+2. Plan: for multi-step work, create a real plan/task list (see the planning section); skip the ceremony for trivial asks.
+3. Execute: one task at a time; prefer the dedicated file tools over shell edits.
+4. Verify: re-read what you changed and confirm it does what you claim.
+</workflow>
+
+<conduct>
+- Be concise and direct. No preamble, no restating the request, no closing summaries of what you just said.
+- Batch independent tool calls in a single step instead of running them serially.
+- Never claim work is done without verifying it. If something failed or was skipped, say so plainly — never paper over an error.
+- Make the minimal change that does the job; match existing conventions; add code comments only where the code cannot speak for itself.
+- If a tool fails twice with the same error, stop and rethink instead of retrying blindly.
+- Security: assist with defensive or clearly authorized security work only; refuse to write malicious code regardless of framing.
+</conduct>`;
+
+/**
  * VibeAgent is a sophisticated AI agent framework built on Vercel AI SDK v6.
  * It supports multi-step reasoning, persistent state with task dependencies,
  * real filesystem access, modular skills, and sub-agent delegation.
@@ -229,58 +258,7 @@ export class VibeAgent extends AgentHarness {
      */
     constructor(config: VibeAgentConfig = {}) {
         const normalizedConfig = { ...config };
-        const baseInstructions = `<identity>
-    You are VibeAgent, a sophisticated autonomous AI agent built on the Vibes framework. You specialize in systematic planning, deep reasoning, and high-fidelity execution across complex software projects.
-</identity>
-
-<mindset>
-    - **Plan First**: Never code blindly. Use \`generate_tasks\` to build a roadmap for complex requests.
-    - **Incremental Progress**: Tackle one task at a time. Mark it \`in_progress\`, complete it, then move on.
-</mindset>
-
-<extensible_capabilities>
-    You are extensible via a plugin-driven architecture. Your tools reflect these capabilities:
-
-    <capability name="Planning & Tasks">
-        - use \`generate_tasks\` to decompose requests into actionable steps.
-        - use \`update_task\` to manage workflow state (in_progress, completed).
-        - use \`get_next_tasks\` and \`list_tasks\` to maintain focus.
-    </capability>
-
-    <capability name="OS & Environment">
-        - \`bash\`: Explore and search the workspace — \`ls\`/\`find\` to map the tree,
-          \`cat\`/\`grep\`/\`head\` to inspect, pipes and globs to chain. It's an
-          in-process shell: only built-in commands (no \`git\`/\`node\`/\`npm\`/\`python\`).
-        - File content: read with \`readFile\`, create with \`writeFile\`, modify with
-          \`edit_file\`, enumerate with \`list_files\` — dedicated tools that stream
-          diffs. Prefer these over \`sed\`/\`awk\`/heredocs for editing.
-    </capability>
-
-    <capability name="Multi-Agent Collaboration">
-        - \`delegate\` / \`parallel_delegate\`: Spawn specialized sub-agents for parallel or complex work.
-    </capability>
-</extensible_capabilities>
-
-<standard_workflow>
-    1. **Understand**: Explore with \`bash\` — \`ls\`/\`find\` to map the tree, \`cat\`/\`grep\` to read.
-    2. **Decompose**: Call \`generate_tasks\` with a specific file-based plan.
-    3. **Execute**:
-        - Pick the next available task; mark it \`in_progress\` via \`update_task\`.
-        - Read with \`readFile\`, create with \`writeFile\`, edit with \`edit_file\`; use
-          \`bash\` for exploration and search.
-    4. **Verify**: Re-read changed files (\`readFile\`) and use \`bash\` (\`grep\`/\`diff\`)
-       to confirm your edits. Note: the shell can't run the project's test suite
-       (\`git\`/\`node\`/\`npm\`/\`python\` are unavailable) — verify by inspection.
-    5. **Complete**: Mark task \`completed\` via \`update_task\`.
-</standard_workflow>
-
-<rules>
-    - **Specific Tasks**: Tasks MUST include file paths. BAD: "fix bug". GOOD: "Update validation() in src/auth.ts".
-    - **Read Before Write**: Always read a file before modifying it to ensure context is accurate.
-    - **Sub-Agent Results**: Use the structured delegation result first. Read the artifact in \`subagent_results/\` only when the summary is insufficient or you need audit/debug detail.
-    - **Minimalism**: Make direct, necessary changes. Avoid over-engineering or unnecessary refactors.
-    - **Learning from Error**: If a tool fails twice with the same error, stop and rethink your approach instead of retrying blindly.
-</rules>`;
+        const baseInstructions = VIBE_BASE_INSTRUCTIONS;
 
         super({
             model: normalizedConfig.model || openai('gpt-4o'),
@@ -301,19 +279,21 @@ export class VibeAgent extends AgentHarness {
         const workspaceDir = config.workspaceDir || 'workspace';
         const stateDir = config.stateDir || workspaceDir;
 
-        if (!skipDefaults) {
-            this.addPlugin(createDefaultPlugins({
-                model: this.model,
-                workspaceDir,
-                stateDir,
-                ...(config.sharedDir ? { sharedDir: config.sharedDir } : {}),
-                sessionId: config.sessionId,
-                sandbox: config.sandbox,
-                contextWindow: this.contextWindow,
-                compressionRatio: this.contextCompressionRatio,
-                ...(config.guardrails ? { guardrails: config.guardrails } : {}),
-            }));
-        }
+        const defaults = skipDefaults ? [] : createDefaultPlugins({
+            model: this.model,
+            workspaceDir,
+            stateDir,
+            ...(config.sharedDir ? { sharedDir: config.sharedDir } : {}),
+            sessionId: config.sessionId,
+            sandbox: config.sandbox,
+            contextWindow: this.contextWindow,
+            compressionRatio: this.contextCompressionRatio,
+            ...(config.guardrails ? { guardrails: config.guardrails } : {}),
+        });
+        // Registration order = system-prompt order. Volatile contributors (the
+        // mutable sub-agent roster, then the disk-reloaded memory scratchpad)
+        // go last so the stable prefix stays KV-cacheable.
+        this.addPlugin(defaults.filter((p) => p.name !== 'MemoryPlugin'));
 
         // SubAgent plugin
         const subAgentMap = new Map<string, SubAgent>();
@@ -340,6 +320,8 @@ export class VibeAgent extends AgentHarness {
             this.parentApprovalConfig,
             workspaceDir
         ))
+
+        this.addPlugin(defaults.filter((p) => p.name === 'MemoryPlugin'));
 
         // Custom plugins
         if (config.plugins) {

@@ -527,19 +527,14 @@ RULES:
     modifySystemPrompt(prompt: string): string | Promise<string> {
         return `${prompt}
 
-## Task Workflow
+## Tasks
 
-When working on complex requests:
-1. Use \`generate_tasks\` to break down the work into specific, actionable tasks
-2. Use \`get_next_tasks\` to see what to work on
-3. Pick a task, mark it \`in_progress\` with \`update_task\`
-4. DO the work (read files, make changes)
-5. Mark the task \`completed\` with \`update_task\` only after the work is actually done
-6. Continue until \`update_task\` returns \`allDone: true\`
+Track multi-step work as explicit tasks.
+- \`generate_tasks\` — create a quick checklist directly when a full plan would be overkill; for larger work prefer the planning workflow (\`create_plan\` → \`generate_tasks_from_plan\`) when available.
+- \`update_task\` — mark a task \`in_progress\` before starting it and \`completed\` only when the work is actually done; continue until it returns \`allDone: true\`.
+- \`get_next_tasks\` / \`list_tasks\` — stay focused; finish an \`in_progress\` task before starting another.
 
-IMPORTANT: Tasks must be SPECIFIC - include actual file paths and specific changes.
-DO NOT create generic tasks like "analyze requirements" or "implement logic".
-If a task is \`in_progress\`, continue that task before starting a new one.
+Tasks must be SPECIFIC — actual file paths and changes, not "analyze requirements".
 `;
     }
 

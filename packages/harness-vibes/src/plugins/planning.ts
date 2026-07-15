@@ -164,34 +164,18 @@ export class PlanningPlugin implements Plugin {
 
 ## Planning & Task Management
 
-**Planning Workflow:**
-1. Use \`create_plan()\` to generate a high-level project brief (problem, approach, phases)
-2. Use \`${PLAN_REVIEW_TOOL_NAME}()\` to get the user's sign-off on the PLAN, then STOP and wait
-3. Once approved, use \`generate_tasks_from_plan()\` to create the concrete tasks
-4. Work through tasks sequentially, marking them complete as you go
+For any non-trivial, multi-step request, this is the canonical flow:
+1. \`create_plan()\` — generate a high-level project brief (problem, approach, phases)
+2. \`${PLAN_REVIEW_TOOL_NAME}()\` — show the plan to the user, then STOP and wait. Do NOT generate tasks or touch the workspace until it is approved; if the user requests changes, revise with \`create_plan\` and review again.
+3. \`generate_tasks_from_plan()\` — once approved, create the concrete tasks
+4. Work through tasks sequentially with \`update_task\`, marking each complete as you go
 
-**Plan review (human-in-the-loop):**
-For any non-trivial, multi-step task, call \`${PLAN_REVIEW_TOOL_NAME}()\` right after
-\`create_plan()\` — **before** generating tasks or doing any work — and then STOP and
-wait. Do NOT call \`generate_tasks_from_plan()\` or touch the workspace until the plan
-is approved. The user either approves the plan (then generate the tasks and proceed)
-or requests changes (then revise with \`create_plan\` and call \`${PLAN_REVIEW_TOOL_NAME}()\`
-again). Skip review only for trivial one-step asks.
-
-**Available Tools:**
-- \`create_plan(request)\` - Generate a high-level project plan (problem, solution, phases, milestones)
-- \`generate_tasks_from_plan()\` - Create specific actionable tasks from the current plan
-- \`${PLAN_REVIEW_TOOL_NAME}(note?)\` - Show the plan to the user for approval before executing
-- \`save_plan()\` - Save the current task plan to a file
-- \`load_plan()\` - Load a task plan from a file
+**Other tools:**
+- \`save_plan()\` / \`load_plan()\` - Persist or restore the current task plan
 - \`recite_plan()\` - Refresh and view your current task plan
 - \`create_subtask()\` - Create a subtask under an existing parent task
 
-**Task-Plan Linking:**
-Tasks generated from a plan include metadata.planId and metadata.planReference.
-This lets you trace each task back to the specific part of the plan it relates to.
-
-Remember: Focus on the current task. Mark it complete before moving to the next.
+For a quick, low-stakes checklist, \`generate_tasks\` (above) is fine without a plan.
 `;
         if (typeof basePrompt === 'string') {
             return basePrompt + planningInstructions;
