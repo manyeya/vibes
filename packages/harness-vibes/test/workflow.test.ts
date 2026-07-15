@@ -210,6 +210,35 @@ describe('WorkflowEngine', () => {
         expect(calls.some((c) => /Billing answer/.test(allText(c)))).toBe(false); // billing never ran
     });
 
+    test('route takes the keyword shortcut, skipping the classifier model call', async () => {
+        // The classifier, IF called, would (wrongly) pick billing — so routing to
+        // tech + one total model call proves the keyword shortcut ran instead.
+        const { model, calls } = keyedModel([
+            [/classifier/i, '{"choice":"billing","reason":"should NOT be used"}'],
+            [/Tech answer/, 'TECH_RESULT'],
+            [/Billing answer/, 'BILLING_RESULT'],
+        ]);
+        const engine = new WorkflowEngine(model as any);
+        const wf = makeWorkflow([
+            {
+                id: 'router',
+                kind: 'route',
+                prompt: 'I have a tech problem', // plainly names exactly one category
+                routes: [
+                    { when: 'billing', step: { id: 'bill', kind: 'prompt', prompt: 'Billing answer' } },
+                    { when: 'tech', step: { id: 'tech', kind: 'prompt', prompt: 'Tech answer' } },
+                ],
+            },
+        ]);
+
+        const result = await engine.run(wf, {});
+
+        expect(result.success).toBe(true);
+        expect(result.finalOutput).toBe('TECH_RESULT');                          // routed by keyword
+        expect(result.modelCalls).toBe(1);                                       // classifier skipped
+        expect(calls.some((c) => /classifier/i.test(allText(c)))).toBe(false);   // never classified
+    });
+
     test('orchestrator plans subtasks, runs workers, and synthesizes', async () => {
         // Order matters: the synthesize prompt embeds the plan (which contains
         // "do alpha"/"do beta"), so match /Synthesize/ before the worker rules.

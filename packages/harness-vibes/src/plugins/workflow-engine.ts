@@ -10,6 +10,7 @@ import {
     validateChartSpec,
     type ArtifactKind,
 } from './artifact';
+import { reasoningProviderOptions, type ReasoningTier } from '../core/agent/reasoning';
 
 /**
  * Low-level workflow engine — a small executor for the AI SDK's documented
@@ -210,6 +211,19 @@ export interface WorkflowEngineOptions {
     maxModelCalls?: number;
     /** Sub-workflow recursion depth limit (default 3). */
     maxDepth?: number;
+    /**
+     * Max output tokens per model call (default 4096). Bounds per-step latency —
+     * workflow steps produce focused outputs, not essays. Raise for steps that
+     * legitimately generate long documents.
+     */
+    maxOutputTokens?: number;
+    /**
+     * Reasoning effort for workflow steps (default 'low'). Steps are mechanical,
+     * so full chain-of-thought is mostly wasted latency; low effort is faster and
+     * leaves more of the output budget for the actual answer. Provider keys are
+     * namespaced and ignored by models without reasoning.
+     */
+    reasoningEffort?: ReasoningTier;
 }
 
 export interface WorkflowRunHandles {
@@ -295,6 +309,8 @@ export class WorkflowEngine {
     private readonly model: LanguageModel;
     private readonly maxModelCalls: number;
     private readonly maxDepth: number;
+    private readonly maxOutputTokens: number;
+    private readonly reasoningEffort: ReasoningTier;
     /** Lazily-created fallback when no sandbox is supplied (e.g. direct test usage). */
     private fallbackSandbox?: Sandbox;
 
@@ -302,6 +318,8 @@ export class WorkflowEngine {
         this.model = model;
         this.maxModelCalls = options.maxModelCalls ?? 25;
         this.maxDepth = options.maxDepth ?? 3;
+        this.maxOutputTokens = options.maxOutputTokens ?? 4096;
+        this.reasoningEffort = options.reasoningEffort ?? 'low';
     }
 
     /** Execute a workflow to completion, returning the final output + trace. */
@@ -430,14 +448,28 @@ export class WorkflowEngine {
     private async runRoute(step: RouteStep, state: RunState, context: RunContext, depth: number): Promise<unknown> {
         if (!step.routes?.length) throw new WorkflowError(`route step "${step.id}" has no routes`);
         const whens = step.routes.map((r) => r.when);
-        const system = jsonInstruction(
-            step.classifySystem ??
-                `You are a classifier. Choose exactly one category that best fits the input from: ${whens.join(', ')}.`,
-            `a JSON object {"choice": one of [${whens.map((w) => `"${w}"`).join(', ')}], "reason": "<short>"}`,
-        );
-        const text = await this.callModel(state, { system, prompt: interpolate(step.prompt, context) });
-        const parsed = parseJsonValue(text) as { choice?: string } | undefined;
-        const choice = parsed?.choice && whens.includes(parsed.choice) ? parsed.choice : whens[0];
+        const promptText = interpolate(step.prompt, context);
+
+        // ponytail: cheap path — if the input plainly names exactly one category
+        // (word-boundary, case-insensitive), route without a classifier model
+        // call. 0 or >1 matches is ambiguous → fall back to the model. Upgrade to
+        // a smarter matcher only if this misroutes.
+        const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const keywordHits = whens.filter((w) => new RegExp(`\\b${escapeRe(w)}\\b`, 'i').test(promptText));
+
+        let choice: string;
+        if (keywordHits.length === 1) {
+            choice = keywordHits[0];
+        } else {
+            const system = jsonInstruction(
+                step.classifySystem ??
+                    `You are a classifier. Choose exactly one category that best fits the input from: ${whens.join(', ')}.`,
+                `a JSON object {"choice": one of [${whens.map((w) => `"${w}"`).join(', ')}], "reason": "<short>"}`,
+            );
+            const text = await this.callModel(state, { system, prompt: promptText });
+            const parsed = parseJsonValue(text) as { choice?: string } | undefined;
+            choice = parsed?.choice && whens.includes(parsed.choice) ? parsed.choice : whens[0];
+        }
         const matched = step.routes.find((r) => r.when === choice) ?? step.routes[0];
         // Run the chosen branch as a nested step (its output is stored under its own id too).
         return this.executeStep(matched.step, state, context, depth + 1);
@@ -718,6 +750,13 @@ export class WorkflowEngine {
             allowSystemInMessages: true,
             messages: cacheableMessages(args.system, args.prompt),
             onError: ({ error }) => { streamError = error; },
+            // Bound per-step output so a rambling step can't dominate run latency.
+            maxOutputTokens: this.maxOutputTokens,
+            // Minimize reasoning: workflow steps are mechanical, so hidden
+            // chain-of-thought is wasted latency. Foreign provider keys are ignored.
+            // Cast: the helper returns loose `Record<string, unknown>`; values are
+            // provider-namespaced JSON objects (matches the harness's own usage).
+            providerOptions: reasoningProviderOptions(this.reasoningEffort) as Record<string, Record<string, any>>,
             ...(args.temperature !== undefined ? { temperature: args.temperature } : {}),
             ...(state.handles.abortSignal ? { abortSignal: state.handles.abortSignal } : {}),
         });

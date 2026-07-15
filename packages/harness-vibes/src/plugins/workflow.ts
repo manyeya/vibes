@@ -170,6 +170,13 @@ export interface WorkflowPluginConfig {
     /** Per-run model-call budget passed to the engine (default 25). */
     maxModelCalls?: number;
     /**
+     * Optional dedicated model for RUNNING workflows, separate from the agent's
+     * chat model. A workflow is many sequential calls of mechanical work, so a
+     * fast (ideally non-reasoning) model here cuts run latency sharply. Falls
+     * back to the agent model when unset.
+     */
+    workflowModel?: LanguageModel;
+    /**
      * The bash/filesystem workspace dir (or pass {@link sandbox}). Lets
      * `import_workflow` read a definition file the agent wrote via bash — the
      * reliable path for large/deeply-nested workflows that don't survive being
@@ -253,6 +260,7 @@ export default class WorkflowPlugin implements Plugin {
     private writer?: DataStreamWriter;
     private streamContext?: PluginStreamContext;
     private readonly model?: LanguageModel;
+    private readonly workflowModel?: LanguageModel;
     private readonly workflowsPath: string;
     private readonly maxWorkflows: number;
     private readonly maxModelCalls: number;
@@ -261,6 +269,7 @@ export default class WorkflowPlugin implements Plugin {
 
     constructor(model?: LanguageModel, config: WorkflowPluginConfig = {}) {
         this.model = model;
+        this.workflowModel = config.workflowModel;
         this.workflowsPath = config.workflowsPath || 'workspace/workflows.json';
         this.maxWorkflows = config.maxWorkflows ?? 200;
         this.maxModelCalls = config.maxModelCalls ?? 25;
@@ -636,7 +645,9 @@ export default class WorkflowPlugin implements Plugin {
                     inputs: z.record(z.string(), z.any()).optional().describe('Bindings for the declared {{input.*}} — values may be strings, numbers, booleans, or JSON objects.'),
                 }),
                 execute: async ({ nameOrId, inputs }, { abortSignal } = {} as any) => {
-                    if (!this.model) {
+                    // Prefer the dedicated (fast) workflow model when configured.
+                    const runModel = this.workflowModel ?? this.model;
+                    if (!runModel) {
                         return { success: false, error: 'No model available to run workflows.' };
                     }
                     const workflows = await this.readWorkflows();
@@ -664,7 +675,7 @@ export default class WorkflowPlugin implements Plugin {
                     op?.milestone(`Running workflow "${workflow.name}"`, { phase: 'run' });
 
                     const result = await runWorkflowToStream(workflow, {
-                        model: this.model,
+                        model: runModel,
                         inputs: provided,
                         writer: this.writer,
                         abortSignal,
