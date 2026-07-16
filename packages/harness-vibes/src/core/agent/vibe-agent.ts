@@ -22,7 +22,7 @@ import {
     Plugin,
     ToolsRequiringApprovalConfig,
 } from '../types';
-import { VibesAgent, type VibesAgentConfig } from '../agent';
+import { VibesAgent, type VibesAgentConfig } from './agent';
 import type { Sandbox } from '../sandbox';
 
 /**

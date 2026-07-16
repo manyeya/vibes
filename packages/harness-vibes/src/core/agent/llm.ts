@@ -17,7 +17,7 @@ import {
     type ToolChoice,
     type ToolSet,
 } from 'ai';
-import type { ModelStreamPart, StepUsage } from './events';
+import type { ModelStreamPart, StepUsage } from './loop-events';
 
 export interface StepCallConfig {
     model: LanguageModel;

@@ -8,7 +8,7 @@
  * can control the writer and pass it to the agent for plugin hooks.
  */
 
-import type { VibesAgent } from '../agent';
+import type { VibesAgent } from '../agent/agent';
 import type { ModelMessage, UIMessage, ToolSet, UIMessageChunk } from 'ai';
 import type { VibesUIMessage } from './streaming';
 import { createUIMessageStream, createUIMessageStreamResponse, convertToModelMessages } from 'ai';

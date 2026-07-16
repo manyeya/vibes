@@ -10,8 +10,8 @@
  */
 
 import type { LanguageModel, ModelMessage } from 'ai';
-import type { Plugin } from './types';
-import type { LoopStep } from './events';
+import type { Plugin } from '../types';
+import type { LoopStep } from './loop-events';
 
 /** Options passed to a plugin's `prepareTurn` before each model call. */
 export interface PrepareTurnOptions {

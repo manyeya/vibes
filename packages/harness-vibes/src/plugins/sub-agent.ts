@@ -13,7 +13,7 @@ import {
     createDataStreamWriter,
     type DataStreamWriter,
 } from '../core/types';
-import { VibesAgent, type VibesAgentConfig } from '../core/agent';
+import { VibesAgent, type VibesAgentConfig } from '../core/agent/agent';
 
 // Optional structured-handoff tool. Sub-agents are NOT required to call it —
 // a normal final answer is a perfectly good result. Calling it just lets a

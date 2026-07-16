@@ -24,13 +24,13 @@ import type {
     UIMessage,
     UIMessageChunk,
 } from 'ai';
-import { ContextManager } from './agent/context-manager';
-import { UsageTracker, type TokenUsage } from './agent/usage-tracker';
-import { ToolRegistry } from './agent/tool-registry';
-import { recordError, getRecentErrors, formatRecentErrors } from './agent/error-log';
-import { resolveBudgetStops, budgetBreaches, type BudgetConfig } from './agent/budgets';
-import { resolveLoopStops, loopBreaches, type LoopDetectionConfig } from './agent/loop-detection';
-import { classifyComplexity, reasoningProviderOptions, type AdaptiveReasoningConfig } from './agent/reasoning';
+import { ContextManager } from './context-manager';
+import { UsageTracker, type TokenUsage } from './usage-tracker';
+import { ToolRegistry } from './tool-registry';
+import { recordError, getRecentErrors, formatRecentErrors } from './error-log';
+import { resolveBudgetStops, budgetBreaches, type BudgetConfig } from './budgets';
+import { resolveLoopStops, loopBreaches, type LoopDetectionConfig } from './loop-detection';
+import { classifyComplexity, reasoningProviderOptions, type AdaptiveReasoningConfig } from './reasoning';
 import {
     createPluginStreamContext,
     type AgentHarnessConfig,
@@ -38,9 +38,9 @@ import {
     type ErrorEntry,
     type Plugin,
     type PluginStreamContext,
-} from './types';
+} from '../types';
 import type { VibesPlugin, PrepareTurnResult } from './plugin-api';
-import type { LoopStep, ModelStreamPart, StepUsage, StopPredicate, StopReason } from './events';
+import type { LoopStep, ModelStreamPart, StepUsage, StopPredicate, StopReason } from './loop-events';
 import { runAgentLoop, type ResolvedTurn } from './loop';
 import { streamModelStep } from './llm';
 import { toModelMessages, lastUserText } from './messages';

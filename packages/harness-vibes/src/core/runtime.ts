@@ -2,7 +2,7 @@ import { generateText, Output, type LanguageModel, type ModelMessage } from 'ai'
 import { openai } from '@ai-sdk/openai';
 import type { ZodType } from 'zod';
 import { VibeAgent, type VibeAgentConfig } from './agent/vibe-agent';
-import { VibesAgent } from './agent';
+import { VibesAgent } from './agent/agent';
 import type { AgentState } from './types';
 import type { Sandbox } from './sandbox';
 import { SessionStore } from './session/session-manager';

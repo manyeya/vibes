@@ -2,8 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { streamText, stepCountIs, tool, simulateReadableStream } from 'ai';
 import { MockLanguageModelV3 } from 'ai/test';
 import { z } from 'zod';
-import { createUIChunkAdapter } from '../src/core/ui-stream';
-import type { ModelStreamPart } from '../src/core/events';
+import { createUIChunkAdapter } from '../src/core/agent/ui-stream';
+import type { ModelStreamPart } from '../src/core/agent/loop-events';
 
 /** A one-step model that emits text then a tool call. */
 function mkModel() {

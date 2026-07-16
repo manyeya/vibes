@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { ModelMessage } from 'ai';
-import { VibesAgent } from '../src/core/agent';
+import { VibesAgent } from '../src/core/agent/agent';
 
 // Expose the protected compression helpers for testing.
 class TestAgent extends VibesAgent {

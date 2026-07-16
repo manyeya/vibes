@@ -15,7 +15,7 @@
  */
 
 import { toUIMessageChunk, type ToolSet, type UIMessageChunk } from 'ai';
-import type { ModelStreamPart } from './events';
+import type { ModelStreamPart } from './loop-events';
 
 export interface UIChunkAdapter {
     /** The chunk stream to hand to `writer.merge(...)` / `toUIMessageStream()`. */

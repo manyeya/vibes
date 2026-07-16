@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { simulateReadableStream, tool } from 'ai';
 import { MockLanguageModelV3 } from 'ai/test';
 import { z } from 'zod';
-import { VibesAgent } from '../src/core/agent';
+import { VibesAgent } from '../src/core/agent/agent';
 
 type Chunk = Record<string, unknown> & { type: string };
 

@@ -23,7 +23,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { stat, mkdir, rm } from 'fs/promises';
-import { VibesAgent } from '../agent';
+import { VibesAgent } from '../agent/agent';
 import type { AgentHarnessConfig, AgentState } from '../types';
 import type { Sandbox } from '../sandbox';
 import { LocalSandbox } from '../../sandbox/local-sandbox';

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { tool } from 'ai';
 import z from 'zod';
-import { VibesAgent } from '../src/core/agent';
+import { VibesAgent } from '../src/core/agent/agent';
 import { createPluginStreamContext } from '../src/core/types';
 import { createCapturingWriter, createTool } from './helpers';
 

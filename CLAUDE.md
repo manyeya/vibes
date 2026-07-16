@@ -42,12 +42,12 @@ Three layers, each with a role-obvious name:
 
 | Role | Name | File | What it is |
 |-------|------|------|------|
-| **The owned loop** | `runAgentLoop` + `streamModelStep` | `src/core/loop.ts`, `src/core/llm.ts` | The agent loop we own (modeled on earendil-works/pi). A pure outer/inner loop; each step is ONE `streamText` call with `stopWhen: stepCountIs(1)` (the SDK does that step's model call + tool execution through our wrapped `execute`; we own prune, plugin fan-out, stop conditions, halt, steering). |
-| **The agent** | `VibesAgent` | `src/core/agent.ts` | Implements the AI SDK `Agent` (`version: 'agent-v1'`) contract on the owned loop. Orchestrates collaborators: `ContextManager`, `UsageTracker`, `ToolRegistry`, plus plugin dispatch. New responsibilities go to a collaborator, not onto this class. Use `asAgent()` for the SDK `Agent` type. |
+| **The owned loop** | `runAgentLoop` + `streamModelStep` | `src/core/agent/loop.ts`, `src/core/agent/llm.ts` | The agent loop we own (modeled on earendil-works/pi). A pure outer/inner loop; each step is ONE `streamText` call with `stopWhen: stepCountIs(1)` (the SDK does that step's model call + tool execution through our wrapped `execute`; we own prune, plugin fan-out, stop conditions, halt, steering). |
+| **The agent** | `VibesAgent` | `src/core/agent/agent.ts` | Implements the AI SDK `Agent` (`version: 'agent-v1'`) contract on the owned loop. Orchestrates collaborators: `ContextManager`, `UsageTracker`, `ToolRegistry`, plus plugin dispatch. New responsibilities go to a collaborator, not onto this class. Use `asAgent()` for the SDK `Agent` type. |
 | **The flagship** | `VibeAgent` (`createVibeAgent`) | `src/core/agent/vibe-agent.ts` | Batteries-included `VibesAgent` subclass with all default plugins + sub-agents. This is the thing you talk to. |
 | **The runtime / front door** | `AgentRuntime` / `createRuntime` / `defineAgent` / `Session` | `src/core/runtime.ts` | NOT a harness — the app-level manager that builds & caches per-session agents and owns workspaces. Flue-like: declare → build → `session.prompt({ result })`. |
 
-`VibesAgent` (in `src/core/agent.ts`) provides:
+`VibesAgent` (in `src/core/agent/agent.ts`) provides:
 
 - **Owned loop** - We drive iteration (`runAgentLoop`), not the SDK; `streamText` is only the single-step primitive
 - **Plugin system** - Extensible capabilities via modular plugins
@@ -140,6 +140,6 @@ SKILLS_DIR=./skills        # Skills directory
 ## Important Notes
 
 - The project uses **Bun** as the JavaScript runtime
-- **AI SDK v7** is the foundation - we own the agent loop (`runAgentLoop` in `src/core/loop.ts`) and use `streamText` as the single-step primitive; familiarize yourself with `streamText`, `useChat`, the `Agent` (`agent-v1`) interface, and streaming patterns
+- **AI SDK v7** is the foundation - we own the agent loop (`runAgentLoop` in `src/core/agent/loop.ts`) and use `streamText` as the single-step primitive; familiarize yourself with `streamText`, `useChat`, the `Agent` (`agent-v1`) interface, and streaming patterns
 - Plugins were formerly called "middleware" - you may see old terminology in some files
 - The `workspace/` directory contains runtime data (SQLite DB, plans, lessons, patterns)

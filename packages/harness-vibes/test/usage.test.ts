@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { ModelMessage } from 'ai';
-import { VibesAgent } from '../src/core/agent';
+import { VibesAgent } from '../src/core/agent/agent';
 import { createPluginStreamContext } from '../src/core/types';
 import { createCapturingWriter } from './helpers';
 

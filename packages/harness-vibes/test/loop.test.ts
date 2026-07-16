@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { runAgentLoop, type LoopConfig } from '../src/core/loop';
-import type { StepModelOutcome } from '../src/core/llm';
-import type { AgentEvent } from '../src/core/events';
+import { runAgentLoop, type LoopConfig } from '../src/core/agent/loop';
+import type { StepModelOutcome } from '../src/core/agent/llm';
+import type { AgentEvent } from '../src/core/agent/loop-events';
 import type { ModelMessage } from 'ai';
 
 /** Build a StepModelOutcome with sensible defaults. */

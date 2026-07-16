@@ -17,7 +17,7 @@
 
 import type { LanguageModel, ModelMessage, ToolChoice, ToolSet } from 'ai';
 import type { streamModelStep as StreamModelStepFn } from './llm';
-import type { AgentEvent, EventSink, LoopStep, ModelStreamPart, StopPredicate, StopReason } from './events';
+import type { AgentEvent, EventSink, LoopStep, ModelStreamPart, StopPredicate, StopReason } from './loop-events';
 
 /** The resolved settings for one turn (what `prepareTurn` produces). */
 export interface ResolvedTurn {

@@ -79,7 +79,7 @@ import {
     createDataStreamWriter,
     DataStreamWriter,
 } from './src/core/types';
-import { VibesAgent, type VibesAgentConfig, type VibesGenerateResult, type VibesStreamResult } from './src/core/agent';
+import { VibesAgent, type VibesAgentConfig, type VibesGenerateResult, type VibesStreamResult } from './src/core/agent/agent';
 
 export { createAgentStreamResponse } from './src/core/streaming/stream-response';
 export {
