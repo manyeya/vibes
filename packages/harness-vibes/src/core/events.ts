@@ -64,6 +64,8 @@ export type StopReason =
     | 'stop-condition'
     /** A tool in `haltOnToolCall` was called (e.g. ask_user, plan review). */
     | 'halted-by-tool'
+    /** A tool needs user approval before it can run; control returns to the user. */
+    | 'approval-required'
     /** The run was aborted via the abort signal. */
     | 'aborted'
     /** The model step errored. */

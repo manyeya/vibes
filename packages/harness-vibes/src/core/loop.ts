@@ -87,6 +87,17 @@ async function anyStop(preds: StopPredicate[], steps: LoopStep[]): Promise<boole
     return false;
 }
 
+/** True when a step's messages carry an unresolved tool-approval request. */
+function hasApprovalRequest(messages: ModelMessage[]): boolean {
+    for (const m of messages) {
+        if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+        for (const part of m.content) {
+            if ((part as { type?: string }).type === 'tool-approval-request') return true;
+        }
+    }
+    return false;
+}
+
 /**
  * Run the loop to completion. `callModel` is injectable for tests.
  */
@@ -181,6 +192,13 @@ export async function runAgentLoop(
 
             const hasToolCalls = step.toolCalls.length > 0;
 
+            // A tool that needs approval streams a tool-approval-request part and
+            // is NOT executed, so the step leaves an unresolved tool call. Halt
+            // and return control to the user rather than spinning on it. (The
+            // approve → resubmit flow is handled by the edge/UI.)
+            if (hasApprovalRequest(outcome.responseMessages)) {
+                return finish('approval-required');
+            }
             if (hasToolCalls && step.toolCalls.some((c) => config.haltOnToolCall.has(c.toolName))) {
                 return finish('halted-by-tool');
             }

@@ -12,7 +12,7 @@
 
 import { createRuntime, type AgentRuntime, ASK_USER_TOOL_NAME, PLAN_REVIEW_TOOL_NAME } from '../../../packages/harness-vibes/index';
 import type { SubAgent } from '../../../packages/harness-vibes/index';
-import { wrapLanguageModel, hasToolCall, type LanguageModel } from 'ai';
+import { wrapLanguageModel, type LanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { vibePrompt } from './prompts/vibe';
 import { getModel, getContextWindow, getDefaultModelId } from './model-factory';
@@ -140,8 +140,9 @@ export const vibeRuntime: AgentRuntime = createRuntime(
         contextCompressionRatio: 0.7,
         // Hand control back to the user when the agent asks a question
         // (`ask_user`) or puts a plan up for approval (`request_plan_review`):
-        // the run halts so the user can answer / approve before it continues.
-        stopWhen: [hasToolCall(ASK_USER_TOOL_NAME), hasToolCall(PLAN_REVIEW_TOOL_NAME)],
+        // the tool runs (streaming its questionnaire / plan), then the owned
+        // loop halts so the user can answer / approve before it continues.
+        haltOnToolCall: [ASK_USER_TOOL_NAME, PLAN_REVIEW_TOOL_NAME],
         // Per-run safety budgets (enforced as native stopWhen). Generous
         // backstops against a runaway turn, not tight limits — a single turn
         // that genuinely needs this many tokens/tools is already pathological.

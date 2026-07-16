@@ -138,4 +138,20 @@ describe('VibesAgent', () => {
         expect(r.stopReason).toBe('halted-by-tool');
         expect(r.steps).toHaveLength(1);
     });
+
+    test('halts (does not spin) when a tool needs approval', async () => {
+        const danger = tool({ inputSchema: z.object({ x: z.number() }), needsApproval: true, execute: async () => ({ ok: true }) });
+        const { model, count } = scriptedModel([
+            toolChunks('danger', { x: 1 }),
+            textChunks('should not reach here'),
+        ]);
+        const agent = new VibesAgent({
+            model, instructions: 'BASE', tools: { danger },
+            toolsRequiringApproval: ['danger'], maxSteps: 5,
+        });
+
+        const r = await agent.generate({ messages: [{ role: 'user', content: 'go' }] });
+        expect(count()).toBe(1);
+        expect(r.stopReason).toBe('approval-required');
+    });
 });
