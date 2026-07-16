@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Vibes is a multi-agent AI coding orchestrator built on the Vercel AI SDK v6. It features a lean plugin-based architecture with runtime sub-agent deployment, renderable canvas artifacts, and both terminal (TUI) and web interfaces.
+Vibes is a multi-agent AI coding orchestrator built on the Vercel AI SDK v7. It owns its agent loop (implementing the SDK's `Agent` interface rather than extending `ToolLoopAgent`) and features a lean plugin-based architecture with runtime sub-agent deployment, renderable canvas artifacts, and both terminal (TUI) and web interfaces.
 
 **Monorepo structure** (Bun workspaces):
 - `apps/api` - Hono backend server with session management
@@ -42,16 +42,18 @@ Three layers, each with a role-obvious name:
 
 | Role | Name | File | What it is |
 |-------|------|------|------|
-| **The harness** | `AgentHarness` | `src/core/agent/agent-harness.ts` | The runtime loop around the model (extends AI SDK's `ToolLoopAgent`). Orchestrates collaborators: `ContextManager`, `UsageTracker`, `ToolRegistry`, plus plugin dispatch. New responsibilities go to a collaborator, not onto this class. |
-| **The agent** | `VibeAgent` (`createVibeAgent`) | `src/core/agent/vibe-agent.ts` | Batteries-included `AgentHarness` subclass with all default plugins + sub-agents. This is the thing you talk to. |
+| **The owned loop** | `runAgentLoop` + `streamModelStep` | `src/core/loop.ts`, `src/core/llm.ts` | The agent loop we own (modeled on earendil-works/pi). A pure outer/inner loop; each step is ONE `streamText` call with `stopWhen: stepCountIs(1)` (the SDK does that step's model call + tool execution through our wrapped `execute`; we own prune, plugin fan-out, stop conditions, halt, steering). |
+| **The agent** | `VibesAgent` | `src/core/agent.ts` | Implements the AI SDK `Agent` (`version: 'agent-v1'`) contract on the owned loop. Orchestrates collaborators: `ContextManager`, `UsageTracker`, `ToolRegistry`, plus plugin dispatch. New responsibilities go to a collaborator, not onto this class. Use `asAgent()` for the SDK `Agent` type. |
+| **The flagship** | `VibeAgent` (`createVibeAgent`) | `src/core/agent/vibe-agent.ts` | Batteries-included `VibesAgent` subclass with all default plugins + sub-agents. This is the thing you talk to. |
 | **The runtime / front door** | `AgentRuntime` / `createRuntime` / `defineAgent` / `Session` | `src/core/runtime.ts` | NOT a harness — the app-level manager that builds & caches per-session agents and owns workspaces. Flue-like: declare → build → `session.prompt({ result })`. |
 
-`AgentHarness` (in `src/core/agent/agent-harness.ts`) provides:
+`VibesAgent` (in `src/core/agent.ts`) provides:
 
+- **Owned loop** - We drive iteration (`runAgentLoop`), not the SDK; `streamText` is only the single-step primitive
 - **Plugin system** - Extensible capabilities via modular plugins
 - **Restorable compression** - Large content replaced with file/path references
 - **Error preservation** - Errors tracked separately, never summarized
-- **KV-cache awareness** - Stable prompt prefix for cache optimization
+- **KV-cache awareness** - Stable prompt prefix (assembled once per run) for cache optimization
 - **Sandbox** - Filesystem + shell go through a `Sandbox` (`src/core/sandbox.ts`); the default `LocalSandbox` is Node-portable and path-contained
 
 ### Plugin System (not middleware!)
@@ -63,14 +65,14 @@ Plugins (in `packages/harness-vibes/src/plugins/`) provide tools and lifecycle h
 | `PlanningPlugin` | Task management with persistence, plan save/load |
 | `SubAgentPlugin` | Delegation to sub-agents (`task`/`delegate`/`parallel_delegate`) + runtime agent deployment (`create_agent`/`spawn_agent`/`list_agents`) |
 | `SkillsPlugin` | Skill management and discovery |
-| `ClarificationPlugin` | `ask_user` — streams a `data-clarification` questionnaire (single / multi w/ min–max / boolean / number / text questions, optional, with auto write-in) rendered as a form above the composer; the agent halts (`stopWhen: hasToolCall('ask_user')`) until the user's answers arrive as the next message |
+| `ClarificationPlugin` | `ask_user` — streams a `data-clarification` questionnaire (single / multi w/ min–max / boolean / number / text questions, optional, with auto write-in) rendered as a form above the composer; the agent halts (via the loop's `haltOnToolCall: ['ask_user']`) until the user's answers arrive as the next message |
 | `MemoryPlugin` | Working memory: a scratchpad (always in-prompt) + a searchable long-term note store (`remember`/`recall`/`update_memory`/`forget`/`list_memories`); injects a compact index, not full content |
 | `FilesystemPlugin` | File read/write operations |
 | `BashPlugin` | Shell command execution |
 | `ArtifactPlugin` | Renderable artifacts (HTML sites, markdown docs, mermaid diagrams, charts) streamed to the web canvas panel and saved to `artifacts/` in the sandbox |
 
 **Plugin hooks** (defined in `src/core/types.ts`):
-- `prepareStep` - Modify settings before each model call
+- `prepareTurn` - Modify settings before each model call (the owned loop's per-turn hook; `prepareStep` is still accepted as a legacy alias)
 - `modifySystemPrompt` - Extend the system prompt
 - `onStreamReady` - Receive writer for real-time UI updates
 - `onStreamFinish` - Handle stream completion
@@ -138,6 +140,6 @@ SKILLS_DIR=./skills        # Skills directory
 ## Important Notes
 
 - The project uses **Bun** as the JavaScript runtime
-- **AI SDK v6** is the foundation - familiarize yourself with `ToolLoopAgent`, `useChat`, and streaming patterns
+- **AI SDK v7** is the foundation - we own the agent loop (`runAgentLoop` in `src/core/loop.ts`) and use `streamText` as the single-step primitive; familiarize yourself with `streamText`, `useChat`, the `Agent` (`agent-v1`) interface, and streaming patterns
 - Plugins were formerly called "middleware" - you may see old terminology in some files
 - The `workspace/` directory contains runtime data (SQLite DB, plans, lessons, patterns)
