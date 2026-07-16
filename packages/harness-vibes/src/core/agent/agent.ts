@@ -33,13 +33,13 @@ import { resolveLoopStops, loopBreaches, type LoopDetectionConfig } from './loop
 import { classifyComplexity, reasoningProviderOptions, type AdaptiveReasoningConfig } from './reasoning';
 import {
     createPluginStreamContext,
-    type AgentHarnessConfig,
+    type VibesAgentConfig,
     type AgentState,
     type ErrorEntry,
     type Plugin,
     type PluginStreamContext,
 } from '../types';
-import type { VibesPlugin, PrepareTurnResult } from './plugin-api';
+import type { VibesPlugin } from './plugin-api';
 import type { LoopStep, ModelStreamPart, StepUsage, StopPredicate, StopReason } from './loop-events';
 import { runAgentLoop, type ResolvedTurn } from './loop';
 import { streamModelStep } from './llm';
@@ -48,21 +48,9 @@ import { createUIChunkAdapter } from './ui-stream';
 
 const ZERO_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 
-/** Configuration for a {@link VibesAgent}. Mirrors {@link AgentHarnessConfig}. */
-export interface VibesAgentConfig extends AgentHarnessConfig {
-    /** Optional stable agent id (surfaced as `Agent.id`). */
-    id?: string;
-    /**
-     * Tool names that halt the run after their step executes. The tool still
-     * runs (streaming its questionnaire / review), then control returns to the
-     * user. Replaces the old `stopWhen: hasToolCall(...)` pattern.
-     */
-    haltOnToolCall?: string[];
-    /** Steering messages to inject before the next turn (polled between turns). */
-    getSteeringMessages?: () => Promise<ModelMessage[]> | ModelMessage[];
-    /** Follow-up messages to run after the agent would otherwise stop. */
-    getFollowUpMessages?: () => Promise<ModelMessage[]> | ModelMessage[];
-}
+// The config type lives in ../types (VibesAgentConfig); re-exported so callers
+// importing from the agent module keep working.
+export type { VibesAgentConfig };
 
 /** Non-streaming result. The subset {@link Session.prompt} + the /vibe route read. */
 export interface VibesGenerateResult {
@@ -72,7 +60,6 @@ export interface VibesGenerateResult {
     totalUsage: TokenUsage;
     response: { messages: ModelMessage[] };
     state: AgentState;
-    toolErrors?: unknown[];
     stopReason: StopReason;
 }
 
@@ -90,8 +77,6 @@ export interface VibesStreamResult {
     readonly steps: Promise<LoopStep[]>;
     /** Raw model stream parts (SubAgentPlugin forwards these live). */
     readonly fullStream: ReadableStream<ModelStreamPart>;
-    /** Drain to run completion without consuming the UI stream. */
-    consumeStream(): Promise<void>;
 }
 
 interface Deferred<T> {
@@ -137,9 +122,6 @@ export class VibesAgent {
     protected retriesUsed = 0;
     protected lastContextEstimate = 0;
 
-    private readonly getSteeringMessages?: () => Promise<ModelMessage[]> | ModelMessage[];
-    private readonly getFollowUpMessages?: () => Promise<ModelMessage[]> | ModelMessage[];
-
     protected get contextWindow(): number { return this.context.contextWindow; }
     protected get contextCompressionRatio(): number { return this.context.compressionRatio; }
 
@@ -162,8 +144,6 @@ export class VibesAgent {
         this.telemetry = config.enableTelemetry
             ? { isEnabled: true, functionId: config.name ?? 'vibe-agent' }
             : undefined;
-        this.getSteeringMessages = config.getSteeringMessages;
-        this.getFollowUpMessages = config.getFollowUpMessages;
 
         this.context = new ContextManager({
             contextWindow: config.contextWindow,
@@ -239,8 +219,7 @@ export class VibesAgent {
         this.activeStreamContext = streamContext;
         if (streamContext) {
             for (const plugin of this.plugins) {
-                if (plugin.onStreamContextReady) plugin.onStreamContextReady(streamContext);
-                else if (plugin.onStreamReady) plugin.onStreamReady(streamContext.rawWriter);
+                plugin.onStreamContextReady?.(streamContext);
             }
         }
 
@@ -269,13 +248,10 @@ export class VibesAgent {
                     haltOnToolCall: this.haltOnToolCall,
                     telemetry: this.telemetry,
                     abortSignal,
-                    emit: () => { },
                     transformContext: (m) => this.pruneMessages(m),
                     prepareTurn: this.makePrepareTurn(instructions),
                     onStepFinish: (s) => this.recordStepUsage(s),
                     onModelPart: (part) => { ui.handlePart(part); fullController?.enqueue(part); },
-                    getSteeringMessages: this.getSteeringMessages,
-                    getFollowUpMessages: this.getFollowUpMessages,
                 }, streamModelStep);
 
                 await this.runStreamFinishHooks(result.text, result.responseMessages, result.steps);
@@ -305,7 +281,6 @@ export class VibesAgent {
             text: textD.promise,
             steps: stepsD.promise,
             fullStream,
-            consumeStream: () => responseD.promise.then(() => undefined),
         };
     }
 
@@ -334,17 +309,13 @@ export class VibesAgent {
             haltOnToolCall: this.haltOnToolCall,
             telemetry: this.telemetry,
             abortSignal,
-            emit: () => { },
             transformContext: (m) => this.pruneMessages(m),
             prepareTurn: this.makePrepareTurn(instructions),
             onStepFinish: (s) => this.recordStepUsage(s),
-            getSteeringMessages: this.getSteeringMessages,
-            getFollowUpMessages: this.getFollowUpMessages,
         }, streamModelStep);
 
         this.usage.consume(); // reset the per-run tally
         const usage = sumUsage(result.steps);
-        const toolErrors = collectToolErrors(result.steps);
         return {
             text: result.text,
             steps: result.steps,
@@ -352,7 +323,6 @@ export class VibesAgent {
             totalUsage: usage,
             response: { messages: result.responseMessages },
             state: { messages: result.responseMessages, metadata: { usage } },
-            ...(toolErrors.length ? { toolErrors } : {}),
             stopReason: result.stopReason,
         };
     }
@@ -433,8 +403,8 @@ export class VibesAgent {
 
     /**
      * Build the per-turn resolver: overlay recent errors, write the pre-call
-     * gauge, fan out to plugin `prepareTurn`/`prepareStep` and merge, then apply
-     * the model override + adaptive reasoning. Ports `prepareStepOverride`.
+     * gauge, fan out to each plugin`s `prepareTurn` and merge, then apply the
+     * model override + adaptive reasoning.
      */
     protected makePrepareTurn(baseInstructions: string) {
         return async (opts: {
@@ -461,7 +431,7 @@ export class VibesAgent {
             let activeToolsSet: Set<string> | undefined;
 
             for (const plugin of this.plugins) {
-                const res = await this.callPluginPrepare(plugin, {
+                const res = await plugin.prepareTurn?.({
                     steps: opts.steps,
                     stepNumber: opts.stepNumber,
                     model: mergedModel,
@@ -494,18 +464,6 @@ export class VibesAgent {
                 ...(providerOptions ? { providerOptions } : {}),
             };
         };
-    }
-
-    /** Call a plugin's per-turn hook (prepareTurn preferred, prepareStep during migration). */
-    private async callPluginPrepare(
-        plugin: VibesPlugin,
-        opts: { steps: LoopStep[]; stepNumber: number; model: LanguageModel; messages: ModelMessage[]; system: string },
-    ): Promise<PrepareTurnResult | void> {
-        if (plugin.prepareTurn) return plugin.prepareTurn(opts);
-        if (plugin.prepareStep) {
-            return (await plugin.prepareStep(opts)) as PrepareTurnResult | void;
-        }
-        return undefined;
     }
 
     protected resolveReasoningEffort(messages: ModelMessage[]): Record<string, unknown> | undefined {
@@ -594,21 +552,6 @@ function sumUsage(steps: LoopStep[]): TokenUsage {
         totalTokens += u?.totalTokens ?? (u?.inputTokens ?? 0) + (u?.outputTokens ?? 0);
     }
     return { inputTokens, outputTokens, totalTokens: totalTokens || inputTokens + outputTokens };
-}
-
-/** Collect tool-result messages whose output is an error (for generate's toolErrors). */
-function collectToolErrors(steps: LoopStep[]): unknown[] {
-    const errors: unknown[] = [];
-    for (const step of steps) {
-        for (const msg of step.responseMessages) {
-            if (msg.role !== 'tool' || !Array.isArray(msg.content)) continue;
-            for (const part of msg.content) {
-                const output = (part as { output?: { type?: string } }).output;
-                if (output?.type && output.type.startsWith('error')) errors.push(part);
-            }
-        }
-    }
-    return errors;
 }
 
 // Compile-time guard: VibesAgent structurally satisfies the parts of the AI SDK

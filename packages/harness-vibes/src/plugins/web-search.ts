@@ -1,10 +1,9 @@
-import { tool, type UIMessageStreamWriter } from "ai";
+import { tool } from "ai";
 import z from "zod";
 import {
     VibesUIMessage,
     Plugin,
     PluginStreamContext,
-    createDataStreamWriter,
     type DataStreamWriter,
 } from "../core/types";
 
@@ -196,11 +195,6 @@ export default class WebSearchPlugin implements Plugin {
     onStreamContextReady(context: PluginStreamContext) {
         this.streamContext = context;
         this.writer = context.writer.withDefaults({ plugin: this.name });
-    }
-
-    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.streamContext = undefined;
-        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     get tools(): Record<string, import("ai").Tool> {

@@ -251,7 +251,7 @@ describe('Plugin streaming', () => {
         ],
       });
 
-      const result = await plugin.prepareStep({
+      const result = await plugin.prepareTurn({
         steps: [],
         stepNumber: 0,
         model: {} as any,
@@ -285,7 +285,7 @@ describe('Plugin streaming', () => {
 
     // Small conversation → under threshold → no compression. The live gauge is
     // now emitted by AgentHarness from real provider tokens, not this plugin.
-    await (plugin.prepareStep as any)({ steps: [], stepNumber: 0, model, messages: [{ role: 'user', content: 'hi' }] });
+    await (plugin.prepareTurn as any)({ steps: [], stepNumber: 0, model, messages: [{ role: 'user', content: 'hi' }] });
     expect(parts.some((p) => p.type === 'data-summarization')).toBe(false);
     expect(parts.some((p) => p.type === 'data-context_usage')).toBe(false);
 
@@ -294,7 +294,7 @@ describe('Plugin streaming', () => {
       role: i % 2 ? 'assistant' : 'user',
       content: 'x'.repeat(400),
     }));
-    const result: any = await (plugin.prepareStep as any)({ steps: [], stepNumber: 1, model, messages: big });
+    const result: any = await (plugin.prepareTurn as any)({ steps: [], stepNumber: 1, model, messages: big });
     expect(parts.some((p) => p.type === 'data-summarization' && p.data.stage === 'complete')).toBe(true);
     // result prepends a summary system message, keeps a verbatim tail
     expect(result?.messages?.[0]?.role).toBe('system');
@@ -324,7 +324,7 @@ describe('Plugin streaming', () => {
       { role: 'assistant', content: [{ type: 'tool-call', toolName: 'bash', input: { command: 'cat big.txt' } }] },
       { role: 'tool', content: [{ type: 'tool-result', toolName: 'bash', output: { type: 'text', value: heavyToolOutput } }] },
     ];
-    const result: any = await (plugin.prepareStep as any)({ steps: [], stepNumber: 0, model, messages });
+    const result: any = await (plugin.prepareTurn as any)({ steps: [], stepNumber: 0, model, messages });
     // ~4000+ chars / 4 ≈ 1000+ tok > 700 → compression must trigger.
     expect(result?.messages?.[0]?.role).toBe('system');
   });

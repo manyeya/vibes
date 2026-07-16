@@ -1,6 +1,5 @@
 import {
     tool,
-    type UIMessageStreamWriter,
     generateObject,
     type LanguageModel,
 } from 'ai';
@@ -14,7 +13,6 @@ import {
     PluginStreamContext,
     TaskItem,
     TaskType,
-    createDataStreamWriter,
     type DataStreamWriter,
 } from '../core/types';
 
@@ -82,11 +80,6 @@ export default class TasksPlugin implements Plugin {
     onStreamContextReady(context: PluginStreamContext) {
         this.streamContext = context;
         this.writer = context.writer.withDefaults({ plugin: this.name });
-    }
-
-    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.streamContext = undefined;
-        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     protected createOperation(name: string, toolName: string) {

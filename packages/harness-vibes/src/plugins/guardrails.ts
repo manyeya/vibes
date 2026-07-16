@@ -1,9 +1,9 @@
 import type { ModelMessage } from 'ai';
 import {
-    Plugin,
     PluginStreamContext,
     type DataStreamWriter,
 } from '../core/types';
+import type { VibesPlugin } from '../core/agent/plugin-api';
 import { redactString } from '../core/redact';
 
 export type GuardrailStage = 'input' | 'output';
@@ -81,13 +81,13 @@ function withText(message: ModelMessage, text: string): ModelMessage {
 
 /**
  * Input/output content guardrails (pydantic-ai-shields parity). Input guardrails
- * run before the first model call via `prepareStep` and can block (throw) or
- * redact (rewrite the message — a supported v7 `prepareStep` message override).
+ * run before the first model call via `prepareTurn` and can block (throw) or
+ * redact (rewrite the message — a supported v7 `prepareTurn` message override).
  * Output guardrails run after the run completes via `onStreamFinish` and flag
  * violations as a notice (the text is already streamed, so this is post-hoc —
  * see ponytail note below).
  */
-export default class GuardrailsPlugin implements Plugin {
+export default class GuardrailsPlugin implements VibesPlugin {
     name = 'GuardrailsPlugin';
     private writer?: DataStreamWriter;
     private inputGuards: Guardrail[];
@@ -107,7 +107,7 @@ export default class GuardrailsPlugin implements Plugin {
     }
 
     /** Input guardrails: gate the fresh user turn (step 0) only. */
-    async prepareStep(options: { stepNumber: number; messages: ModelMessage[] }) {
+    async prepareTurn(options: { stepNumber: number; messages: ModelMessage[] }) {
         if (options.stepNumber !== 0 || this.inputGuards.length === 0) return;
         const messages = options.messages;
         // The user's turn is the last user message in the list.

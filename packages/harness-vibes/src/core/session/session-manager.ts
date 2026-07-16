@@ -24,7 +24,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { stat, mkdir, rm } from 'fs/promises';
 import { VibesAgent } from '../agent/agent';
-import type { AgentHarnessConfig, AgentState } from '../types';
+import type { VibesAgentConfig, AgentState } from '../types';
 import type { Sandbox } from '../sandbox';
 import { LocalSandbox } from '../../sandbox/local-sandbox';
 import type StateBackend from '../../storage/state-backend';
@@ -90,7 +90,7 @@ export interface SessionConfig {
 /**
  * Agent creation configuration for a session
  */
-export interface SessionAgentConfig extends Partial<AgentHarnessConfig> {
+export interface SessionAgentConfig extends Partial<VibesAgentConfig> {
     /** Workspace directory (will be set to session workspace) */
     workspaceDir?: string;
 }
@@ -342,7 +342,7 @@ export class SessionStore {
         workspaceDir: string,
         stateDir: string = workspaceDir,
         sharedDir?: string
-    ): AgentHarnessConfig {
+    ): VibesAgentConfig {
         const baseConfig = this.defaultAgentConfig || {};
 
         // Sandbox-rooted file/shell work uses workspaceDir; per-session plugin
@@ -355,7 +355,7 @@ export class SessionStore {
             ...(sharedDir ? { sharedDir } : {}),
             // Session ID is passed through metadata for plugins to use
             sessionId,
-        } as AgentHarnessConfig;
+        } as VibesAgentConfig;
     }
 
     /**

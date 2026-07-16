@@ -42,7 +42,7 @@ interface AgentStreamOptions {
  *
  * This follows the same pattern as the working /vibe/stream endpoint:
  * 1. Creates a UI message stream with execute function that receives writer
- * 2. Calls agent.stream() with the writer (triggers plugin onStreamReady hooks)
+ * 2. Calls agent.stream() with the writer (triggers plugin onStreamContextReady hooks)
  * 3. Uses writer.merge(result.toUIMessageStream()) to properly forward the agent's response
  * 4. Saves messages to backend after streaming completes
  *
@@ -102,7 +102,7 @@ export async function createAgentStreamResponse(
         },
         async execute({ writer }) {
             // Call the agent's stream method with the writer
-            // The agent will call plugin onStreamReady hooks with this writer
+            // The agent wires the writer into each plugin via onStreamContextReady
             const result = await agent.stream({
                 messages: uiMessages,
                 writer,

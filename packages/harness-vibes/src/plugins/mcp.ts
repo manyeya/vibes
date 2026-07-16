@@ -2,10 +2,8 @@ import {
     Plugin,
     PluginStreamContext,
     VibesUIMessage,
-    createDataStreamWriter,
     type DataStreamWriter,
 } from '../core/types';
-import type { UIMessageStreamWriter } from 'ai';
 
 /**
  * MCP client types from @ai-sdk/mcp
@@ -47,11 +45,6 @@ export class McpPlugin implements Plugin {
     onStreamContextReady(context: PluginStreamContext) {
         this.streamContext = context;
         this.writer = context.writer.withDefaults({ plugin: this.name });
-    }
-
-    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.streamContext = undefined;
-        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     async waitReady() {

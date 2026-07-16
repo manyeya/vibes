@@ -1,11 +1,10 @@
-import { tool, type UIMessageStreamWriter } from "ai";
+import { tool } from "ai";
 import z from "zod";
 import * as path from "path";
 import {
     VibesUIMessage,
     Plugin,
     PluginStreamContext,
-    createDataStreamWriter,
     type DataStreamWriter,
 } from "../core/types";
 import { type Sandbox } from "../core/sandbox";
@@ -193,11 +192,6 @@ export default class ArtifactPlugin implements Plugin {
     onStreamContextReady(context: PluginStreamContext) {
         this.streamContext = context;
         this.writer = context.writer.withDefaults({ plugin: this.name });
-    }
-
-    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.streamContext = undefined;
-        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     private artifactPath(id: string, kind: ArtifactKind): string {

@@ -1,6 +1,5 @@
 import {
     tool,
-    type UIMessageStreamWriter,
     type LanguageModel,
     generateObject,
 } from 'ai';
@@ -11,13 +10,12 @@ import TasksPlugin from './tasks';
 import {
     VibesUIMessage,
     TaskItem,
-    Plugin,
     PluginStreamContext,
     TaskType,
-    createDataStreamWriter,
     type DataStreamWriter,
     type ModelMessage,
 } from '../core/types';
+import type { VibesPlugin } from '../core/agent/plugin-api';
 
 /** Tool that pauses the run to put the plan in front of the user for approval. */
 export const PLAN_REVIEW_TOOL_NAME = 'request_plan_review';
@@ -103,7 +101,7 @@ const plannedTasksSchema = z.object({
  * - Hierarchical decomposition: Parent-child task relationships
  * - Smart recitation: Format plan for readability and focus
  */
-export class PlanningPlugin implements Plugin {
+export class PlanningPlugin implements VibesPlugin {
     name = 'PlanningPlugin';
     private writer?: DataStreamWriter;
     private streamContext?: PluginStreamContext;
@@ -138,13 +136,6 @@ export class PlanningPlugin implements Plugin {
         this.streamContext = context;
         this.writer = context.writer.withDefaults({ plugin: this.name });
         this.tasksPlugin.onStreamContextReady?.(context);
-    }
-
-    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.streamContext = undefined;
-        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
-        // Also forward to tasks plugin
-        this.tasksPlugin.onStreamReady(writer);
     }
 
     private createOperation(name: string, toolName: string) {
@@ -186,13 +177,12 @@ For a quick, low-stakes checklist, \`generate_tasks\` (above) is fine without a 
     /**
      * Hook before each step to refresh task cache for recitation.
      */
-    async prepareStep(_options: {
+    async prepareTurn(_options: {
         steps: any[];
         stepNumber: number;
         model: LanguageModel;
         messages: ModelMessage[];
         system?: string;
-        experimental_context?: unknown;
     }): Promise<{ system?: string } | void> {
         await this.refreshRecitationCache();
         if (this.lastRecitedTasks.length === 0) return;

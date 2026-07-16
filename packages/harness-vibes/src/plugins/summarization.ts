@@ -1,11 +1,10 @@
-import { generateText, type LanguageModel, type ModelMessage, type UIMessageStreamWriter } from 'ai';
+import { generateText, type LanguageModel, type ModelMessage } from 'ai';
 import {
-    Plugin,
     PluginStreamContext,
-    createDataStreamWriter,
     type DataStreamWriter,
     type VibesUIMessage,
 } from '../core/types';
+import type { VibesPlugin } from '../core/agent/plugin-api';
 
 export interface SummarizationConfig {
     /** Model context window in tokens (default 128000). */
@@ -38,7 +37,7 @@ const DEFAULT_PER_MESSAGE_CAP = 1200;
 const WARN_RATIO = 0.85;
 
 /**
- * Rolling-summary plugin (token-based). Hooks `prepareStep`, emits a live
+ * Rolling-summary plugin (token-based). Hooks `prepareTurn`, emits a live
  * context-usage gauge every step, and once the conversation's estimated tokens
  * pass `contextWindow * compressionRatio` (default 70%), summarises the oldest
  * messages into a synthetic system message prepended to the recent tail. The
@@ -49,7 +48,7 @@ const WARN_RATIO = 0.85;
  * window — so this token-based summarisation is the primary mechanism and short
  * conversations are never trimmed by message count.
  */
-export default class SummarizationPlugin implements Plugin {
+export default class SummarizationPlugin implements VibesPlugin {
     name = 'SummarizationPlugin';
 
     private currentSummary = '';
@@ -92,17 +91,12 @@ export default class SummarizationPlugin implements Plugin {
         this.writer = context.writer.withDefaults({ plugin: this.name });
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
-    }
-
-    async prepareStep(options: {
+    async prepareTurn(options: {
         steps: any[];
         stepNumber: number;
         model: LanguageModel;
         messages: ModelMessage[];
         system?: string;
-        experimental_context?: unknown;
     }) {
         const messages = options.messages;
         // Estimate from the message list PLUS the system prompt to decide whether

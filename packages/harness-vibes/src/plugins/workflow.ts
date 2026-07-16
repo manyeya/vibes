@@ -1,4 +1,4 @@
-import { tool, type LanguageModel, type UIMessageStreamWriter } from 'ai';
+import { tool, type LanguageModel } from 'ai';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { z } from 'zod';
@@ -6,7 +6,6 @@ import {
     Plugin,
     PluginStreamContext,
     VibesUIMessage,
-    createDataStreamWriter,
     type DataStreamWriter,
 } from '../core/types';
 import {
@@ -280,11 +279,6 @@ export default class WorkflowPlugin implements Plugin {
     onStreamContextReady(context: PluginStreamContext) {
         this.streamContext = context;
         this.writer = context.writer.withDefaults({ plugin: this.name });
-    }
-
-    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.streamContext = undefined;
-        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     async waitReady() {

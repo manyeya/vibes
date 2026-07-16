@@ -1,9 +1,8 @@
-import { tool, type UIMessageStreamWriter } from "ai";
+import { tool } from "ai";
 import {
     Plugin,
     PluginStreamContext,
     VibesUIMessage,
-    createDataStreamWriter,
     type DataStreamWriter,
 } from "../core/types";
 import * as fs from "fs/promises";
@@ -55,11 +54,6 @@ export default class MemoryPlugin implements Plugin {
     onStreamContextReady(context: PluginStreamContext) {
         this.streamContext = context;
         this.writer = context.writer.withDefaults({ plugin: this.name });
-    }
-
-    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.streamContext = undefined;
-        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     async waitReady() {

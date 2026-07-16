@@ -22,7 +22,7 @@ const step = (messages: ModelMessage[], system?: string) => ({
 describe('SummarizationPlugin trigger', () => {
   test('leaves a short conversation untouched (no compaction)', async () => {
     const p = new SummarizationPlugin(mockModel() as any, { contextWindow: 1000, compressionRatio: 0.7 });
-    const res = await p.prepareStep(step([{ role: 'user', content: 'hi' }]));
+    const res = await p.prepareTurn(step([{ role: 'user', content: 'hi' }]));
     expect(res).toBeUndefined();
   });
 
@@ -30,7 +30,7 @@ describe('SummarizationPlugin trigger', () => {
     // compressAt = 1000 * 0.7 = 700 tokens (~2800 chars).
     const p = new SummarizationPlugin(mockModel() as any, { contextWindow: 1000, compressionRatio: 0.7 });
     const messages: ModelMessage[] = Array.from({ length: 8 }, () => ({ role: 'user', content: 'x'.repeat(600) }));
-    const res = await p.prepareStep(step(messages));
+    const res = await p.prepareTurn(step(messages));
     expect(res?.messages?.[0]?.role).toBe('system');
     expect(String(res?.messages?.[0]?.content)).toContain('SUMMARY-OF-OLD-TURNS');
     // It actually shrank the turn count (older turns folded into the summary).
@@ -42,12 +42,12 @@ describe('SummarizationPlugin trigger', () => {
     const p = new SummarizationPlugin(mockModel() as any, { contextWindow: 1000, compressionRatio: 0.7 });
     const messages: ModelMessage[] = Array.from({ length: 6 }, () => ({ role: 'user', content: 'x'.repeat(330) }));
 
-    const withoutSystem = await p.prepareStep(step(messages));
+    const withoutSystem = await p.prepareTurn(step(messages));
     expect(withoutSystem).toBeUndefined(); // not over threshold yet
 
     // …but a big system prompt (~2000 chars ≈ 500 tok) pushes it over → compacts.
     const p2 = new SummarizationPlugin(mockModel() as any, { contextWindow: 1000, compressionRatio: 0.7 });
-    const withSystem = await p2.prepareStep(step(messages, 'S'.repeat(2000)));
+    const withSystem = await p2.prepareTurn(step(messages, 'S'.repeat(2000)));
     // A limit-warning system message may precede the summary once the effective
     // payload is this tight, so find the summary rather than assuming index 0.
     const summary = withSystem?.messages?.find((m) => String(m.content).includes('SUMMARY-OF-OLD-TURNS'));

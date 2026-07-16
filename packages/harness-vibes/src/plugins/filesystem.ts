@@ -1,9 +1,8 @@
-import { tool, type UIMessageStreamWriter } from "ai";
+import { tool } from "ai";
 import {
     VibesUIMessage,
     Plugin,
     PluginStreamContext,
-    createDataStreamWriter,
     type DataStreamWriter,
 } from "../core/types";
 import z from "zod";
@@ -90,11 +89,6 @@ export default class FilesystemPlugin implements Plugin {
     onStreamContextReady(context: PluginStreamContext) {
         this.streamContext = context;
         this.writer = context.writer.withDefaults({ plugin: this.name });
-    }
-
-    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.streamContext = undefined;
-        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     /**

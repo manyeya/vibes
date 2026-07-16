@@ -1,12 +1,11 @@
 /**
  * The VibesPlugin API for the owned loop.
  *
- * This is the old {@link Plugin} contract with `prepareStep` renamed to
- * `prepareTurn` (same shape, clearer name now that WE own the turn). During
- * migration `VibesPlugin` EXTENDS `Plugin`, so every existing plugin already
- * satisfies it, and the agent fans out to `prepareTurn ?? prepareStep`. Leaf
- * plugins are ported to `prepareTurn` in Phase 2; the `prepareStep` alias and
- * the deprecated `onStreamReady` hook are removed in Phase 5.
+ * `VibesPlugin` EXTENDS the base {@link Plugin} contract (name, tools,
+ * modifySystemPrompt, stream/error hooks) with `prepareTurn` — the per-turn
+ * hook the agent fans out to before each model call. A plugin that needs to
+ * influence a turn implements `VibesPlugin`; a plugin that only contributes
+ * tools / a prompt section can implement the base `Plugin`.
  */
 
 import type { LanguageModel, ModelMessage } from 'ai';
@@ -39,15 +38,12 @@ export interface PrepareTurnResult {
 }
 
 /**
- * A plugin for the owned loop. Extends the legacy {@link Plugin} so existing
- * plugins are valid VibesPlugins unchanged; `prepareTurn` is the going-forward
- * per-turn hook that supersedes `prepareStep`.
+ * A plugin for the owned loop: the base {@link Plugin} plus `prepareTurn`.
  */
 export interface VibesPlugin extends Plugin {
     /**
      * Modify settings before a turn's model call (prune already applied). Return
-     * void for side effects, or overrides the agent merges. Supersedes the
-     * legacy `prepareStep`; the agent accepts either during migration.
+     * void for side effects, or the overrides the agent merges across plugins.
      */
     prepareTurn?: (
         options: PrepareTurnOptions,

@@ -32,13 +32,13 @@ describe('GuardrailsPlugin', () => {
         };
         const plugin = new GuardrailsPlugin({ guardrails: [block], maskSecrets: false });
         await expect(
-            plugin.prepareStep({ stepNumber: 0, messages: [userMsg('do the thing')] as any }),
+            plugin.prepareTurn({ stepNumber: 0, messages: [userMsg('do the thing')] as any }),
         ).rejects.toBeInstanceOf(GuardrailError);
     });
 
     test('input redact guardrail rewrites the user message', async () => {
         const plugin = new GuardrailsPlugin({ maskSecrets: true }); // built-in secret-mask
-        const result: any = await plugin.prepareStep({
+        const result: any = await plugin.prepareTurn({
             stepNumber: 0,
             messages: [userMsg('my token is sk-ABCDEF0123456789ABCD ok')] as any,
         });
@@ -50,7 +50,7 @@ describe('GuardrailsPlugin', () => {
 
     test('does not gate later steps (input runs at step 0 only)', async () => {
         const plugin = new GuardrailsPlugin({ maskSecrets: true });
-        const result = await plugin.prepareStep({
+        const result = await plugin.prepareTurn({
             stepNumber: 3,
             messages: [userMsg('sk-ABCDEF0123456789ABCD')] as any,
         });
@@ -59,7 +59,7 @@ describe('GuardrailsPlugin', () => {
 
     test('clean input passes through untouched', async () => {
         const plugin = new GuardrailsPlugin({ maskSecrets: true });
-        const result = await plugin.prepareStep({
+        const result = await plugin.prepareTurn({
             stepNumber: 0,
             messages: [userMsg('please refactor the parser')] as any,
         });

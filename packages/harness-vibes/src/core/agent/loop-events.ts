@@ -1,9 +1,9 @@
 /**
- * The owned loop's lifecycle events + stop-condition contract.
+ * The owned loop's step + stop-condition contract.
  *
  * Split out from the UI data-part catalog (`../events.ts`) so the loop, the
- * LLM step, the UI adapter, and the agent share one definition of a step / an
- * event / a stop predicate without pulling in the streaming-facing types.
+ * LLM step, the UI adapter, and the agent share one definition of a step and a
+ * stop predicate without pulling in the streaming-facing types.
  *
  * Only type-only imports from `ai` are allowed here (erased at runtime).
  */
@@ -62,21 +62,6 @@ export type StopReason =
     | 'aborted'
     /** The model step errored. */
     | 'error';
-
-/**
- * Loop lifecycle events, pushed to an {@link EventSink}. Raw model stream parts
- * are NOT emitted here — they go through the loop's `onModelPart` config hook so
- * the agent can fan them out to the UI-stream adapter and the sub-agent
- * `fullStream` without buffering them in event objects.
- */
-export type AgentEvent =
-    | { type: 'agent_start' }
-    | { type: 'step_start'; stepIndex: number }
-    | { type: 'step_end'; stepIndex: number; step: LoopStep }
-    | { type: 'agent_end'; stopReason: StopReason; steps: LoopStep[] }
-    | { type: 'error'; error: unknown };
-
-export type EventSink = (event: AgentEvent) => void;
 
 /** Re-exported for modules that build/forward raw model parts. */
 export type ModelStreamPart = TextStreamPart<ToolSet>;

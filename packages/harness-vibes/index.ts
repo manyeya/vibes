@@ -69,7 +69,6 @@ import { connectStore, type StoreConnection, type ConnectOptions } from './src/s
 export type { SessionInfo, WorkspaceInfo, StreamChunk, StreamMeta, LatestStream } from './src/storage/state-backend';
 import {
     type AgentState,
-    type AgentHarnessConfig,
     type SubAgent,
     type TaskItem,
     type TaskTemplate,
@@ -190,7 +189,6 @@ export {
     type ConnectOptions,
     SummarizationPlugin,
     type SummarizationConfig,
-    type AgentHarnessConfig,
     type SubAgent,
     VibesAgent,
     type VibesAgentConfig,

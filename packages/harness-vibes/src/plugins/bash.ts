@@ -1,5 +1,4 @@
 import * as fs from "fs/promises";
-import { type UIMessageStreamWriter } from "ai";
 import {
     createBashTool,
     type BashToolkit,
@@ -11,7 +10,6 @@ import {
     VibesUIMessage,
     Plugin,
     PluginStreamContext,
-    createDataStreamWriter,
     type DataStreamWriter,
 } from "../core/types";
 import { type Sandbox } from "../core/sandbox";
@@ -66,11 +64,6 @@ export default class BashPlugin implements Plugin {
     onStreamContextReady(context: PluginStreamContext) {
         this.streamContext = context;
         this.writer = context.writer.withDefaults({ plugin: this.name });
-    }
-
-    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.streamContext = undefined;
-        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
     }
 
     /**

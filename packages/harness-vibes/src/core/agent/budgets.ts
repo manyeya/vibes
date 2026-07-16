@@ -8,7 +8,7 @@ import type { StopCondition, StepResult, ToolSet } from 'ai';
  *
  * ponytail: stopWhen is evaluated AFTER a step completes, so a budget can
  * overshoot by the tokens/calls of the final step. Acceptable ceiling; if you
- * need a hard pre-call cap, gate it in prepareStep instead.
+ * need a hard pre-call cap, gate it in prepareTurn instead.
  */
 
 /** $ per million tokens, in/out. */

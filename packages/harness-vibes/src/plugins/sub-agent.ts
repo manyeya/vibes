@@ -454,11 +454,6 @@ export default class SubAgentPlugin implements Plugin {
         this.writer = context.writer.withDefaults({ plugin: this.name });
     }
 
-    onStreamReady(writer: UIMessageStreamWriter<VibesUIMessage>) {
-        this.streamContext = undefined;
-        this.writer = createDataStreamWriter(writer).withDefaults({ plugin: this.name });
-    }
-
     /**
      * Receive the parent's context window/ratio (via AgentHarness's fan-out) so
      * delegated sub-agents render their own gauge against the same frame.

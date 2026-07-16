@@ -254,51 +254,11 @@ export interface Plugin {
     tools?: Record<string, any>;
 
     /**
-     * Hook to modify settings for each step (runs before model call).
-     * This receives the AI SDK's prepareStep options and can return modifications.
-     * The options include: steps, stepNumber, model, messages, system, experimental_context
-     *
-     * Can return either:
-     * - void/undefined for side effects only
-     * - An object with modifications (model, toolChoice, activeTools, system, messages, etc.)
+     * Modify settings before a turn's model call. The owned-loop hook lives on
+     * {@link VibesPlugin} (in `agent/plugin-api.ts`) as `prepareTurn`, so it can
+     * type its options against `LoopStep`. Plugins that need it implement
+     * `VibesPlugin`.
      */
-    prepareStep?: (options: {
-        steps: any[];
-        stepNumber: number;
-        model: LanguageModel;
-        messages: ModelMessage[];
-        system?: string | any;
-        experimental_context?: unknown;
-    }) => (
-            | void
-            | undefined
-            | Promise<void | undefined>
-            | {
-                model?: LanguageModel;
-                toolChoice?: any;
-                activeTools?: string[];
-                system?: string | any;
-                messages?: ModelMessage[];
-                experimental_context?: unknown;
-            }
-            | undefined
-            | Promise<{
-                model?: LanguageModel;
-                toolChoice?: any;
-                activeTools?: string[];
-                system?: string | any;
-                messages?: ModelMessage[];
-                experimental_context?: unknown;
-            } | undefined>
-            | Promise<void | {
-                model?: LanguageModel;
-                toolChoice?: any;
-                activeTools?: string[];
-                system?: string | any;
-                messages?: ModelMessage[];
-                experimental_context?: unknown;
-            } | undefined>
-        );
 
     /** Function to modify or extend the system prompt (can be async) */
     modifySystemPrompt?: (prompt: string) => string | Promise<string>;
@@ -318,12 +278,6 @@ export interface Plugin {
     /** Optional hook to receive the full stream context for real-time UI updates */
     onStreamContextReady?: (context: PluginStreamContext) => void;
 
-    /**
-     * Optional hook to receive a raw data stream writer for real-time UI updates.
-     * @deprecated Prefer onStreamContextReady() and DataStreamWriter.
-     */
-    onStreamReady?: (writer: UIMessageStreamWriter<VibesUIMessage>) => void;
-
     /** Optional hook executed when the stream finishes (successful completion) */
     onStreamFinish?: (result: any) => Promise<void>;
 
@@ -333,9 +287,6 @@ export interface Plugin {
      * Plugins can use this to react to tool failures (e.g. error analysis).
      */
     onError?: (error: Error) => void | Promise<void>;
-
-    // REMOVED: beforeModel - use prepareStep instead (AI SDK built-in)
-    // REMOVED: onStepFinish - use ToolLoopAgent.onStepFinish (AI SDK built-in)
 }
 
 /**
@@ -380,9 +331,11 @@ export {
 } from './streaming/streaming.js';
 
 /**
- * Configuration for initializing a AgentHarness instance.
+ * Configuration for initializing a {@link VibesAgent} instance.
  */
-export interface AgentHarnessConfig {
+export interface VibesAgentConfig {
+    /** Optional stable agent id (surfaced as the AI SDK `Agent.id`). */
+    id?: string;
     /** The AI model to use */
     model: LanguageModel;
     /** The base system instructions */
@@ -486,4 +439,10 @@ export interface AgentHarnessConfig {
      * Set false in a fully trusted environment.
      */
     redactToolIO?: boolean;
+    /**
+     * Tool names that halt the run after their step executes. The tool still
+     * runs (streaming its questionnaire / review), then control returns to the
+     * user. Replaces the old `stopWhen: hasToolCall(...)` pattern.
+     */
+    haltOnToolCall?: string[];
 }
