@@ -234,7 +234,7 @@ export class VibesAgent {
         this.retriesUsed = 0;
         const { messages, writer, abortSignal } = options ?? {};
 
-        const modelMessages = messages ? await toModelMessages(messages, () => this.buildTools()) : [];
+        const modelMessages = messages ? await toModelMessages(messages, () => this.getAllTools()) : [];
         const streamContext = writer ? createPluginStreamContext(writer) : undefined;
         this.activeStreamContext = streamContext;
         if (streamContext) {
@@ -245,7 +245,7 @@ export class VibesAgent {
         }
 
         const instructions = await this.assembleInstructions();
-        const tools = await this.buildTools();
+        const tools = await this.getAllTools();
         const ui = createUIChunkAdapter({ messageId: crypto.randomUUID(), tools });
 
         let fullController: ReadableStreamDefaultController<ModelStreamPart> | undefined;
@@ -319,9 +319,9 @@ export class VibesAgent {
         const { messages, abortSignal } = options ?? {};
         this.activeStreamContext = undefined;
 
-        const modelMessages = messages ? await toModelMessages(messages, () => this.buildTools()) : [];
+        const modelMessages = messages ? await toModelMessages(messages, () => this.getAllTools()) : [];
         const instructions = await this.assembleInstructions();
-        const tools = await this.buildTools();
+        const tools = await this.getAllTools();
 
         const result = await runAgentLoop({
             model: this.model,
@@ -360,10 +360,10 @@ export class VibesAgent {
     // ── internals ────────────────────────────────────────────────────────
 
     protected async preloadTools(): Promise<void> {
-        await this.buildTools();
+        await this.getAllTools();
     }
 
-    protected buildTools(allowedTools?: string[]): Promise<ToolSet> {
+    protected getAllTools(allowedTools?: string[]): Promise<ToolSet> {
         return this.toolRegistry.build(
             this.plugins,
             {
@@ -387,6 +387,16 @@ export class VibesAgent {
 
     protected pruneMessages(messages: ModelMessage[]): Promise<ModelMessage[]> {
         return this.context.prune(messages, (t, e, c) => this.logError(t, e, c));
+    }
+
+    /** Restorable compression of large content; errors route to the error log. */
+    protected compressLargeContent(messages: ModelMessage[]): Promise<ModelMessage[]> {
+        return this.context.compressLargeContent(messages, (t, e, c) => this.logError(t, e, c));
+    }
+
+    /** Rough token estimate (chars/4) for a system prompt + message list. */
+    protected estimateContextTokens(system: string, messages: ModelMessage[]): number {
+        return this.context.estimateTokens(system, messages);
     }
 
     /** Assemble the stable system prompt once per run (KV-cache prefix). */

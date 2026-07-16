@@ -487,21 +487,3 @@ export interface AgentHarnessConfig {
      */
     redactToolIO?: boolean;
 }
-
-/**
- * Result returned by AgentHarness.generate()
- * Extends GenerateTextResult with additional agent-specific fields
- */
-export interface AgentHarnessGenerateResult<TOOLS extends ToolSet = ToolSet>
-    extends GenerateTextResult<TOOLS, any, never> {
-    /** The current agent state after generation */
-    state: AgentState;
-    /** Tool errors that occurred during generation (if any) */
-    toolErrors?: Array<unknown>;
-}
-
-/**
- * Result returned by AgentHarness.stream() - same as StreamTextResult from AI SDK
- * Using ToolSet for tool types due to dynamic tool registration
- */
-export type AgentHarnessStreamResult = StreamTextResult<ToolSet, any, never>;

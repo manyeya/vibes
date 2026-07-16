@@ -213,7 +213,7 @@ export function wrapToolExecute(
                     // several tools back off a shared rate limit together).
                     const delay = Math.pow(2, attempt) * 100 + Math.random() * 100;
                     await new Promise(resolve => setTimeout(resolve, delay));
-                    console.warn(`[AgentHarness] Tool ${toolName} failed transiently (attempt ${attempt + 1}/${maxRetries + 1}), retrying...`);
+                    console.warn(`[vibes] Tool ${toolName} failed transiently (attempt ${attempt + 1}/${maxRetries + 1}), retrying...`);
                 }
             }
 
@@ -233,7 +233,7 @@ export function wrapToolExecute(
                 try {
                     await plugin.onError?.(lastError!);
                 } catch (hookError) {
-                    console.error(`[AgentHarness] Plugin onError hook error:`, hookError);
+                    console.error(`[vibes] Plugin onError hook error:`, hookError);
                 }
             }
 

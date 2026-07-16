@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import type { ModelMessage } from 'ai';
-import { AgentHarness } from '../src/core/agent/agent-harness';
+import { VibesAgent } from '../src/core/agent';
 import { createPluginStreamContext } from '../src/core/types';
 import { createCapturingWriter } from './helpers';
 
 // Expose the protected usage helpers.
-class UsageAgent extends AgentHarness {
+class UsageAgent extends VibesAgent {
   setEstimate(n: number) { (this as unknown as { lastContextEstimate: number }).lastContextEstimate = n; }
   record(step: unknown) { (this as unknown as { recordStepUsage(s: unknown): void }).recordStepUsage(step); }
   estimate(system: string, msgs: ModelMessage[]) {

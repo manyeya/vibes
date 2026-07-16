@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { tool } from 'ai';
 import z from 'zod';
-import { AgentHarness } from '../src/core/agent/agent-harness';
+import { VibesAgent } from '../src/core/agent';
 import { createPluginStreamContext } from '../src/core/types';
 import { createCapturingWriter, createTool } from './helpers';
 
-class ExposedVibeAgent extends AgentHarness {
+class ExposedVibeAgent extends VibesAgent {
   async exposeGetAllTools(allowedTools?: string[]) {
     return this.getAllTools(allowedTools);
   }
@@ -14,8 +14,8 @@ class ExposedVibeAgent extends AgentHarness {
     this.activeStreamContext = createPluginStreamContext(createCapturingWriter(parts));
   }
 
-  async exposePrepareCall(instructions: string) {
-    return this.prepareCallOverride({ instructions } as any) as Promise<{ instructions: string }>;
+  async exposePrepareCall(_instructions: string) {
+    return { instructions: await this.assembleInstructions() };
   }
 }
 

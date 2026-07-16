@@ -79,7 +79,7 @@ import {
     createDataStreamWriter,
     DataStreamWriter,
 } from './src/core/types';
-import { AgentHarness } from './src/core/agent/agent-harness';
+import { VibesAgent, type VibesAgentConfig, type VibesGenerateResult, type VibesStreamResult } from './src/core/agent';
 
 export { createAgentStreamResponse } from './src/core/streaming/stream-response';
 export {
@@ -192,5 +192,8 @@ export {
     type SummarizationConfig,
     type AgentHarnessConfig,
     type SubAgent,
-    AgentHarness,
+    VibesAgent,
+    type VibesAgentConfig,
+    type VibesGenerateResult,
+    type VibesStreamResult,
 };

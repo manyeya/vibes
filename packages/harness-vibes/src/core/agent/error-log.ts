@@ -49,7 +49,7 @@ export function recordError(
     }
 
     if (process.env.DEBUG_VIBES) {
-        console.error(`[AgentHarness] Error logged:`, { toolName, error, context });
+        console.error(`[vibes] Error logged:`, { toolName, error, context });
     }
 }
 
