@@ -8,7 +8,7 @@
  * can control the writer and pass it to the agent for plugin hooks.
  */
 
-import type { AgentHarness } from '../agent/agent-harness';
+import type { VibesAgent } from '../agent';
 import type { ModelMessage, UIMessage, ToolSet, UIMessageChunk } from 'ai';
 import type { VibesUIMessage } from './streaming';
 import { createUIMessageStream, createUIMessageStreamResponse, convertToModelMessages } from 'ai';
@@ -16,7 +16,7 @@ import type { AgentState } from '../types';
 import type StateBackend from '../../storage/state-backend';
 
 interface AgentStreamOptions {
-    agent: AgentHarness;
+    agent: VibesAgent;
     uiMessages?: ModelMessage[];
     abortSignal?: AbortSignal;
     originalMessages?: ModelMessage[];
@@ -109,9 +109,11 @@ export async function createAgentStreamResponse(
                 abortSignal,
             });
 
-            // Merge the agent's UI message stream into the writer
-            // This properly converts the StreamTextResult to UI message chunks
-            writer.merge(result.toUIMessageStream());
+            // Merge the agent's UI message stream into the writer. The adapter
+            // emits generically-typed UIMessageChunks; the writer is keyed to
+            // VibesUIMessage, so cast at this boundary (chunks are structurally
+            // the same — only the data-* part typing differs).
+            writer.merge(result.toUIMessageStream() as Parameters<typeof writer.merge>[0]);
 
             // Wait for the response promise to complete (handles final message state)
             const response = await result.response;

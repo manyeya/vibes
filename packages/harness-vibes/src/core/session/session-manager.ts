@@ -23,7 +23,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { stat, mkdir, rm } from 'fs/promises';
-import { AgentHarness } from '../agent/agent-harness';
+import { VibesAgent } from '../agent';
 import type { AgentHarnessConfig, AgentState } from '../types';
 import type { Sandbox } from '../sandbox';
 import { LocalSandbox } from '../../sandbox/local-sandbox';
@@ -61,7 +61,7 @@ export interface SessionContext {
 }
 
 /** Builds the agent instance for a session from its {@link SessionContext}. */
-export type SessionAgentFactory = (ctx: SessionContext) => AgentHarness;
+export type SessionAgentFactory = (ctx: SessionContext) => VibesAgent;
 
 /**
  * Root workspace directory
@@ -102,7 +102,7 @@ export interface StoredSession {
     /** Unique session identifier */
     id: string;
     /** The agent instance for this session */
-    agent: AgentHarness;
+    agent: VibesAgent;
     /** Persistent storage backend for this session */
     backend: StateBackend;
     /** Session workspace directory (absolute path) */
@@ -318,7 +318,7 @@ export class SessionStore {
         const sandbox = new LocalSandbox(workspaceDir);
         const agent = this.agentFactory
             ? this.agentFactory({ sessionId, workspaceDir, stateDir, sharedDir, sandbox })
-            : new AgentHarness(this.buildAgentConfig(sessionId, workspaceDir, stateDir, sharedDir));
+            : new VibesAgent(this.buildAgentConfig(sessionId, workspaceDir, stateDir, sharedDir));
 
         const instance: StoredSession = {
             id: sessionId,

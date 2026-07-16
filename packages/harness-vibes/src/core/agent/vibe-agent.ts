@@ -18,18 +18,17 @@ import {
 } from '../../plugins';
 import MemoryPlugin from '../../plugins/memory';
 import {
-    AgentHarnessConfig,
     SubAgent,
     Plugin,
     ToolsRequiringApprovalConfig,
 } from '../types';
-import { AgentHarness } from './agent-harness';
+import { VibesAgent, type VibesAgentConfig } from '../agent';
 import type { Sandbox } from '../sandbox';
 
 /**
  * Configuration for initializing a VibeAgent instance.
  */
-export interface VibeAgentConfig extends Partial<Omit<AgentHarnessConfig, 'instructions'>> {
+export interface VibeAgentConfig extends Partial<Omit<VibesAgentConfig, 'instructions'>> {
     /** Custom instructions to extend the base system prompt */
     systemPrompt?: string;
     /** Registry of sub-agents available for delegation */
@@ -247,7 +246,7 @@ You are VibeAgent, an autonomous software-engineering agent built on the Vibes f
  * It supports multi-step reasoning, persistent state with task dependencies,
  * real filesystem access, modular skills, and sub-agent delegation.
  */
-export class VibeAgent extends AgentHarness {
+export class VibeAgent extends VibesAgent {
     private readonly vibeAgentConfig: VibeAgentConfig;
     private readonly parentCustomTools: Record<string, any>;
     private readonly parentApprovalConfig: ToolsRequiringApprovalConfig;

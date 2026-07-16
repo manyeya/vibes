@@ -2,7 +2,7 @@ import { generateText, Output, type LanguageModel, type ModelMessage } from 'ai'
 import { openai } from '@ai-sdk/openai';
 import type { ZodType } from 'zod';
 import { VibeAgent, type VibeAgentConfig } from './agent/vibe-agent';
-import { AgentHarness } from './agent/agent-harness';
+import { VibesAgent } from './agent';
 import type { AgentState } from './types';
 import type { Sandbox } from './sandbox';
 import { SessionStore } from './session/session-manager';
@@ -89,7 +89,7 @@ export interface PromptResult<T> {
     state: AgentState;
 }
 
-type GenerateOptions = Parameters<AgentHarness['generate']>[0];
+type GenerateOptions = Parameters<VibesAgent['generate']>[0];
 
 /**
  * A conversation scope bound to a single agent instance. The single owner
@@ -103,12 +103,12 @@ export class Session {
     readonly workspaceDir: string;
     /** Persistent backend, present for persisted (non-ephemeral) sessions. */
     readonly backend?: StateBackend;
-    private readonly agent: AgentHarness;
+    private readonly agent: VibesAgent;
     private readonly model: LanguageModel;
 
     constructor(init: {
         id: string;
-        agent: AgentHarness;
+        agent: VibesAgent;
         model: LanguageModel;
         workspaceDir: string;
         backend?: StateBackend;
@@ -121,7 +121,7 @@ export class Session {
     }
 
     /** The underlying agent, for advanced/streaming use. */
-    get raw(): AgentHarness {
+    get raw(): VibesAgent {
         return this.agent;
     }
 
@@ -188,7 +188,7 @@ export class Session {
         const messages: ModelMessage[] = typeof input === 'string'
             ? [{ role: 'user', content: input }]
             : input;
-        return this.agent.stream({ messages, ...options });
+        return this.agent.stream({ messages, ...options } as Parameters<VibesAgent['stream']>[0]);
     }
 }
 

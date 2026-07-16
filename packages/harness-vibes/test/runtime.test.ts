@@ -1,18 +1,25 @@
 import { describe, expect, test } from 'bun:test';
 import { MockLanguageModelV3 } from 'ai/test';
+import { simulateReadableStream } from 'ai';
 import { join } from 'path';
 import { defineAgent, createRuntime } from '../index';
 import { LocalSandbox } from '../src/sandbox/local-sandbox';
 import { createTempWorkspace, removeTempWorkspace } from './helpers';
 
+// The owned core streams every step (streamText / doStream), so the mock must
+// answer doStream. v3 models report nested usage ({ total }).
 function textModel(text: string) {
     return new MockLanguageModelV3({
-        doGenerate: async () => ({
-            finishReason: { type: 'stop', unified: 'stop' },
-            content: [{ type: 'text', text }],
-            usage: { inputTokens: { total: 5 }, outputTokens: { total: 7 } },
-            warnings: [],
-            providerMetadata: undefined,
+        doStream: async () => ({
+            stream: simulateReadableStream({
+                chunks: [
+                    { type: 'stream-start', warnings: [] },
+                    { type: 'text-start', id: '0' },
+                    { type: 'text-delta', id: '0', delta: text },
+                    { type: 'text-end', id: '0' },
+                    { type: 'finish', finishReason: 'stop', usage: { inputTokens: { total: 5 }, outputTokens: { total: 7 } } },
+                ],
+            }),
         } as any),
     });
 }

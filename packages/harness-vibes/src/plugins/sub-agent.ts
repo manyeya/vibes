@@ -9,12 +9,11 @@ import {
     PluginStreamContext,
     SubAgent,
     ToolsRequiringApprovalConfig,
-    AgentHarnessConfig,
     createScopedUIMessageStreamWriter,
     createDataStreamWriter,
     type DataStreamWriter,
 } from '../core/types';
-import { AgentHarness } from '../core/agent/agent-harness';
+import { VibesAgent, type VibesAgentConfig } from '../core/agent';
 
 // Optional structured-handoff tool. Sub-agents are NOT required to call it —
 // a normal final answer is a perfectly good result. Calling it just lets a
@@ -58,7 +57,7 @@ type BuiltInPluginFactory = (options: {
     workspaceDir?: string;
 }) => Plugin[];
 
-type AgentFactory = (config: AgentHarnessConfig) => AgentHarness;
+type AgentFactory = (config: VibesAgentConfig) => VibesAgent;
 
 interface DelegationInput extends z.infer<typeof delegationInputSchema> {}
 
@@ -434,7 +433,7 @@ export default class SubAgentPlugin implements Plugin {
         private readonly workspaceDir: string = 'workspace',
         private readonly cacheTTL: number = 60 * 60 * 1000,
         private readonly maxConcurrentAgents: number = 4,
-        private readonly createAgent: AgentFactory = config => new AgentHarness(config)
+        private readonly createAgent: AgentFactory = config => new VibesAgent(config)
     ) {
         this.registry = new DelegationRegistry(cacheTTL);
         this.normalizedSubAgents = this.normalizeSubAgents(subAgents);
@@ -669,7 +668,7 @@ export default class SubAgentPlugin implements Plugin {
         });
     }
 
-    private buildAgentConfig(subAgent: NormalizedSubAgent, completionTool: Tool<any, any>): AgentHarnessConfig {
+    private buildAgentConfig(subAgent: NormalizedSubAgent, completionTool: Tool<any, any>): VibesAgentConfig {
         const model = subAgent.model || this.baseModel;
         const blockedTools = mergeBlockedTools(subAgent.blockedTools, subAgent.allowSubdelegation);
 
