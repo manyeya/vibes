@@ -31,7 +31,6 @@
     "ai": "^7.0.1",
     "bash-tool": "^1.3.17",
     "drizzle-orm": "^0.45.2",
-    "just-bash": "^3.0.1",
     "zod": "^4.3.5"
   },
   "devDependencies": {

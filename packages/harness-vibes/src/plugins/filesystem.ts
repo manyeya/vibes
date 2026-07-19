@@ -6,7 +6,6 @@ import {
     type DataStreamWriter,
 } from "../core/types";
 import z from "zod";
-import * as fs from "fs/promises";
 import * as path from "path";
 import { type Sandbox } from "../core/sandbox";
 import { LocalSandbox } from "../sandbox/local-sandbox";
@@ -104,8 +103,8 @@ export default class FilesystemPlugin implements Plugin {
     private async persistTrackedFiles(): Promise<void> {
         try {
             const fullPath = path.resolve(process.cwd(), this.trackedFilesPath);
-            await fs.mkdir(path.dirname(fullPath), { recursive: true });
-            await fs.writeFile(fullPath, JSON.stringify(Array.from(this.trackedFiles), null, 2), 'utf8');
+            // Bun.write creates parent directories.
+            await Bun.write(fullPath, JSON.stringify(Array.from(this.trackedFiles), null, 2));
         } catch (e) {
             console.error('[FilesystemPlugin] Failed to persist tracked files:', e);
         }
@@ -114,7 +113,7 @@ export default class FilesystemPlugin implements Plugin {
     private async loadTrackedFiles(): Promise<void> {
         try {
             const fullPath = path.resolve(process.cwd(), this.trackedFilesPath);
-            const content = await fs.readFile(fullPath, 'utf8');
+            const content = await Bun.file(fullPath).text();
             const files = JSON.parse(content) as string[];
             this.trackedFiles = new Set(files);
         } catch (e) {

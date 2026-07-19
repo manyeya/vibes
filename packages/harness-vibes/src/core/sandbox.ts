@@ -5,17 +5,15 @@ import * as path from 'path';
  *
  * The Sandbox is the single boundary through which the agent touches the
  * outside world's filesystem and shell. Plugins (BashPlugin,
- * FilesystemPlugin, …) depend on this interface rather than on Bun's
- * `$`/`Bun.file`/`Bun.Glob` globals, which means:
+ * FilesystemPlugin, …) depend on this interface, which means:
  *
- *   - **Safety**: every path is contained within the sandbox root, so a
- *     tool call cannot read or write outside the workspace.
- *   - **Portability**: the default `LocalSandbox` is implemented with
- *     Node-compatible APIs (`node:fs`, `node:child_process`), so the
- *     engine no longer hard-depends on the Bun runtime for I/O.
- *   - **Swappability**: a future `VirtualSandbox` (just-bash, runs on the
- *     edge) or `RemoteSandbox` (container) can drop in without touching a
- *     single plugin.
+ *   - **Safety**: every structured path operation (read/write/list/…) is
+ *     contained within the sandbox root, so a tool call cannot read or
+ *     write outside the workspace. (`exec` runs a real shell rooted at the
+ *     root but is not jailed — see {@link Sandbox.exec} / LocalSandbox.)
+ *   - **Swappability**: the default `LocalSandbox` runs on the host, using
+ *     Bun's `$` for the shell. A future `RemoteSandbox` (container) can drop
+ *     in without touching a single plugin.
  *
  * All `relativePath` arguments are resolved against — and contained
  * within — the sandbox `root`. Passing an absolute path or a `..` that

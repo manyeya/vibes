@@ -55,6 +55,18 @@ describe('LocalSandbox', () => {
         }
     });
 
+    test('runs real host binaries (the just-bash ceiling is gone)', async () => {
+        const root = await createTempWorkspace('sandbox-realshell');
+        try {
+            const sandbox = new LocalSandbox(root);
+            const res = await sandbox.exec('node -v');
+            expect(res.exitCode).toBe(0);
+            expect(res.stdout.trim()).toMatch(/^v\d/);
+        } finally {
+            await removeTempWorkspace(root);
+        }
+    });
+
     test('contains paths within the root and rejects traversal', async () => {
         const root = await createTempWorkspace('sandbox-contain');
         try {

@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { exec as nodeExec } from 'child_process';
+import { $ } from 'bun';
 import {
     type Sandbox,
     type ExecOptions,
@@ -15,39 +15,29 @@ export interface LocalSandboxOptions {
      * `process.cwd()`. Defaults to `workspace`.
      */
     root?: string;
-    /**
-     * Shell used for `exec`. Defaults to `/bin/bash` so bash-isms in agent
-     * commands behave consistently. Set to `/bin/sh` (or another shell) for
-     * environments without bash.
-     */
-    shell?: string;
-    /** Max stdout/stderr buffer for a command in bytes. Defaults to 64 MiB. */
-    maxBuffer?: number;
 }
 
 /**
- * The default {@link Sandbox}: executes on the host filesystem and shell
- * using Node-compatible APIs only (`node:fs/promises`,
- * `node:child_process`). It runs identically under Node and Bun — no
- * `Bun.*` globals — which is what unblocks running the harness off the Bun
- * runtime.
+ * The default {@link Sandbox}: filesystem via `node:fs/promises`, shell via
+ * Bun's shell (`Bun.$`). Vibes is Bun-only, so `exec` runs real commands
+ * through Bun's cross-platform shell — host binaries (git, node, npm, python,
+ * …) are available, unlike the old in-process just-bash interpreter.
  *
- * Every path operation is contained within {@link LocalSandbox.root} via
- * {@link containPath}, so a tool call cannot escape the workspace.
+ * Every *path* operation is contained within {@link LocalSandbox.root} via
+ * {@link containPath}. Note that `exec` runs a real shell rooted at `root` but
+ * is NOT jailed — a command can `cd` elsewhere and touch anything the user
+ * can. That is intentional (a real shell is the point); path containment only
+ * covers the structured read/write/list methods.
  */
 export class LocalSandbox implements Sandbox {
     readonly kind = 'local' as const;
     readonly root: string;
-    private readonly shell: string;
-    private readonly maxBuffer: number;
 
     constructor(rootOrOptions: string | LocalSandboxOptions = {}) {
         const options = typeof rootOrOptions === 'string'
             ? { root: rootOrOptions }
             : rootOrOptions;
         this.root = path.resolve(process.cwd(), options.root ?? 'workspace');
-        this.shell = options.shell ?? '/bin/bash';
-        this.maxBuffer = options.maxBuffer ?? 64 * 1024 * 1024;
     }
 
     resolve(relativePath: string): string {
@@ -60,48 +50,33 @@ export class LocalSandbox implements Sandbox {
         // fresh session doesn't fail with ENOENT.
         await fs.mkdir(cwd, { recursive: true }).catch(() => { /* best effort */ });
 
-        return await new Promise<ExecResult>((resolve) => {
-            nodeExec(
-                command,
-                {
-                    cwd,
-                    env: options.env ? { ...process.env, ...options.env } : process.env,
-                    timeout: options.timeoutMs,
-                    signal: options.signal,
-                    shell: this.shell,
-                    maxBuffer: this.maxBuffer,
-                },
-                (error, stdout, stderr) => {
-                    const out = stdout?.toString() ?? '';
-                    if (error) {
-                        // `error.code` is the numeric exit code for a process
-                        // that ran and exited non-zero; for signals/timeouts it
-                        // may be a string or undefined — fall back to 1.
-                        const code = typeof (error as { code?: unknown }).code === 'number'
-                            ? (error as { code: number }).code
-                            : 1;
-                        resolve({
-                            stdout: out,
-                            stderr: stderr?.toString() || error.message,
-                            exitCode: code,
-                        });
-                        return;
-                    }
-                    resolve({ stdout: out, stderr: stderr?.toString() ?? '', exitCode: 0 });
-                }
-            );
-        });
+        // `{ raw: command }` hands the whole string to Bun's shell to parse
+        // (pipes, redirects, &&, globs); `.nothrow()` keeps the "never throws
+        // on non-zero" contract; `.quiet()` buffers output instead of echoing.
+        // ponytail: no timeoutMs/signal — Bun's ShellPromise exposes no abort
+        // or timeout knob (Bun 1.3), and the old just-bash tool had none
+        // either, so no regression. Upgrade path if runaway commands bite:
+        // route through `Bun.spawn` (supports `timeout` + `signal` + kill).
+        const result = await $`${{ raw: command }}`
+            .cwd(cwd)
+            .env({ ...process.env, ...(options.env ?? {}) })
+            .nothrow()
+            .quiet();
+
+        return {
+            stdout: result.stdout.toString(),
+            stderr: result.stderr.toString(),
+            exitCode: result.exitCode,
+        };
     }
 
     async readFile(relativePath: string): Promise<string> {
-        return await fs.readFile(this.resolve(relativePath), 'utf8');
+        return await Bun.file(this.resolve(relativePath)).text();
     }
 
     async writeFile(relativePath: string, content: string): Promise<number> {
-        const full = this.resolve(relativePath);
-        await fs.mkdir(path.dirname(full), { recursive: true });
-        await fs.writeFile(full, content, 'utf8');
-        return Buffer.byteLength(content, 'utf8');
+        // Bun.write creates parent directories and returns the byte count.
+        return await Bun.write(this.resolve(relativePath), content);
     }
 
     async exists(relativePath: string): Promise<boolean> {

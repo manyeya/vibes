@@ -312,9 +312,9 @@ export class SessionStore {
         // agent — typically the flagship VibeAgent — rooted at a sandbox for the
         // (possibly shared) workspace dir, with per-session plugin state kept in
         // stateDir. Without a factory we fall back to a bare AgentHarness. The
-        // sandbox backs the filesystem/artifact tools (node fs on the real
-        // workspace dir); the shell runs through just-bash in BashPlugin, rooted
-        // at the same directory, so the two views stay in sync.
+        // sandbox backs both the filesystem/artifact tools (node fs on the real
+        // workspace dir) and the shell (BashPlugin runs commands through the
+        // sandbox's `exec`, a real host shell via Bun.$, rooted here).
         const sandbox = new LocalSandbox(workspaceDir);
         const agent = this.agentFactory
             ? this.agentFactory({ sessionId, workspaceDir, stateDir, sharedDir, sandbox })
