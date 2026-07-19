@@ -260,6 +260,8 @@ export default class WorkflowPlugin implements Plugin {
     private streamContext?: PluginStreamContext;
     private readonly model?: LanguageModel;
     private readonly workflowModel?: LanguageModel;
+    /** Per-request model override (from the UI model selector), fanned out by the agent. */
+    private modelOverride?: LanguageModel;
     private readonly workflowsPath: string;
     private readonly maxWorkflows: number;
     private readonly maxModelCalls: number;
@@ -274,6 +276,17 @@ export default class WorkflowPlugin implements Plugin {
         this.maxModelCalls = config.maxModelCalls ?? 25;
         this.workspaceDir = config.workspaceDir;
         this.sandbox = config.sandbox;
+    }
+
+    /**
+     * Adopt the per-request model the user picked in the UI selector, so a
+     * workflow runs on the same model as the conversation. The agent fans this
+     * out via its own `setModelOverride`. `undefined` reverts to the configured
+     * default. A dedicated `workflowModel` (a deliberate cheap-model config)
+     * still wins over the constructed default but not over an explicit pick.
+     */
+    setModelOverride(model?: LanguageModel): void {
+        this.modelOverride = model;
     }
 
     onStreamContextReady(context: PluginStreamContext) {
@@ -639,8 +652,9 @@ export default class WorkflowPlugin implements Plugin {
                     inputs: z.record(z.string(), z.any()).optional().describe('Bindings for the declared {{input.*}} — values may be strings, numbers, booleans, or JSON objects.'),
                 }),
                 execute: async ({ nameOrId, inputs }, { abortSignal } = {} as any) => {
-                    // Prefer the dedicated (fast) workflow model when configured.
-                    const runModel = this.workflowModel ?? this.model;
+                    // The user's per-request pick wins; else the dedicated
+                    // workflow model, else the constructed default.
+                    const runModel = this.modelOverride ?? this.workflowModel ?? this.model;
                     if (!runModel) {
                         return { success: false, error: 'No model available to run workflows.' };
                     }

@@ -1,7 +1,8 @@
 import {
     tool,
     type LanguageModel,
-    generateObject,
+    generateText,
+    Output,
 } from 'ai';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -65,7 +66,7 @@ export interface Plan {
 }
 
 /**
- * Structured-output schema for create_plan — validated by generateObject, so the
+ * Structured-output schema for create_plan — validated by the model call, so the
  * model can no longer wrap or chatter around the JSON.
  */
 const planSchema = z.object({
@@ -112,6 +113,8 @@ export class PlanningPlugin implements VibesPlugin {
     /** Plan ids that have been put up for review — gates task generation. */
     private reviewedPlanIds: Set<string> = new Set();
     private model?: LanguageModel;
+    /** Per-request model override (the UI's currently-selected model). */
+    private modelOverride?: LanguageModel;
 
     // Compose TasksPlugin instead of extending to avoid type conflicts
     private tasksPlugin: TasksPlugin;
@@ -126,6 +129,19 @@ export class PlanningPlugin implements VibesPlugin {
             tasksPath: config.tasksPath || path.join(path.dirname(this.planPath), 'tasks.json'),
         });
         this.maxRecitationTasks = config.maxRecitationTasks || 10;
+    }
+
+    /** Track the user's selected model so plan/task generation runs on it, not
+     *  the build-time default. Propagates to the nested TasksPlugin (which the
+     *  agent's fan-out never reaches directly). `undefined` reverts. */
+    setModelOverride(model?: LanguageModel): void {
+        this.modelOverride = model;
+        this.tasksPlugin.setModelOverride(model);
+    }
+
+    /** The model to actually call: the override if set, else the constructed one. */
+    private get activeModel(): LanguageModel | undefined {
+        return this.modelOverride ?? this.model;
     }
 
     async waitReady(): Promise<void> {
@@ -476,24 +492,55 @@ For a quick, low-stakes checklist, \`generate_tasks\` (above) is fine without a 
 
             [PLAN_REVIEW_TOOL_NAME]: tool({
                 description:
-                    'Put the plan in front of the user for sign-off BEFORE generating tasks or doing any work. ' +
-                    'Renders the plan (and any tasks already generated) above the composer with Approve / Request changes. ' +
-                    'Call this right after create_plan — NOT after generate_tasks_from_plan — and then STOP: the user ' +
-                    'will either approve (then generate tasks and proceed) or request changes (then revise the plan and ' +
-                    'call this again). Generate no tasks and do no execution work until the plan is approved.',
+                    'Put your plan in front of the user for sign-off BEFORE doing any work. Pass the plan directly ' +
+                    '(title + solution, and optionally problem/phases/milestones/risks) — you do NOT need to call ' +
+                    'create_plan first; describe the plan you designed right here. (If you did run create_plan, omit ' +
+                    'these and it uses that plan.) Renders above the composer with Approve / Request changes, then ' +
+                    'STOP: the user approves (then you proceed) or requests changes (then revise and call this again). ' +
+                    'This is exactly what you do in plan mode.',
                 inputSchema: z.object({
                     note: z.string().optional().describe('Optional one-line note introducing the plan or flagging a key decision.'),
+                    title: z.string().optional().describe('Short title for the plan.'),
+                    problem: z.string().optional().describe('What we are solving and why.'),
+                    solution: z.string().optional().describe('The approach — how you will build it.'),
+                    phases: z.array(z.object({
+                        name: z.string(),
+                        goal: z.string(),
+                        steps: z.array(z.string()).optional(),
+                    })).optional().describe('Ordered phases, each with a goal and steps.'),
+                    milestones: z.array(z.string()).optional(),
+                    risks: z.array(z.string()).optional(),
                 }),
-                execute: async ({ note }) => {
+                execute: async ({ note, title, problem, solution, phases, milestones, risks }) => {
                     const operation = this.createOperation('request-plan-review', PLAN_REVIEW_TOOL_NAME);
+
+                    // Adopt an inline plan when the agent passes one (or when there's
+                    // no plan from create_plan yet) — so review works without the
+                    // structured-output create_plan step, which weak models can't do.
+                    const inline = title || solution || problem || phases;
+                    if (inline || !this.currentPlan) {
+                        this.currentPlan = {
+                            id: this.currentPlan?.id ?? `plan_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+                            title: title ?? this.currentPlan?.title ?? 'Proposed plan',
+                            createdAt: this.currentPlan?.createdAt ?? new Date().toISOString(),
+                            problem: problem ?? this.currentPlan?.problem ?? '',
+                            solution: solution ?? this.currentPlan?.solution ?? '',
+                            requirements: this.currentPlan?.requirements ?? [],
+                            phases: phases ?? this.currentPlan?.phases ?? [],
+                            milestones: milestones ?? this.currentPlan?.milestones ?? [],
+                            risks: risks ?? this.currentPlan?.risks ?? [],
+                        };
+                        await this.savePlanToFile(this.currentPlan).catch(() => { /* best effort */ });
+                    }
+
                     const tasks = await this.tasksPlugin.getTasks();
                     const plan = this.currentPlan;
                     if (!plan && tasks.length === 0) {
                         this.writer?.writeError(
-                            'No plan to review yet — call create_plan() and generate_tasks_from_plan() first.',
+                            'No plan to review — pass a title and solution to request_plan_review describing your plan.',
                             { toolName: PLAN_REVIEW_TOOL_NAME, recoverable: true },
                         );
-                        return { error: 'No plan to review. Create a plan and generate tasks first.' };
+                        return { error: 'No plan to review. Pass the plan (title + solution) to this tool.' };
                     }
                     // Mark this plan reviewed so generate_tasks_from_plan unlocks
                     // once the user approves (the run halts here until they do).
@@ -531,7 +578,8 @@ For a quick, low-stakes checklist, \`generate_tasks\` (above) is fine without a 
                     request: z.string().describe('The user request to create a plan for'),
                 }),
                 execute: async ({ request }) => {
-                    if (!this.model) {
+                    const model = this.activeModel;
+                    if (!model) {
                         this.writer?.writeError('No model available for plan generation', {
                             toolName: 'create_plan',
                             recoverable: true,
@@ -549,13 +597,13 @@ For a quick, low-stakes checklist, \`generate_tasks\` (above) is fine without a 
                     // Structured output: schema-validated plan, no JSON-from-prose parsing.
                     let planData: z.infer<typeof planSchema>;
                     try {
-                        const { object } = await generateObject({
-                            model: this.model,
-                            schema: planSchema,
-                            // generateObject doesn't take `timeout`; an abort signal is the
-                            // anti-hang ceiling (some free/alpha OpenRouter models never finish).
+                        const { output } = await generateText({
+                            model,
+                            output: Output.object({ schema: planSchema }),
+                            // An abort signal is the anti-hang ceiling (some
+                            // free/alpha OpenRouter models never finish).
                             abortSignal: AbortSignal.timeout(300_000),
-                            system: `You are an expert Project Architect and Lead Planner. Your goal is to create a COMPREHENSIVE, SOLID, and HIGHLY DETAILED project plan.
+                            instructions: `You are an expert Project Architect and Lead Planner. Your goal is to create a COMPREHENSIVE, SOLID, and HIGHLY DETAILED project plan.
 No matter how simple the request, you must provide a "professional grade" plan that covers all bases.
 
 ### Rarity & Rigor
@@ -574,7 +622,8 @@ No matter how simple the request, you must provide a "professional grade" plan t
 NEVER be concise. Be exhaustive. Break every objective down into its smallest actionable components.`,
                             prompt: `Create a project plan for:\n\n${request}`,
                         });
-                        planData = object;
+                        if (!output) throw new Error('model returned no structured plan');
+                        planData = output;
                     } catch (e) {
                         this.writer?.writeError(`Failed to generate plan: ${e}`, {
                             toolName: 'create_plan',
@@ -620,20 +669,9 @@ NEVER be concise. Be exhaustive. Break every objective down into its smallest ac
             generate_tasks_from_plan: tool({
                 description: `Generate specific actionable tasks from the current plan. Tasks will include planId and planReference in metadata.`,
                 inputSchema: z.object({
-                    maxTasks: z.number().optional().default(8).describe('Maximum number of tasks to generate'),
+                    maxTasks: z.number().optional().default(20).describe('Maximum number of tasks to generate'),
                 }),
                 execute: async ({ maxTasks }) => {
-                    if (!this.model) {
-                        this.writer?.writeError('No model available for task generation', {
-                            toolName: 'generate_tasks_from_plan',
-                            recoverable: true,
-                        });
-                        return {
-                            success: false,
-                            error: 'No model available for task generation',
-                        };
-                    }
-
                     const operation = this.createOperation('generate-tasks-from-plan', 'generate_tasks_from_plan');
 
                     // Load current plan if not in memory
@@ -666,68 +704,32 @@ NEVER be concise. Be exhaustive. Break every objective down into its smallest ac
                         return { success: false, error: msg };
                     }
 
-                    // Build plan context for LLM
-                    const planContext = `
-## Plan: ${plan.title}
-**Plan ID**: ${plan.id}
-
-### Problem
-${plan.problem}
-
-### Solution
-${plan.solution}
-
-### Requirements
-${(plan.requirements || []).map(r => `- ${r}`).join('\n')}
-
-### Phases
-${plan.phases.map((p, i) => {
-                        let s = `${i + 1}. ${p.name} - ${p.goal}`;
-                        if (p.steps && p.steps.length > 0) {
-                            s += '\n' + p.steps.map(step => `   - ${step}`).join('\n');
+                    // Derive tasks straight from the plan the user approved — its
+                    // phases and steps ARE the breakdown. A model call here (the old
+                    // generateObject) hung and timed out on weak models for tasks we
+                    // already have, so build them deterministically: one task per
+                    // step, or one per phase when a phase has no steps.
+                    operation?.milestone(`Building tasks from "${plan.title}"`, { phase: 'derive' });
+                    const derived: z.infer<typeof plannedTasksSchema>['tasks'] = [];
+                    for (const ph of plan.phases) {
+                        const steps = ph.steps ?? [];
+                        if (steps.length) {
+                            for (const step of steps) {
+                                derived.push({ title: step, description: `${ph.name} — ${step}`, planPhase: ph.name, priority: 'medium' });
+                            }
+                        } else {
+                            derived.push({ title: ph.name, description: ph.goal || ph.name, planPhase: ph.name, priority: 'medium' });
                         }
-                        return s;
-                    }).join('\n')}
-
-### Milestones
-${plan.milestones.map(m => `- ${m}`).join('\n')}
-`;
-
-                    operation?.milestone(`Generating implementation tasks for "${plan.title}"`, { phase: 'model' });
-                    let tasksData: z.infer<typeof plannedTasksSchema>;
-                    try {
-                        const { object } = await generateObject({
-                            model: this.model,
-                            schema: plannedTasksSchema,
-                            abortSignal: AbortSignal.timeout(300_000), // anti-hang ceiling (see create_plan)
-                            system: `You are an expert Implementation Engineer. Your job is to translate a project plan into high-fidelity, actionable tasks.
-
-RULES:
-1. Create 3-${maxTasks} tasks.
-2. Each task MUST be extremely SPECIFIC, TECHNICAL, and ACTIONABLE.
-3. Reference EXACT files and line areas where possible (e.g., "In src/components/button.tsx, add the following props...").
-4. Tasks MUST be sequential and follow the plan's phases.
-5. For each task, provide a robust description that leaves NO ambiguity about the implementation steps.
-6. If the plan mentions specific requirements or architecture, incorporate those into the task details.
-7. Focus on DELIVERABLES and concrete CHANGES.
-
-The planReference field should be a clear path to the plan section so you can trace back exactly why this task exists.`,
-                            prompt: `Generate tasks from this plan:\n\n${planContext}`,
-                        });
-                        tasksData = object;
-                    } catch (e) {
-                        this.writer?.writeError(`Failed to generate tasks: ${e}`, {
-                            toolName: 'generate_tasks_from_plan',
-                            recoverable: true,
-                        });
-                        return {
-                            success: false,
-                            error: `Failed to generate tasks: ${e}`,
-                        };
                     }
-                    operation?.milestone(`Parsed ${tasksData.tasks.length} planned task${tasksData.tasks.length === 1 ? '' : 's'}`, {
-                        phase: 'parse',
-                    });
+                    if (derived.length === 0) {
+                        for (const m of plan.milestones) derived.push({ title: m, description: m, priority: 'medium' });
+                    }
+                    if (derived.length === 0) {
+                        derived.push({ title: `Build: ${plan.title}`, description: plan.solution || plan.title, priority: 'high' });
+                    }
+                    // Respect maxTasks as the ceiling so an over-long plan can't
+                    // spawn an absurd list.
+                    const tasksData: z.infer<typeof plannedTasksSchema> = { tasks: derived.slice(0, Math.max(1, maxTasks)) };
 
                     // Create tasks with plan metadata
                     const now = new Date().toISOString();
@@ -787,11 +789,19 @@ The planReference field should be a clear path to the plan section so you can tr
 
                     return {
                         success: true,
-                        message: `Generated ${createdTasks.length} tasks from plan "${plan.title}"`,
+                        message:
+                            `Created ${createdTasks.length} tasks. Now EXECUTE them in order, one at a time: ` +
+                            `call update_task(id, "in_progress") right before you start a task, do the work, then ` +
+                            `update_task(id, "completed") the moment it's done — before moving to the next. Do NOT do ` +
+                            `all the work first and mark them at the end; update as you go so progress is visible. ` +
+                            `Use these exact task ids.`,
                         planId: plan.id,
-                        tasks: createdTasks.map(t => ({
+                        // The agent must reference these ids in update_task.
+                        tasks: createdTasks.map((t, i) => ({
                             id: t.id,
                             title: t.title,
+                            order: i + 1,
+                            status: t.status,
                             planPhase: t.metadata.planPhase,
                         })),
                     };

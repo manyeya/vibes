@@ -4,7 +4,7 @@ import { join } from 'path';
 import { PlanningPlugin } from '../src/plugins/planning';
 import { createTempWorkspace, removeTempWorkspace } from './helpers';
 
-describe('PlanningPlugin create_plan (generateObject)', () => {
+describe('PlanningPlugin create_plan (generateText + Output)', () => {
     test('builds a plan from schema-validated model output', async () => {
         const dir = await createTempWorkspace('create-plan');
         const model = new MockLanguageModelV3({

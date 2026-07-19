@@ -57,6 +57,8 @@ export default class SummarizationPlugin implements VibesPlugin {
     private compressionRatio: number;
     private readonly perMessageCharCap: number;
     private readonly model: LanguageModel;
+    /** Per-request model override (the UI's currently-selected model). */
+    private modelOverride?: LanguageModel;
     private writer?: DataStreamWriter;
 
     constructor(model: LanguageModel, config: SummarizationConfig = {}) {
@@ -64,6 +66,12 @@ export default class SummarizationPlugin implements VibesPlugin {
         this.contextWindow = config.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
         this.compressionRatio = config.compressionRatio ?? DEFAULT_COMPRESSION_RATIO;
         this.perMessageCharCap = config.perMessageCharCap ?? DEFAULT_PER_MESSAGE_CAP;
+    }
+
+    /** Follow the user's selected model instead of the build-time default.
+     *  `undefined` reverts to the constructed model. */
+    setModelOverride(model?: LanguageModel): void {
+        this.modelOverride = model;
     }
 
     /** Rough token estimate (~4 chars/token). */
@@ -257,7 +265,7 @@ export default class SummarizationPlugin implements VibesPlugin {
             .join('\n\n---\n\n');
 
         const result = await generateText({
-            model: this.model,
+            model: this.modelOverride ?? this.model,
             prompt:
                 `Summarise the following agent conversation history concisely. ` +
                 `Preserve concrete facts, decisions, unresolved questions, file paths, ` +

@@ -1,6 +1,7 @@
 import {
     tool,
-    generateObject,
+    generateText,
+    Output,
     type LanguageModel,
 } from 'ai';
 import { z } from 'zod';
@@ -69,12 +70,25 @@ export default class TasksPlugin implements Plugin {
     protected streamContext?: PluginStreamContext;
     private tasks: TaskItem[] = [];
     private tasksPath: string;
+    /** Per-request model override (the UI's currently-selected model). */
+    private modelOverride?: LanguageModel;
 
     constructor(
         protected model?: LanguageModel,
         config: { tasksPath?: string } = {}
     ) {
         this.tasksPath = config.tasksPath || 'workspace/tasks.json';
+    }
+
+    /** Track the user's selected model so generation runs on it, not the
+     *  build-time default. `undefined` reverts to the constructed model. */
+    setModelOverride(model?: LanguageModel): void {
+        this.modelOverride = model;
+    }
+
+    /** The model to actually call: the override if set, else the constructed one. */
+    protected get activeModel(): LanguageModel | undefined {
+        return this.modelOverride ?? this.model;
     }
 
     onStreamContextReady(context: PluginStreamContext) {
@@ -157,7 +171,8 @@ The LLM will analyze the request and create specific tasks tied to actual files/
                     request: z.string().describe('The user request to break down into tasks'),
                 }),
                 execute: async ({ request }) => {
-                    if (!this.model) {
+                    const model = this.activeModel;
+                    if (!model) {
                         this.writer?.writeError('No model available for task generation', {
                             toolName: 'generate_tasks',
                             recoverable: true,
@@ -175,13 +190,13 @@ The LLM will analyze the request and create specific tasks tied to actual files/
                     // schema-validated — no brittle JSON-from-prose extraction.
                     let taskDefs: TaskDef[];
                     try {
-                        const { object } = await generateObject({
-                            model: this.model,
-                            schema: generatedTasksSchema,
-                            // generateObject doesn't take `timeout`; an abort signal is
-                            // the anti-hang ceiling for a stalled/misbehaving model.
+                        const { output } = await generateText({
+                            model,
+                            output: Output.object({ schema: generatedTasksSchema }),
+                            // An abort signal is the anti-hang ceiling for a
+                            // stalled/misbehaving model.
                             abortSignal: AbortSignal.timeout(300_000),
-                            system: `You are a task planner. Break down requests into specific, actionable tasks.
+                            instructions: `You are a task planner. Break down requests into specific, actionable tasks.
 
 RULES:
 1. Create 3-8 tasks maximum
@@ -192,7 +207,8 @@ RULES:
 6. Focus on WHAT files to change and WHAT changes to make`,
                             prompt: `Break down this request into specific, actionable tasks:\n\n${request}`,
                         });
-                        taskDefs = object.tasks;
+                        if (!output) throw new Error('model returned no structured task list');
+                        taskDefs = output.tasks;
                     } catch (e) {
                         this.writer?.writeError(`Failed to generate tasks: ${e}`, {
                             toolName: 'generate_tasks',
