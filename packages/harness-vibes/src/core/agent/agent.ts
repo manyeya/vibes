@@ -40,6 +40,8 @@ import {
     type PluginStreamContext,
 } from '../types';
 import type { VibesPlugin } from './plugin-api';
+import { AgentEventBus, teeToBus, type AgentEventListener } from '../streaming/streaming';
+import { isAgentMode, type AgentMode } from './modes';
 import type { LoopStep, ModelStreamPart, StepUsage, StopPredicate, StopReason } from './loop-events';
 import { runAgentLoop, type ResolvedTurn } from './loop';
 import { streamModelStep } from './llm';
@@ -75,6 +77,10 @@ export interface VibesStreamResult {
     readonly text: Promise<string>;
     /** All completed steps. */
     readonly steps: Promise<LoopStep[]>;
+    /** Why the run stopped (so a delegated caller can tell 'error' from an empty finish). */
+    readonly stopReason: Promise<StopReason>;
+    /** Human-readable cause when the run errored (e.g. a rate limit), else undefined. */
+    readonly errorText: Promise<string | undefined>;
     /** Raw model stream parts (SubAgentPlugin forwards these live). */
     readonly fullStream: ReadableStream<ModelStreamPart>;
 }
@@ -113,6 +119,12 @@ export class VibesAgent {
     protected toolRegistry: ToolRegistry;
 
     protected activeStreamContext?: PluginStreamContext;
+    /** Runtime-agnostic event bus: every data part is teed here, so non-UI
+     *  consumers (tests, loggers, other transports) can observe a run. */
+    protected readonly events = new AgentEventBus();
+    /** Current execution mode. Defaults to `auto` (historical behaviour — no
+     *  approvals) so adding modes changes nothing until someone opts in. */
+    protected mode: AgentMode = 'auto';
     protected budgets?: BudgetConfig;
     protected loopDetection?: LoopDetectionConfig;
     protected userStopWhen?: StopCondition<ToolSet> | StopCondition<ToolSet>[];
@@ -158,6 +170,9 @@ export class VibesAgent {
             blockedTools: config.blockedTools,
             maxRetries: config.maxRetries ?? 2,
             redactToolIO: config.redactToolIO ?? true,
+            // Read live so a mode switch applies to the next tool call without a
+            // tool-cache rebuild.
+            getMode: () => this.mode,
         });
 
         if (config.plugins) this.addPlugin(config.plugins);
@@ -178,6 +193,13 @@ export class VibesAgent {
 
     setModelOverride(model?: LanguageModel): void {
         this.modelOverride = model;
+        // Fan out to plugins that make their own model calls (e.g. the workflow
+        // engine) so they run on the user's picked model, not the constructed
+        // default. Duck-typed so core stays decoupled from concrete plugins.
+        for (const plugin of this.plugins) {
+            const p = plugin as { setModelOverride?: (m?: LanguageModel) => void };
+            p.setModelOverride?.(model);
+        }
     }
 
     setContextWindow(contextWindow: number, compressionRatio?: number): void {
@@ -186,6 +208,33 @@ export class VibesAgent {
             const p = plugin as { setContextWindow?: (w: number, r?: number) => void };
             p.setContextWindow?.(this.context.contextWindow, this.context.compressionRatio);
         }
+    }
+
+    /** The current execution mode. */
+    getMode(): AgentMode {
+        return this.mode;
+    }
+
+    /**
+     * Switch execution mode. Applies to the next tool call (approval/block read
+     * the mode live). Emits `data-mode` when there's an active stream so the UI
+     * reflects an agent-initiated switch; a no-op if the mode is invalid or
+     * unchanged. `source` distinguishes user vs the agent's `set_mode` tool.
+     */
+    setMode(mode: string, source: 'user' | 'agent' = 'user', reason?: string): void {
+        if (!isAgentMode(mode) || mode === this.mode) return;
+        this.mode = mode;
+        this.activeStreamContext?.writer.writeMode({ mode, source, reason });
+    }
+
+    /**
+     * The agent PROPOSES a mode — surfaced to the user, but NOT applied. Only the
+     * user changes the mode; this just streams a suggestion (the UI shows it with
+     * a "switch?" hint). No-op if it's already the current mode.
+     */
+    suggestMode(mode: string, reason?: string): void {
+        if (!isAgentMode(mode) || mode === this.mode) return;
+        this.activeStreamContext?.writer.writeMode({ mode, source: 'agent', reason, suggested: true });
     }
 
     setSearchProviderPreference(provider?: string): void {
@@ -206,6 +255,16 @@ export class VibesAgent {
 
     // ── streaming ──────────────────────────────────────────────────────────
 
+    /**
+     * Observe every structured event this agent emits (tool commands, file ops,
+     * delegations, status, …) headlessly — no UI stream required. Returns an
+     * unsubscribe. This is the pi-style `subscribe()` seam: the UI is now just
+     * one consumer of the same events.
+     */
+    subscribe(listener: AgentEventListener): () => void {
+        return this.events.subscribe(listener);
+    }
+
     async stream(options?: {
         messages?: UIMessage[] | ModelMessage[];
         writer?: PluginStreamContext['rawWriter'];
@@ -215,7 +274,13 @@ export class VibesAgent {
         const { messages, writer, abortSignal } = options ?? {};
 
         const modelMessages = messages ? await toModelMessages(messages, () => this.getAllTools()) : [];
-        const streamContext = writer ? createPluginStreamContext(writer) : undefined;
+        // Tee the UI writer (if any) through the event bus so subscribers see
+        // every part. With no UI writer but active subscribers, tee a null
+        // writer so a fully headless run still emits. Passing the teed writer in
+        // as rawWriter means scoped sub-writers emit too.
+        const teed =
+            writer || this.events.hasListeners ? teeToBus(writer, this.events) : undefined;
+        const streamContext = teed ? createPluginStreamContext(teed) : undefined;
         this.activeStreamContext = streamContext;
         if (streamContext) {
             for (const plugin of this.plugins) {
@@ -234,6 +299,8 @@ export class VibesAgent {
         const usageD = defer<TokenUsage>();
         const textD = defer<string>();
         const stepsD = defer<LoopStep[]>();
+        const stopReasonD = defer<StopReason>();
+        const errorD = defer<string | undefined>();
 
         void (async () => {
             try {
@@ -261,12 +328,17 @@ export class VibesAgent {
                 usageD.resolve(sumUsage(result.steps));
                 textD.resolve(result.text);
                 stepsD.resolve(result.steps);
+                stopReasonD.resolve(result.stopReason);
+                errorD.resolve(result.error);
             } catch (err) {
-                ui.error(err instanceof Error ? err.message : String(err));
+                const message = err instanceof Error ? err.message : String(err);
+                ui.error(message);
                 responseD.resolve({ messages: [] });
                 usageD.resolve(ZERO_USAGE);
                 textD.resolve('');
                 stepsD.resolve([]);
+                stopReasonD.resolve('error');
+                errorD.resolve(message);
             } finally {
                 ui.finish();
                 try { fullController?.close(); } catch { /* already closed */ }
@@ -280,6 +352,8 @@ export class VibesAgent {
             totalUsage: usageD.promise,
             text: textD.promise,
             steps: stepsD.promise,
+            stopReason: stopReasonD.promise,
+            errorText: errorD.promise,
             fullStream,
         };
     }

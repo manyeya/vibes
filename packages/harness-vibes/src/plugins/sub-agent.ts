@@ -136,8 +136,11 @@ interface CompletionTracker {
 
 interface ExecutionResult {
     rawText: string;
-    steps: Array<{ content?: Array<{ type: string; text?: string; toolName?: string }> }>;
+    /** LoopStep shape from the owned core: tool calls live directly on the step. */
+    steps: Array<{ toolCalls?: ReadonlyArray<{ toolName?: string }> }>;
     completionPayload: CompletionPayload | null;
+    /** Set when the sub-agent's run ended in an error/abort (so we report the cause, not "no_output"). */
+    errorText?: string;
 }
 
 class DelegationConfigError extends Error {
@@ -397,9 +400,9 @@ function buildInlineResult(fullText: string, savedTo?: string, resultStartLine?:
 function summarizeFromSteps(steps: ExecutionResult['steps']): string {
     const tools = new Set<string>();
     for (const step of steps ?? []) {
-        for (const part of step.content ?? []) {
-            if (part.type === 'tool-call' && part.toolName && part.toolName !== COMPLETION_TOOL_NAME) {
-                tools.add(part.toolName);
+        for (const call of step.toolCalls ?? []) {
+            if (call.toolName && call.toolName !== COMPLETION_TOOL_NAME) {
+                tools.add(call.toolName);
             }
         }
     }
@@ -797,10 +800,19 @@ export default class SubAgentPlugin implements Plugin {
             rawResult.response,
         ]).then(([text, resolvedSteps]) => [text, resolvedSteps] as const);
 
+        // Surface a swallowed provider/stream error (e.g. a rate limit) so a
+        // failed run reports its real cause instead of a generic "no_output".
+        // `stopReason`/`errorText` are absent on mock results — guard for undefined.
+        const stopReason = await Promise.resolve(rawResult.stopReason).catch(() => undefined);
+        const errorText = await Promise.resolve(rawResult.errorText).catch(() => undefined);
+
         return {
             rawText,
             steps,
             completionPayload: tracker.payload,
+            ...(errorText || stopReason === 'error' || stopReason === 'aborted'
+                ? { errorText: errorText || `sub-agent run ${stopReason}` }
+                : {}),
         };
     }
 
@@ -962,9 +974,15 @@ export default class SubAgentPlugin implements Plugin {
                     delegationId,
                     subAgent,
                     request,
-                    errorCode: 'no_output',
-                    summary: `${subAgent.name} finished without producing any output.`,
-                    error: `The sub-agent ran but returned no answer, no report, and took no actions.`,
+                    // If the run actually errored (swallowed provider/stream error),
+                    // report the real cause; only fall back to no_output for a
+                    // genuinely empty-but-successful run.
+                    errorCode: execution.errorText ? 'subagent_failed' : 'no_output',
+                    summary: execution.errorText
+                        ? `${subAgent.name} failed: ${execution.errorText}`
+                        : `${subAgent.name} finished without producing any output.`,
+                    error: execution.errorText
+                        ?? `The sub-agent ran but returned no answer, no report, and took no actions.`,
                     rawText: execution.rawText,
                 });
                 emitFailure(failure);

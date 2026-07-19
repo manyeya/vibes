@@ -110,6 +110,22 @@ export {
     type DefaultPluginFactoryOptions,
 } from './src/core/agent/vibe-agent';
 
+// ── Execution modes (plan / manual / auto-edit / auto) ──────────────────
+export {
+    type AgentMode,
+    AGENT_MODES,
+    MODE_LABEL,
+    isAgentMode,
+    nextMode,
+} from './src/core/agent/modes';
+
+// ── Event bus (subscribe to a run headlessly) ───────────────────────────
+export {
+    AgentEventBus,
+    type AgentEvent,
+    type AgentEventListener,
+} from './src/core/streaming/streaming';
+
 // ── Phase 2: Public harness facade ──────────────────────────────────────
 export {
     defineAgent,

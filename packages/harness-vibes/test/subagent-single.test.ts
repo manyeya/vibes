@@ -272,6 +272,46 @@ describe('SubAgentPlugin single delegation', () => {
     }
   });
 
+  test('an errored run (swallowed provider error) reports the real cause, not no_output', async () => {
+    const workspaceDir = await createTempWorkspace('subagent-errored');
+
+    try {
+      const plugin = createPlugin({
+        workspaceDir,
+        subAgents: new Map([
+          ['Explorer', {
+            name: 'Explorer',
+            description: 'Codebase explorer',
+            systemPrompt: 'Explore the codebase.',
+            mode: 'general-purpose',
+            allowedTools: ['readFile'],
+          }],
+        ]),
+        // Empty output because the model step errored — in v7 that's delivered
+        // to onError and the stream finishes empty. The owned loop surfaces it
+        // via stopReason/errorText so we don't mislabel it "no_output".
+        stream: async () => ({
+          text: Promise.resolve(''),
+          steps: Promise.resolve([]),
+          response: Promise.resolve({ messages: [] }),
+          stopReason: Promise.resolve('error'),
+          errorText: Promise.resolve('HTTP 429: rate limit exceeded'),
+        }),
+      });
+
+      const result = await (plugin.tools.delegate as any).execute({
+        agent_name: 'Explorer',
+        task: 'Inspect the auth flow',
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.errorCode).toBe('subagent_failed');
+      expect(result.error).toContain('429');
+    } finally {
+      await removeTempWorkspace(workspaceDir);
+    }
+  });
+
   test('trailing text after completion is harmless (still a success)', async () => {
     const workspaceDir = await createTempWorkspace('subagent-trailing-text');
 
@@ -320,9 +360,10 @@ describe('SubAgentPlugin single delegation', () => {
             allowedTools: ['readFile'],
           }],
         ]),
-        // No final text and no report — but it did call a tool.
+        // No final text and no report — but it did call a tool. LoopStep shape:
+        // tool calls live directly on the step (the owned core), not under content.
         stream: async () => createStreamResult('', [
-          { content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'readFile', input: { path: 'a.ts' } }] },
+          { toolCalls: [{ toolName: 'readFile', input: { path: 'a.ts' } }] },
         ]),
       });
 

@@ -189,6 +189,24 @@ export interface VibesDataParts extends Record<string, unknown> {
     };
 
     /**
+     * The agent's current execution mode. Emitted (stable id, updates in place)
+     * whenever it changes — chiefly so the UI reflects an AGENT-initiated switch
+     * (the `set_mode` tool). User-initiated switches are already known to the UI.
+     */
+    mode: {
+        mode: import('./agent/modes').AgentMode;
+        /** Who changed/proposed it, for a subtle UI hint. */
+        source: 'user' | 'agent';
+        /** Why (surfaced to the user); set on agent switches/suggestions. */
+        reason?: string;
+        /**
+         * True = the agent is only PROPOSING this mode, not applying it. Only the
+         * user changes the mode; the UI shows this as a suggestion (shift+tab).
+         */
+        suggested?: boolean;
+    };
+
+    /**
      * A questionnaire the agent is asking the user to fill in (the
      * ClarificationPlugin's `ask_user`). Rendered as a form above the composer;
      * the user's answers come back as the next message. The agent's run stops

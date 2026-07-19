@@ -71,6 +71,8 @@ export interface LoopResult {
     responseMessages: ModelMessage[];
     /** Final assistant text (last step's text). */
     text: string;
+    /** Human-readable cause when stopReason is 'error' (a swallowed provider/stream error). */
+    error?: string;
 }
 
 async function anyStop(preds: StopPredicate[], steps: LoopStep[]): Promise<boolean> {
@@ -102,9 +104,10 @@ export async function runAgentLoop(
     const responseMessages: ModelMessage[] = [];
     const steps: LoopStep[] = [];
     let finalText = '';
+    let loopError: string | undefined;
 
     const result = (stopReason: StopReason): LoopResult =>
-        ({ stopReason, steps, responseMessages, text: finalText });
+        ({ stopReason, steps, responseMessages, text: finalText, ...(loopError ? { error: loopError } : {}) });
 
     // One turn per iteration, until a final answer or a stop condition.
     while (true) {
@@ -143,6 +146,7 @@ export async function runAgentLoop(
                 onError: config.onError,
             });
         } catch (error) {
+            loopError = error instanceof Error ? error.message : String(error);
             config.onError?.(error);
             return result(config.abortSignal?.aborted ? 'aborted' : 'error');
         }
@@ -162,6 +166,14 @@ export async function runAgentLoop(
         await config.onStepFinish?.(step);
 
         if (config.abortSignal?.aborted) return result('aborted');
+
+        // A v7 provider/stream error is delivered to onError and the step
+        // finishes empty rather than throwing. Treat that as a real stop with
+        // the captured cause, instead of a silent empty "finished".
+        if (outcome.error) {
+            loopError = outcome.error;
+            return result('error');
+        }
 
         const hasToolCalls = step.toolCalls.length > 0;
 

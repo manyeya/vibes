@@ -46,6 +46,12 @@ export interface StepModelOutcome {
     /** Assistant message + any tool-result messages this step produced. */
     responseMessages: ModelMessage[];
     toolCalls: Array<{ toolName: string; input?: unknown }>;
+    /**
+     * A provider/stream error for this step, if one occurred. In v7 these are
+     * delivered to `onError` and the stream finishes empty instead of throwing,
+     * so without capturing it here an errored step looks like an empty finish.
+     */
+    error?: string;
 }
 
 /**
@@ -53,9 +59,10 @@ export interface StepModelOutcome {
  * lets the SDK execute this step's tools, and returns the step's outcome.
  */
 export async function streamModelStep(cfg: StepCallConfig): Promise<StepModelOutcome> {
+    let stepError: string | undefined;
     const result = streamText({
         model: cfg.model,
-        system: cfg.system,
+        instructions: cfg.system,
         messages: cfg.messages,
         tools: cfg.tools,
         ...(cfg.toolChoice !== undefined ? { toolChoice: cfg.toolChoice } : {}),
@@ -70,6 +77,9 @@ export async function streamModelStep(cfg: StepCallConfig): Promise<StepModelOut
         // downstream). Surface the raw error so the real failure is visible.
         onError: ({ error }) => {
             const e = error as { name?: string; message?: string; statusCode?: number; responseBody?: string; cause?: unknown };
+            stepError = [e?.statusCode ? `HTTP ${e.statusCode}` : undefined, e?.message || e?.name || String(error)]
+                .filter(Boolean)
+                .join(': ');
             console.error('[vibes-loop] model stream error:', {
                 name: e?.name, message: e?.message, statusCode: e?.statusCode,
                 responseBody: e?.responseBody, cause: e?.cause,
@@ -101,5 +111,6 @@ export async function streamModelStep(cfg: StepCallConfig): Promise<StepModelOut
         usage: totalUsage,
         responseMessages: response.messages as ModelMessage[],
         toolCalls: (toolCalls ?? []).map((c) => ({ toolName: c.toolName, input: (c as { input?: unknown }).input })),
+        ...(stepError ? { error: stepError } : {}),
     };
 }

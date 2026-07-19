@@ -1,5 +1,6 @@
 import type { Plugin, PluginStreamContext, ToolsRequiringApprovalConfig } from '../types';
 import { resolveApprovalPolicy, wrapToolExecute } from './tool-resolution';
+import { classifyTool, guardModeBlock, modeApprovalPolicy, type AgentMode } from './modes';
 
 export interface ToolRegistryConfig {
     /** Custom tool definitions supplied via agent config. */
@@ -14,6 +15,12 @@ export interface ToolRegistryConfig {
     maxRetries: number;
     /** Redact known secrets from tool results before they're returned/streamed (default true). */
     redactToolIO?: boolean;
+    /**
+     * Current execution mode, read live. When present, edit/exec tools get a
+     * mode-aware approval predicate and a plan-mode block guard on top of their
+     * base policy. Omit to disable mode gating entirely.
+     */
+    getMode?: () => AgentMode;
 }
 
 /** Runtime hooks the wrapped tools need from the harness. */
@@ -105,24 +112,36 @@ export class ToolRegistry {
                 | ((args: unknown, options: unknown) => Promise<unknown>)
                 | undefined;
             const ownerName = this.owners[toolName] ?? 'custom';
-            const resolvedNeedsApproval = resolveApprovalPolicy(approvalConfig, toolName, toolDefRecord);
+            const baseApproval = resolveApprovalPolicy(approvalConfig, toolName, toolDefRecord);
+
+            // Mode gating only applies to mutating (edit/exec) tools; read-only
+            // tools keep their base policy untouched.
+            const getMode = this.config.getMode;
+            const cls = getMode ? classifyTool(toolName) : 'read';
+            const gated = getMode !== undefined && cls !== 'read';
+            const resolvedNeedsApproval = gated
+                ? modeApprovalPolicy(getMode!, cls, baseApproval)
+                : baseApproval;
+
+            let execute = originalExecute
+                ? wrapToolExecute({
+                    toolName,
+                    ownerName,
+                    originalExecute,
+                    plugins,
+                    maxRetries: this.config.maxRetries,
+                    redactToolIO: this.config.redactToolIO ?? true,
+                    getStreamContext: deps.getStreamContext,
+                    logError: deps.logError,
+                    consumeRetry: deps.consumeRetry,
+                })
+                : undefined;
+            if (gated && execute) execute = guardModeBlock(getMode!, toolName, cls, execute);
 
             resolvedTools[toolName] = {
                 ...(toolDef as Record<string, unknown>),
                 ...(resolvedNeedsApproval !== undefined ? { needsApproval: resolvedNeedsApproval } : {}),
-                execute: originalExecute
-                    ? wrapToolExecute({
-                        toolName,
-                        ownerName,
-                        originalExecute,
-                        plugins,
-                        maxRetries: this.config.maxRetries,
-                        redactToolIO: this.config.redactToolIO ?? true,
-                        getStreamContext: deps.getStreamContext,
-                        logError: deps.logError,
-                        consumeRetry: deps.consumeRetry,
-                    })
-                    : undefined,
+                execute,
             };
         }
 

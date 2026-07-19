@@ -492,6 +492,16 @@ export class DataStreamWriter {
     }
 
     /** Write/replace the live context-window usage gauge. */
+    /** Emit the current execution mode (stable id so it updates in place). */
+    writeMode(mode: VibesDataParts['mode']): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-mode',
+            id: 'agent-mode',
+            data: mode,
+        } as const);
+    }
+
     writeContextUsage(usage: VibesDataParts['context_usage']): void {
         if (!this.writer) return;
         this.writer.write({
@@ -735,5 +745,7 @@ export function createScopedUIMessageStreamWriter(
 }
 
 // ============ RE-EXPORTS FOR BACKWARD COMPATIBILITY ============
+
+export { AgentEventBus, teeToBus, type AgentEvent, type AgentEventListener } from './agent-events';
 
 export default DataStreamWriter;

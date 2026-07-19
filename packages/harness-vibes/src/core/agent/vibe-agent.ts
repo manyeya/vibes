@@ -17,6 +17,7 @@ import {
     WebSearchPlugin,
 } from '../../plugins';
 import MemoryPlugin from '../../plugins/memory';
+import ModePlugin from '../../plugins/mode';
 import {
     SubAgent,
     Plugin,
@@ -321,6 +322,16 @@ export class VibeAgent extends VibesAgent {
         ))
 
         this.addPlugin(defaults.filter((p) => p.name === 'MemoryPlugin'));
+
+        // The agent-facing half of modes: lets it switch its own mode (the user
+        // switches through the UI/API). set_mode is read-classified, so it's
+        // never gated — the agent can always change mode, even from plan.
+        this.addPlugin(new ModePlugin({
+            getMode: () => this.getMode(),
+            // The agent only proposes; the user applies (setMode). This is why
+            // the mode never changes out from under the user.
+            suggestMode: (m, reason) => this.suggestMode(m, reason),
+        }));
 
         // Custom plugins
         if (config.plugins) {
