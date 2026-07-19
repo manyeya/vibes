@@ -434,6 +434,10 @@ export class DataStreamWriter {
             added?: number;
             removed?: number;
             diff?: { removed: string[]; added: string[] };
+            /** Standard unified-diff text (with @@ hunks) for a syntax-highlighted view. */
+            unifiedDiff?: string;
+            /** Source language hint (file extension) for highlighting the diff. */
+            filetype?: string;
         } = {}
     ): void {
         if (!this.writer) return;

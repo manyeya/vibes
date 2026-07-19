@@ -123,6 +123,45 @@ export default class FilesystemPlugin implements Plugin {
     }
 
     /** The changed hunk between two strings — lines left after trimming shared prefix/suffix. */
+    // Build a standard unified diff (single hunk + context) from full old/new
+    // file contents, so the UI can render it syntax-highlighted with line
+    // numbers. Block-style like computeDiff: fine for one localized edit; a
+    // replace_all across scattered spots lumps into one wide hunk.
+    // ponytail: naive prefix/suffix trim, not Myers — swap in a real LCS if
+    // scattered multi-region diffs start looking bad.
+    private buildUnifiedDiff(oldStr: string, newStr: string, path: string, context = 3): string | undefined {
+        // '' is zero lines, not one empty line — otherwise a new file (old '')
+        // shows a phantom leading '-' row.
+        const o = oldStr === '' ? [] : oldStr.split('\n');
+        const n = newStr === '' ? [] : newStr.split('\n');
+        let start = 0;
+        while (start < o.length && start < n.length && o[start] === n[start]) start++;
+        let end = 0;
+        while (end < o.length - start && end < n.length - start &&
+            o[o.length - 1 - end] === n[n.length - 1 - end]) end++;
+        const oEndFull = o.length - end;
+        const nEndFull = n.length - end;
+        if (oEndFull <= start && nEndFull <= start) return undefined; // no line-level change
+
+        const MAX = 200; // cap a giant edit so it can't flood the transcript
+        const capped = oEndFull - start > MAX || nEndFull - start > MAX;
+        const oEnd = capped ? start + MAX : oEndFull;
+        const nEnd = capped ? start + MAX : nEndFull;
+        const ctxBefore = Math.max(0, start - context);
+        const ctxAfter = capped ? 0 : Math.min(context, end);
+
+        const body: string[] = [];
+        for (let i = ctxBefore; i < start; i++) body.push(` ${o[i]}`);
+        for (let i = start; i < oEnd; i++) body.push(`-${o[i]}`);
+        for (let i = start; i < nEnd; i++) body.push(`+${n[i]}`);
+        for (let i = 0; i < ctxAfter; i++) body.push(` ${o[oEndFull + i]}`);
+
+        const oldCount = start - ctxBefore + (oEnd - start) + ctxAfter;
+        const newCount = start - ctxBefore + (nEnd - start) + ctxAfter;
+        const header = `@@ -${ctxBefore + 1},${oldCount} +${ctxBefore + 1},${newCount} @@`;
+        return `--- a/${path}\n+++ b/${path}\n${header}\n${body.join('\n')}`;
+    }
+
     private computeDiff(oldStr: string, newStr: string): { removed: string[]; added: string[] } {
         const oldLines = oldStr.split('\n');
         const newLines = newStr.split('\n');
@@ -187,13 +226,22 @@ export default class FilesystemPlugin implements Plugin {
                     const opId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
                     this.writer?.writeFileOperation(opId, 'write', relativePath, 'running');
                     operation?.milestone(`Writing ${relativePath}`, { phase: 'write' });
+                    // Capture the old content first so the UI can show a diff (a new
+                    // file → prev '' → all-additions, like Claude Code shows for writes).
+                    const prev = (await this.sandbox.exists(relativePath))
+                        ? await this.sandbox.readFile(relativePath)
+                        : '';
                     const bytes = await this.sandbox.writeFile(relativePath, content);
 
                     // Track the file in the current session
                     operation?.milestone(`Tracking ${relativePath}`, { phase: 'track' });
                     await this.trackFile(relativePath);
                     operation?.complete(`Wrote ${relativePath}`, { phase: 'complete' });
-                    this.writer?.writeFileOperation(opId, 'write', relativePath, 'complete', { bytes });
+                    this.writer?.writeFileOperation(opId, 'write', relativePath, 'complete', {
+                        bytes,
+                        unifiedDiff: this.buildUnifiedDiff(prev, content, relativePath),
+                        filetype: relativePath.split('.').pop(),
+                    });
 
                     return { success: true, bytesWritten: bytes, savedTo: relativePath };
                 },
@@ -261,6 +309,8 @@ export default class FilesystemPlugin implements Plugin {
                         added: diff.added.length,
                         removed: diff.removed.length,
                         diff: { removed: diff.removed.slice(0, 30), added: diff.added.slice(0, 30) },
+                        unifiedDiff: this.buildUnifiedDiff(content, next, relativePath),
+                        filetype: relativePath.split('.').pop(),
                     });
                     return { success: true, path: relativePath, replacements };
                 },
