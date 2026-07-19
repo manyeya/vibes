@@ -42,6 +42,8 @@ const vibeSchema = z.object({
     model: z.string().nullable().optional(),
     /** Optional web-search backend preference from the UI settings ('auto' | 'exa' | 'tavily' | 'brave'). */
     search_provider: z.string().nullable().optional(),
+    /** Optional execution mode from the UI ('plan' | 'manual' | 'auto-edit' | 'auto'). */
+    mode: z.string().nullable().optional(),
 }).passthrough();
 
 type ApiMessage = z.infer<typeof apiMessageSchema>;
@@ -401,6 +403,38 @@ app.get('/workspaces/:id', async (c) => {
     }
 });
 
+/**
+ * Git status of a workspace's project dir, for the status bar: the current
+ * branch and whether the tree is dirty. Returns `{ git: null }` when the dir
+ * isn't a git repo (or git isn't available) — the UI just omits the branch.
+ */
+app.get('/workspaces/:id/git', async (c) => {
+    try {
+        const workspace = await vibeRuntime.getWorkspace(c.req.param('id'));
+        if (!workspace) return c.json({ success: false, error: 'Workspace not found' }, 404);
+
+        const runGit = async (args: string[]): Promise<string | null> => {
+            try {
+                const proc = Bun.spawn(['git', '-C', workspace.rootDir, ...args], { stdout: 'pipe', stderr: 'ignore' });
+                const out = await new Response(proc.stdout).text();
+                return (await proc.exited) === 0 ? out : null;
+            } catch {
+                return null;
+            }
+        };
+
+        const branchOut = await runGit(['rev-parse', '--abbrev-ref', 'HEAD']);
+        if (branchOut === null) return c.json({ success: true, git: null }); // not a repo
+        const branch = branchOut.trim() || 'HEAD';
+        const statusOut = await runGit(['status', '--porcelain']);
+        const dirty = !!statusOut && statusOut.trim().length > 0;
+        return c.json({ success: true, git: { branch, dirty } });
+    } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to read workspace git');
+        return c.json({ success: false, error: 'Failed to read workspace git' }, 500);
+    }
+});
+
 /** Rename / update a workspace. Body: { name?, metadata? }. */
 app.patch('/workspaces/:id', async (c) => {
     try {
@@ -706,6 +740,7 @@ app.post('/vibe', zValidator('json', vibeSchema), async (c) => {
         const agent = (await vibeRuntime.session(sessionId)).raw;
         await applyModelOverride(agent, body.model);
         applySearchProvider(agent, body.search_provider);
+        if (body.mode) agent.setMode(body.mode, 'user');
 
         const startTime = Date.now();
         // The agent's `generate({messages})` overload accepts ModelMessage[]
@@ -773,6 +808,7 @@ app.post('/vibe/stream', zValidator('json', vibeSchema), async (c) => {
         const sessionBackend = session.backend!;
         await applyModelOverride(agent, body.model);
         applySearchProvider(agent, body.search_provider);
+        if (body.mode) agent.setMode(body.mode, 'user');
 
         // Pass originalMessages so AI SDK reuses message IDs when the client
         // resubmits after a tool approval. We detect that case either by the

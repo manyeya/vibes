@@ -29,7 +29,11 @@ export interface ModelSpec {
 const DEFAULT_GATEWAY_MODEL = 'anthropic/claude-sonnet-4-5';
 const DEFAULT_OPENAI_MODEL = 'gpt-4o';
 const DEFAULT_ZHIPU_MODEL = 'glm-4.7-flash';
-const DEFAULT_OPENROUTER_MODEL = 'anthropic/claude-3.5-sonnet';
+// Free by default. Must match AVAILABLE_MODELS[0].id (what getDefaultModelId
+// reports to the UI) so the shown default and the request-path default agree,
+// AND must be a real id in the live free catalog — otherwise /models' `active`
+// fallback silently swaps it for whatever OpenRouter lists first.
+const DEFAULT_OPENROUTER_MODEL = 'openai/gpt-oss-20b:free';
 
 /**
  * A model offered in the UI selector. The free OpenRouter catalog is fetched
@@ -60,7 +64,7 @@ export const DEFAULT_CONTEXT_WINDOW = 128_000;
  * list too, as a reliable option when the free models are rate-limited.
  */
 export const AVAILABLE_MODELS: AvailableModel[] = [
-    { id: 'openai/gpt-oss-120b:free', label: 'GPT-OSS 120B', free: true, group: 'OpenAI', note: 'Strong tool use', priceIn: 0, priceOut: 0, contextWindow: 131_072 },
+    { id: 'openai/gpt-oss-20b:free', label: 'GPT-OSS 20B', free: true, group: 'OpenAI', note: 'Free, tool-capable', priceIn: 0, priceOut: 0, contextWindow: 131_072 },
     { id: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet', free: false, group: 'Anthropic', note: 'Paid, most reliable', priceIn: 3, priceOut: 15, contextWindow: 200_000 },
 ];
 
