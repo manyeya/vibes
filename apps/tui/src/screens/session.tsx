@@ -13,7 +13,8 @@ import { Footer } from '../components/footer';
 import { AssistantMessage, ErrorBlock, UserMessage } from '../components/messages';
 import { PlanReview, type PlanReviewData } from '../components/plan-review';
 import { Prompt } from '../components/prompt';
-import { TaskPanel, type Task } from '../components/task-panel';
+import { TaskPanel } from '../components/task-panel';
+import { deriveTasks } from '../derive-tasks';
 import { QuestionPrompt, type ClarificationData } from '../components/question';
 import { sessionTitle } from '../components/session-dialog';
 import { theme } from '../theme';
@@ -364,27 +365,9 @@ export function Session({
     addToolApprovalResponse({ id: pendingApproval.id, approved, reason: approved ? 'Approved' : 'Denied' });
   };
 
-  // Live task list for the sticky panel: the task_graph snapshot as the base,
-  // with later task_update parts overriding status in place (merged by id, last
-  // wins) — so the panel always shows current state instead of scrolling spam.
-  const tasks = useMemo(() => {
-    const map = new Map<string, Task>();
-    for (const m of messages) {
-      for (const p of m.parts) {
-        if (p.type === 'data-task_graph') {
-          const nodes = (p as { data?: { nodes?: Task[] } }).data?.nodes ?? [];
-          for (const n of nodes) map.set(n.id, { id: n.id, title: n.title, status: n.status });
-        } else if (p.type === 'data-task_update') {
-          const d = (p as { data?: { id?: string; title?: string; status?: string } }).data;
-          if (d?.id) {
-            const ex = map.get(d.id);
-            map.set(d.id, { id: d.id, title: d.title ?? ex?.title ?? d.id, status: d.status ?? ex?.status ?? 'pending' });
-          }
-        }
-      }
-    }
-    return [...map.values()];
-  }, [messages]);
+  // Live task list for the sticky panel — latest graph wins, scoped to this
+  // turn. See deriveTasks for why both of those matter.
+  const tasks = useMemo(() => deriveTasks(messages as any), [messages]);
 
   return (
     <box flexGrow={1} backgroundColor={theme.background} paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>

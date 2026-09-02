@@ -20,7 +20,7 @@
     "build": "bun run build:packages && bun run build:apps",
     "build:packages": "bun run --filter './packages/*' build",
     "build:apps": "bun run --filter './apps/*' build",
-    "test": "bun run --filter './packages/*' test"
+    "test": "bun run --filter './packages/*' test && bun run --filter @vibes/tui test"
   },
   "devDependencies": {
     "bun-types": "latest",
