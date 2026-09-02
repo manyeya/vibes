@@ -9,7 +9,7 @@ import { logger } from "../logger";
 import streamCoordinator from "../stream-coordinator";
 import { vibeRuntime, defaultSubAgents } from "../vibe-coder";
 import { homePath } from "../paths";
-import { createAgentStreamResponse } from "../../../../packages/harness-vibes/index";
+import { createAgentStreamResponse, CheckpointStore } from "../../../../packages/harness-vibes/index";
 import { agent as simpleAgent } from "../simple-agent";
 import { getModel, getAvailableModels, resolveContextWindow, getDefaultModelId, isKnownModelId, resolveDefaultSpec } from "../model-factory";
 
@@ -138,6 +138,153 @@ app.get('/skills', async (c) => {
     } catch (error) {
         logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to list skills');
         return c.json({ success: false, error: 'Failed to list skills' }, 500);
+    }
+});
+
+/** Label a checkpoint with the prompt that triggered it, like Claude Code's menu. */
+function lastUserMessageText(messages: ApiMessage[] | undefined): string {
+    for (let i = (messages?.length ?? 0) - 1; i >= 0; i--) {
+        const m = messages![i];
+        if (m?.role !== 'user') continue;
+        const parts = (m as { parts?: Array<{ type?: string; text?: string }> }).parts;
+        const text = parts?.filter((p) => p?.type === 'text').map((p) => p.text).join(' ')
+            ?? (typeof (m as { content?: unknown }).content === 'string' ? String((m as { content?: unknown }).content) : '');
+        if (text?.trim()) return text.trim().replace(/\s+/g, ' ').slice(0, 120);
+    }
+    return '';
+}
+
+// ── session checkpoints (shadow-git snapshots for rewind) ─────────────────────
+/**
+ * A checkpoint store for one session. The shadow repo lives under ~/.vibes and
+ * its work-tree is the session's project dir, so snapshots never touch the
+ * user's own git repository. See core/checkpoints.ts.
+ */
+async function checkpointsFor(sessionId: string): Promise<CheckpointStore> {
+    const workTree = await vibeRuntime.getSessionWorkspace(sessionId);
+    return new CheckpointStore({ gitDir: homePath('checkpoints', `${sessionId}.git`), workTree });
+}
+
+app.get('/sessions/:id/checkpoints', async (c) => {
+    try {
+        const store = await checkpointsFor(c.req.param('id'));
+        return c.json({ success: true, checkpoints: await store.list() });
+    } catch (error) {
+        logger.error({ error: String(error) }, 'Failed to list checkpoints');
+        return c.json({ success: false, error: 'Failed to list checkpoints' }, 500);
+    }
+});
+
+/**
+ * Rewind a session. `mode` decides how far it goes:
+ *   both (default) — restore files AND truncate the conversation, so the
+ *                    agent's context matches what is actually on disk
+ *   files          — restore files only
+ *   conversation   — truncate messages only
+ *
+ * The file restore snapshots the current state first, so a rewind is itself
+ * reversible (the returned undoSha).
+ */
+app.post('/sessions/:id/rewind', async (c) => {
+    const sessionId = c.req.param('id');
+    try {
+        const body = await c.req.json().catch(() => ({} as any));
+        const checkpointId = typeof body?.checkpointId === 'string' ? body.checkpointId : '';
+        const mode: 'both' | 'files' | 'conversation' = body?.mode ?? 'both';
+        if (!checkpointId) return c.json({ success: false, error: 'checkpointId is required' }, 400);
+
+        // A live run would race the restore — stop it before touching anything.
+        streamCoordinator.abortStream(sessionId, 'rewind');
+
+        const result: Record<string, unknown> = { mode };
+
+        if (mode !== 'conversation') {
+            const store = await checkpointsFor(sessionId);
+            const restored = await store.restore(checkpointId);
+            if (!restored.ok) return c.json({ success: false, error: restored.error ?? 'restore failed' }, 500);
+            result.undoSha = restored.undoSha;
+        }
+
+        if (mode !== 'files') {
+            const session = await vibeRuntime.session(sessionId);
+            const backend = session.backend;
+            if (backend) {
+                const keep = Math.max(0, Number(body?.messageCount ?? 0));
+                const ui = (await backend.getUIMessages()) ?? [];
+                const state = await backend.getState();
+                await backend.setUIMessages(ui.slice(0, keep));
+                // setState replaces the message rows wholesale, so a shorter
+                // array IS the truncation — no delete primitive needed.
+                await backend.setState({ messages: (state.messages ?? []).slice(0, keep) });
+                result.messagesKept = keep;
+            }
+        }
+
+        return c.json({ success: true, ...result });
+    } catch (error) {
+        logger.error({ error: String(error) }, 'Failed to rewind session');
+        return c.json({ success: false, error: 'Failed to rewind session' }, 500);
+    }
+});
+
+/**
+ * Read-only git status for the session's project. Reads the USER's repo (never
+ * the shadow checkpoint repo) and never mutates it — no commits, no staging.
+ */
+app.get('/sessions/:id/git', async (c) => {
+    try {
+        const dir = await vibeRuntime.getSessionWorkspace(c.req.param('id'));
+        const runGit = async (args: string[]): Promise<string | null> => {
+            try {
+                const proc = Bun.spawn(['git', '-C', dir, ...args], { stdout: 'pipe', stderr: 'ignore' });
+                const out = await new Response(proc.stdout).text();
+                return (await proc.exited) === 0 ? out : null;
+            } catch {
+                return null;
+            }
+        };
+
+        const branchOut = await runGit(['rev-parse', '--abbrev-ref', 'HEAD']);
+        if (branchOut === null) return c.json({ success: true, git: null }); // not a repo
+        const branch = branchOut.trim() || 'HEAD';
+        const statusOut = (await runGit(['status', '--porcelain'])) ?? '';
+        const files = statusOut.split('\n').filter(Boolean).map((l) => ({
+            status: l.slice(0, 2).trim(),
+            path: l.slice(3),
+        }));
+        // "1\t2" from left-right; absent when there is no upstream.
+        const counts = (await runGit(['rev-list', '--left-right', '--count', 'HEAD...@{upstream}']))?.trim().split(/\s+/);
+        return c.json({
+            success: true,
+            git: {
+                branch,
+                dirty: files.length > 0,
+                files: files.slice(0, 50),
+                ahead: counts ? Number(counts[0]) : undefined,
+                behind: counts ? Number(counts[1]) : undefined,
+            },
+        });
+    } catch (error) {
+        logger.error({ error: String(error) }, 'Failed to read session git');
+        return c.json({ success: false, error: 'Failed to read session git' }, 500);
+    }
+});
+
+/** What this session changed, from its own checkpoints (works on non-git projects). */
+app.get('/sessions/:id/diff', async (c) => {
+    try {
+        const store = await checkpointsFor(c.req.param('id'));
+        const list = await store.list();
+        if (list.length === 0) return c.json({ success: true, diff: '', files: [] });
+        const first = list[list.length - 1].sha;
+        return c.json({
+            success: true,
+            diff: await store.diff(first),
+            files: await store.changedFiles(first),
+        });
+    } catch (error) {
+        logger.error({ error: String(error) }, 'Failed to diff session');
+        return c.json({ success: false, error: 'Failed to diff session' }, 500);
     }
 });
 
@@ -439,6 +586,8 @@ app.post('/sessions', async (c) => {
 app.delete('/sessions/:id', async (c) => {
     try {
         const sessionId = c.req.param('id');
+        // Drop the shadow repo too, or checkpoints outlive their session.
+        await (await checkpointsFor(sessionId)).destroy().catch(() => { /* best effort */ });
         await vibeRuntime.deleteSession(sessionId);
 
         return c.json({
@@ -694,6 +843,13 @@ app.post('/vibe/stream', zValidator('json', vibeSchema), async (c) => {
         applySearchProvider(agent, body.search_provider);
         if (body.mode) agent.setMode(body.mode, 'user');
         if (body.context_decision) agent.setContextDecision(body.context_decision);
+
+        // Snapshot the project BEFORE the turn runs, so /rewind can return to
+        // exactly this point. Best-effort and non-blocking on failure: no
+        // restore point is a lesser problem than a turn that won't start.
+        void checkpointsFor(sessionId)
+            .then((store) => store.create(lastUserMessageText(body.messages) || 'turn'))
+            .catch((error) => logger.warn({ error: String(error) }, 'checkpoint failed'));
 
         // Pass originalMessages so AI SDK reuses message IDs when the client
         // resubmits after a tool approval. We detect that case either by the

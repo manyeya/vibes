@@ -31,6 +31,7 @@ import {
     type ParallelDelegationResult,
 } from './src/plugins';
 import MemoryPlugin from './src/plugins/memory';
+import { CheckpointStore, type Checkpoint, type CheckpointStoreOptions } from './src/core/checkpoints';
 import {
     resolveBudgetStops,
     tokenBudget,
@@ -178,6 +179,9 @@ export {
     redactSecrets,
     redactString,
     type ParallelDelegationResult,
+    CheckpointStore,
+    type Checkpoint,
+    type CheckpointStoreOptions,
     DrizzleBackend,
     StateBackend,
     connectStore,
