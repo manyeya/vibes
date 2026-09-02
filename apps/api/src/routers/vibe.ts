@@ -11,7 +11,7 @@ import { vibeRuntime, defaultSubAgents } from "../vibe-coder";
 import { homePath } from "../paths";
 import { createAgentStreamResponse } from "../../../../packages/harness-vibes/index";
 import { agent as simpleAgent } from "../simple-agent";
-import { getModel, getAvailableModels, resolveContextWindow, getDefaultModelId, isKnownModelId } from "../model-factory";
+import { getModel, getAvailableModels, resolveContextWindow, getDefaultModelId, isKnownModelId, resolveDefaultSpec } from "../model-factory";
 
 /**
  * Loose message shape accepted by the streaming endpoints. AI SDK in
@@ -69,12 +69,17 @@ async function applyModelOverride(
     agent: {
         setModelOverride: (m?: ReturnType<typeof getModel>) => void;
         setContextWindow: (w: number, r?: number) => void;
+        setSubAgentModelSpec?: (spec: unknown) => void;
     },
     modelId: unknown,
 ): Promise<void> {
     const id = typeof modelId === 'string' && modelId.trim() ? modelId.trim() : undefined;
     const known = id ? isKnownModelId(id) : false;
     agent.setModelOverride(known ? getModel({ provider: 'openrouter', id: id! }) : undefined);
+    // Out-of-process sub-agents rebuild their model from a serializable spec, so
+    // the override has to reach them separately — a model object can't cross the
+    // process boundary.
+    agent.setSubAgentModelSpec?.(known ? { provider: 'openrouter', id: id! } : resolveDefaultSpec());
     // Keep the context gauge + compression threshold aligned with the active
     // model's real window — selector models range from a few k to 1M tokens, so
     // a window frozen to the startup default would make the gauge meaningless.

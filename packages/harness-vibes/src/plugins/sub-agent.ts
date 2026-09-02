@@ -19,11 +19,18 @@ import {
     ConcurrencyLimitError,
     type BackgroundTaskView,
 } from './background-tasks';
+import { DeltaForwarder } from './subagent-stream';
+import type {
+    ChildMessage,
+    ModelResolverSpec,
+    ParentMessage,
+    SubAgentRunSpec,
+} from './subagent-protocol';
 
 // Optional structured-handoff tool. Sub-agents are NOT required to call it —
 // a normal final answer is a perfectly good result. Calling it just lets a
 // sub-agent hand back a clean summary + the files it touched.
-const COMPLETION_TOOL_NAME = 'report_result';
+export const COMPLETION_TOOL_NAME = 'report_result';
 
 /**
  * Reliability backstops every delegated sub-agent runs with. The parent agent's
@@ -32,13 +39,13 @@ const COMPLETION_TOOL_NAME = 'report_result';
  * or overspend within those steps. Scaled below the parent's caps since a single
  * delegated task is narrower in scope.
  */
-const SUBAGENT_LOOP_DETECTION = { maxRepeats: 3, window: 6 } as const;
-const SUBAGENT_BUDGETS = { maxTotalTokens: 1_000_000, maxToolCalls: 60 } as const;
+export const SUBAGENT_LOOP_DETECTION = { maxRepeats: 3, window: 6 } as const;
+export const SUBAGENT_BUDGETS = { maxTotalTokens: 1_000_000, maxToolCalls: 60 } as const;
 
 const DELEGATION_TOOL_NAMES = ['task', 'delegate', 'parallel_delegate', 'create_agent', 'spawn_agent', 'list_agents'] as const;
 const DELEGATION_TOOL_NAME_SET = new Set<string>(DELEGATION_TOOL_NAMES);
 
-const completionSchema = z.object({
+export const completionSchema = z.object({
     summary: z.string().min(1).describe('A concise summary of what was completed.'),
     files: z.array(z.string()).default([]).describe('Files created or modified while completing the task.'),
     metadata: z.record(z.string(), z.unknown()).optional().describe('Optional structured metadata about the completed work.'),
@@ -140,7 +147,7 @@ interface CompletionTracker {
     payload: CompletionPayload | null;
 }
 
-interface ExecutionResult {
+export interface ExecutionResult {
     rawText: string;
     /** LoopStep shape from the owned core: tool calls live directly on the step. */
     steps: Array<{ toolCalls?: ReadonlyArray<{ toolName?: string }> }>;
@@ -262,7 +269,9 @@ function formatMetadata(metadata?: Record<string, unknown>): string {
     return `\n\n\`\`\`json\n${JSON.stringify(metadata, null, 2)}\n\`\`\``;
 }
 
-function buildDelegationMessage(request: DelegationInput): string {
+/** The delegated task message. Takes a structural subset so the out-of-process
+ *  worker builds an IDENTICAL prompt from its wire spec. */
+export function buildDelegationMessage(request: { task: string; context?: Record<string, unknown>; relevantFiles?: string[] }): string {
     const sections = [request.task.trim()];
 
     if (request.context && Object.keys(request.context).length > 0) {
@@ -436,6 +445,10 @@ export default class SubAgentPlugin implements Plugin {
     private readonly background: BackgroundTaskRegistry<DelegationSuccessResult | DelegationErrorResult>;
     /** Task ids already reported to the model, so a drained result isn't re-injected. */
     private readonly reportedTasks = new Set<string>();
+    /** Set to run delegations out-of-process (see setWorkerConfig). */
+    private workerConfig?: ModelResolverSpec;
+    /** How deep sub-agents may nest before they must do the work themselves. */
+    private readonly maxSubAgentDepth = 3;
 
     constructor(
         private readonly subAgents: Map<string, SubAgent>,
@@ -749,6 +762,112 @@ export default class SubAgentPlugin implements Plugin {
         };
     }
 
+    /**
+     * Can this delegation run out-of-process?
+     *
+     * Only when a worker is configured AND no custom tools are registered. Tools
+     * passed as closures (`VibesAgentConfig.tools`) have no serializable form, so
+     * running such a delegation in a child would silently drop them — we fall
+     * back to in-process instead, which is slower to isolate but correct.
+     */
+    private canUseWorker(): boolean {
+        return !!this.workerConfig && Object.keys(this.getParentCustomTools()).length === 0;
+    }
+
+    /** Configure out-of-process execution. Absent, delegations run in-process. */
+    setWorkerConfig(config: ModelResolverSpec | undefined): void {
+        this.workerConfig = config;
+    }
+
+    /**
+     * Point future children at a different model. The UI can switch models
+     * mid-session, and a child rebuilds its model from this spec — frozen at
+     * construction it would keep delegating to the startup default.
+     */
+    setWorkerModelSpec(modelSpec: unknown): void {
+        if (this.workerConfig) this.workerConfig = { ...this.workerConfig, modelSpec };
+    }
+
+    /**
+     * Run one delegation in a `Bun.spawn`ed child. Returns the same
+     * {@link ExecutionResult} as the in-process path — the child runs the agent,
+     * the parent still owns artifact writing, caching and result classification.
+     */
+    private executeSubAgentInWorker(
+        subAgent: NormalizedSubAgent,
+        request: DelegationInput,
+        delegationId: string,
+        writer?: UIMessageStreamWriter<VibesUIMessage>,
+        abortSignal?: AbortSignal,
+    ): Promise<ExecutionResult> {
+        const worker = this.workerConfig!;
+        const workerPath = new URL('./subagent-worker.ts', import.meta.url).pathname;
+        const forwarder = writer ? new DeltaForwarder((part) => writer.write(part as any)) : undefined;
+
+        return new Promise<ExecutionResult>((resolve, reject) => {
+            let settled = false;
+            const finish = (fn: () => void) => {
+                if (settled) return;
+                settled = true;
+                forwarder?.finish();
+                abortSignal?.removeEventListener('abort', onAbort);
+                fn();
+            };
+
+            const proc = Bun.spawn(['bun', workerPath], {
+                stdin: 'ignore',
+                stdout: 'inherit',
+                stderr: 'inherit',
+                env: process.env,
+                ipc: (message: ChildMessage) => {
+                    if (message?.type === 'stream-part') {
+                        forwarder?.push(message.part);
+                    } else if (message?.type === 'done') {
+                        finish(() => resolve(message.result));
+                    } else if (message?.type === 'error') {
+                        finish(() => reject(new Error(message.message)));
+                    }
+                },
+                onExit: (_proc, exitCode, signalCode) => {
+                    // Exiting before `done` means the child crashed or was killed;
+                    // surface that instead of hanging the delegation forever.
+                    finish(() => reject(new Error(
+                        signalCode
+                            ? `sub-agent worker killed by ${signalCode}`
+                            : `sub-agent worker exited with code ${exitCode} before reporting a result`,
+                    )));
+                },
+            });
+
+            const onAbort = () => {
+                proc.send({ type: 'abort' } satisfies ParentMessage);
+                // Don't wait on a graceful stop that may never come.
+                proc.kill();
+            };
+            if (abortSignal?.aborted) return onAbort();
+            abortSignal?.addEventListener('abort', onAbort, { once: true });
+
+            const spec: SubAgentRunSpec = {
+                ...worker,
+                delegationId,
+                agentName: subAgent.name,
+                systemPrompt: buildSubAgentSystemPrompt(subAgent),
+                task: request.task,
+                context: request.context,
+                relevantFiles: request.relevantFiles,
+                allowedTools: subAgent.allowedTools,
+                blockedTools: mergeBlockedTools(subAgent.blockedTools, subAgent.allowSubdelegation),
+                maxSteps: subAgent.maxSteps ?? 25,
+                contextWindow: this.parentContextWindow,
+                compressionRatio: this.parentCompressionRatio,
+                workspaceDir: this.workspaceDir,
+                depth: 1,
+                maxDepth: this.maxSubAgentDepth,
+            };
+            proc.send({ type: 'run', spec } satisfies ParentMessage);
+        });
+    }
+
     private async executeSubAgent(
         subAgent: NormalizedSubAgent,
         request: DelegationInput,
@@ -1043,7 +1162,11 @@ export default class SubAgentPlugin implements Plugin {
         childStreamOperation?.milestone(`Delegated work is active in ${subAgent.name}`, { phase: 'stream' });
 
         try {
-            const execution = await this.executeSubAgent(subAgent, request, scopedWriter, abortSignal);
+            // Out-of-process when a worker is configured and no closure-valued
+            // custom tools would be lost across the boundary; in-process otherwise.
+            const execution = this.canUseWorker()
+                ? await this.executeSubAgentInWorker(subAgent, request, delegationId, scopedWriter, abortSignal)
+                : await this.executeSubAgent(subAgent, request, scopedWriter, abortSignal);
             const completion = execution.completionPayload;
             const finalText = execution.rawText?.trim() ?? '';
             const stepSummary = summarizeFromSteps(execution.steps);

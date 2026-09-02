@@ -15,7 +15,7 @@ import type { SubAgent } from '../../../packages/harness-vibes/index';
 import { wrapLanguageModel, type LanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { vibePrompt } from './prompts/vibe';
-import { getModel, getContextWindow, getDefaultModelId } from './model-factory';
+import { getModel, getContextWindow, getDefaultModelId, resolveDefaultSpec } from './model-factory';
 import { homePath } from './paths';
 import { loadEnv } from './env';
 
@@ -168,6 +168,14 @@ export const vibeRuntime: AgentRuntime = createRuntime(
         // plugin sets), which auto-detects a provider from EXA_API_KEY /
         // TAVILY_API_KEY / BRAVE_API_KEY and streams a sources card.
         subAgents: defaultSubAgents,
+        // Run delegated sub-agents in their own Bun process, so a crashing or
+        // runaway child can't take the session down with it. The child rebuilds
+        // its model by importing this module — the harness ships no providers.
+        subAgentWorker: {
+            resolverModule: new URL('./model-factory.ts', import.meta.url).pathname,
+            resolverExport: 'getModel',
+            modelSpec: resolveDefaultSpec(),
+        },
 
     },
     {

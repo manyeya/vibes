@@ -23,6 +23,7 @@ import {
     ToolsRequiringApprovalConfig,
 } from '../types';
 import { VibesAgent, type VibesAgentConfig } from './agent';
+import type { ModelResolverSpec } from '../../plugins/subagent-protocol';
 import type { Sandbox } from '../sandbox';
 
 /**
@@ -54,6 +55,14 @@ export interface VibeAgentConfig extends Partial<Omit<VibesAgentConfig, 'instruc
      * extra caller-defined checks.
      */
     guardrails?: Guardrail[];
+    /**
+     * Run delegated sub-agents in their own `Bun.spawn` process instead of
+     * in-process, for crash isolation. Names a module the child dynamic-imports
+     * to rebuild a model, since the harness has no provider of its own. Ignored
+     * for a delegation whose agent would need closure-valued custom tools —
+     * those cannot cross a process boundary, so it stays in-process.
+     */
+    subAgentWorker?: ModelResolverSpec;
 }
 
 export interface DefaultPluginFactoryOptions {
@@ -240,6 +249,18 @@ export class VibeAgent extends VibesAgent {
     private readonly vibeAgentConfig: VibeAgentConfig;
     private readonly parentCustomTools: Record<string, any>;
     private readonly parentApprovalConfig: ToolsRequiringApprovalConfig;
+    private subAgentPlugin?: SubAgentPlugin;
+
+    /**
+     * Point out-of-process sub-agents at a different model, alongside
+     * `setModelOverride`. A worker child rebuilds its model from a serializable
+     * spec, which the model object itself can't supply (it's wrapped in
+     * middleware), so the caller passes the spec explicitly. No-op unless
+     * `subAgentWorker` is configured.
+     */
+    setSubAgentModelSpec(modelSpec: unknown): void {
+        this.subAgentPlugin?.setWorkerModelSpec(modelSpec);
+    }
 
     /**
      * Initializes a new VibeAgent instance.
@@ -296,7 +317,7 @@ export class VibeAgent extends VibesAgent {
         // NOTE: sub-agents derive their own LocalSandbox from their per-agent
         // workspace dir for now. A shared virtual/remote sandbox would need to
         // be threaded here too — tracked as a follow-up for Phase 3.
-        this.addPlugin(new SubAgentPlugin(
+        const subAgentPlugin = new SubAgentPlugin(
             subAgentMap,
             this.model,
             // Sub-agents run the LEAN plugin set, not the full default stack.
@@ -308,7 +329,12 @@ export class VibeAgent extends VibesAgent {
             () => ({ ...this.parentCustomTools }),
             this.parentApprovalConfig,
             workspaceDir
-        ))
+        );
+        // Opt-in out-of-process delegation. The harness ships no model providers,
+        // so the consumer has to say how a child rebuilds a model.
+        if (config.subAgentWorker) subAgentPlugin.setWorkerConfig(config.subAgentWorker);
+        this.subAgentPlugin = subAgentPlugin;
+        this.addPlugin(subAgentPlugin)
 
         this.addPlugin(defaults.filter((p) => p.name === 'MemoryPlugin'));
 

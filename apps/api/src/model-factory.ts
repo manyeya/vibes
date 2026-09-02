@@ -257,7 +257,9 @@ export async function resolveContextWindow(modelId?: string): Promise<number> {
     return getContextWindow(modelId);
 }
 
-function resolveDefaultSpec(): ModelSpec {
+/** The spec `getModel()` uses when given none — also what a sub-agent worker
+ *  child is seeded with, since it must rebuild the model from a serializable form. */
+export function resolveDefaultSpec(): ModelSpec {
     if (process.env.AI_GATEWAY_API_KEY) {
         return { provider: 'gateway', id: DEFAULT_GATEWAY_MODEL };
     }
