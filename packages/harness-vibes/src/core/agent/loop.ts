@@ -73,6 +73,8 @@ export interface LoopConfig {
     onModelPart?: (part: ModelStreamPart) => void;
     /** Raw provider/stream error logger. */
     onError?: (error: unknown) => void;
+    /** A malformed tool call that repair could not rescue (see llm.ts). */
+    onToolCallError?: (toolName: string, message: string) => void;
 }
 
 export interface LoopResult {
@@ -155,6 +157,7 @@ export async function runAgentLoop(
                 telemetry: config.telemetry,
                 onPart: (part) => config.onModelPart?.(part),
                 onError: config.onError,
+                onToolCallError: config.onToolCallError,
             });
         } catch (error) {
             loopError = error instanceof Error ? error.message : String(error);

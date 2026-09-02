@@ -485,6 +485,11 @@ For a quick, low-stakes checklist, \`generate_tasks\` (above) is fine without a 
         };
     }
 
+    /** Forward the task store's unfinished-work summary (see TasksPlugin). */
+    unfinishedSummary(): string | null {
+        return this.tasksPlugin.unfinishedSummary();
+    }
+
     get tools(): any {
         const baseTools = this.tasksPlugin.tools;
 

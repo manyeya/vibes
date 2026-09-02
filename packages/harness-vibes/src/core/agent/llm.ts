@@ -9,8 +9,11 @@
  */
 
 import {
+    generateText,
     streamText,
     stepCountIs,
+    InvalidToolInputError,
+    NoSuchToolError,
     type FinishReason,
     type LanguageModel,
     type ModelMessage,
@@ -36,6 +39,63 @@ export interface StepCallConfig {
     onPart: (part: ModelStreamPart) => void;
     /** Raw provider/stream error logger (ports AgentHarness.stream's onError). */
     onError?: (error: unknown) => void;
+    /**
+     * A tool call the model emitted that could not be validated and that repair
+     * could not rescue. Schema validation happens BEFORE `execute`, so these
+     * never reach the tool-execute wrapper's error handling — without this the
+     * harness is blind to the whole failure class and only finds out when loop
+     * detection kills the run.
+     */
+    onToolCallError?: (toolName: string, message: string) => void;
+}
+
+/** Strip a ```json fence if the model wrapped its answer in one. */
+function stripFence(text: string): string {
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    return (fenced ? fenced[1] : text).trim();
+}
+
+/**
+ * Ask the model to re-emit a tool call's arguments against the tool's schema.
+ *
+ * The failure this exists for: a model emits `writeFile` with `{}`, the SDK
+ * rejects it, the raw TypeValidationError dump goes back, and the model emits
+ * the identical empty call again until loop detection kills the run. One
+ * targeted re-ask with the schema in front of it breaks that cycle.
+ *
+ * Returns the corrected arguments as a JSON **string** — `LanguageModelV4ToolCall.input`
+ * is stringified JSON, not an object.
+ */
+async function repairToolArguments(opts: {
+    model: LanguageModel;
+    toolName: string;
+    badInput: string;
+    schema: unknown;
+    cause: string;
+}): Promise<string | null> {
+    const { output } = await generateText({
+        model: opts.model,
+        prompt:
+            `A tool call failed schema validation. Emit ONLY the corrected arguments as a single JSON object — ` +
+            `no prose, no code fence, no explanation.\n\n` +
+            `Tool: ${opts.toolName}\n` +
+            `JSON Schema:\n${JSON.stringify(opts.schema, null, 2)}\n\n` +
+            `Arguments that failed: ${opts.badInput || '(none provided)'}\n` +
+            `Validation error: ${opts.cause}\n\n` +
+            `If a required value is genuinely unknown, make the most reasonable inference from the schema ` +
+            `rather than omitting the field.`,
+    }).then((r) => ({ output: r.text }), () => ({ output: '' }));
+
+    if (!output) return null;
+    try {
+        const parsed = JSON.parse(stripFence(output));
+        // Only an object can satisfy a tool input schema; anything else would
+        // just fail validation again on the way back in.
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+        return JSON.stringify(parsed);
+    } catch {
+        return null;
+    }
 }
 
 export interface StepModelOutcome {
@@ -60,6 +120,10 @@ export interface StepModelOutcome {
  */
 export async function streamModelStep(cfg: StepCallConfig): Promise<StepModelOutcome> {
     let stepError: string | undefined;
+    // At most ONE repair per tool call. A model that reliably emits garbage
+    // would otherwise turn each bad call into an unbounded re-ask loop — trading
+    // a visible failure for an expensive invisible one.
+    const repairAttempted = new Set<string>();
     const result = streamText({
         model: cfg.model,
         instructions: cfg.system,
@@ -72,6 +136,54 @@ export async function streamModelStep(cfg: StepCallConfig): Promise<StepModelOut
         ...(cfg.abortSignal ? { abortSignal: cfg.abortSignal } : {}),
         ...(cfg.telemetry ? { experimental_telemetry: cfg.telemetry as never } : {}),
         stopWhen: stepCountIs(1),
+        // Rescue a tool call the model malformed, instead of handing back a raw
+        // TypeValidationError dump and letting it retry the same broken call
+        // until loop detection kills the run.
+        experimental_repairToolCall: async ({ toolCall, error, inputSchema }) => {
+            const toolName = toolCall.toolName;
+
+            // A hallucinated tool name isn't guessable — don't burn a call on it.
+            if (NoSuchToolError.isInstance(error)) {
+                cfg.onToolCallError?.(
+                    toolName,
+                    `Called unknown tool "${toolName}"${error.availableTools?.length ? `; available: ${error.availableTools.join(', ')}` : ''}.`,
+                );
+                return null;
+            }
+            if (!InvalidToolInputError.isInstance(error)) return null;
+
+            if (repairAttempted.has(toolCall.toolCallId)) {
+                cfg.onToolCallError?.(toolName, `Repair already attempted for this ${toolName} call; giving up.`);
+                return null;
+            }
+            repairAttempted.add(toolCall.toolCallId);
+
+            let schema: unknown;
+            try {
+                schema = await inputSchema({ toolName });
+            } catch {
+                cfg.onToolCallError?.(toolName, `No input schema available for ${toolName}.`);
+                return null;
+            }
+
+            const repaired = await repairToolArguments({
+                model: cfg.model,
+                toolName,
+                badInput: toolCall.input,
+                schema,
+                cause: error.message,
+            });
+
+            if (!repaired) {
+                cfg.onToolCallError?.(
+                    toolName,
+                    `Called ${toolName} with invalid arguments (${toolCall.input || 'no arguments'}) and repair failed. ` +
+                    `Re-read the tool's schema and supply every required field.`,
+                );
+                return null;
+            }
+            return { ...toolCall, input: repaired };
+        },
         // In v7 a provider/stream error is delivered here and the stream
         // finishes without throwing (then collapses to a generic message
         // downstream). Surface the raw error so the real failure is visible.

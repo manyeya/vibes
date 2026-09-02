@@ -319,6 +319,7 @@ export class VibesAgent {
                     prepareTurn: this.makePrepareTurn(instructions),
                     onBeforeFinish: () => this.drainPendingWork(),
                     onStepFinish: (s) => this.recordStepUsage(s),
+                    onToolCallError: (t, m) => this.logError(t, m, 'invalid tool input'),
                     onModelPart: (part) => { ui.handlePart(part); fullController?.enqueue(part); },
                 }, streamModelStep);
 
@@ -388,6 +389,7 @@ export class VibesAgent {
             prepareTurn: this.makePrepareTurn(instructions),
             onBeforeFinish: () => this.drainPendingWork(),
             onStepFinish: (s) => this.recordStepUsage(s),
+            onToolCallError: (t, m) => this.logError(t, m, 'invalid tool input'),
         }, streamModelStep);
 
         this.usage.consume(); // reset the per-run tally
@@ -628,10 +630,26 @@ export class VibesAgent {
                 ctx.writer.writeGuardrail({
                     id: `loop-${Date.now().toString(36)}`,
                     stage: 'budget', guardrail: 'loop', action: 'exceeded',
-                    message: `Run stopped: repeated ${unique.join(', ')} call (possible loop).`,
+                    message: `Run stopped: repeated ${unique.join(', ')} call (possible loop)`
+                        + `${this.unfinishedWorkSummary()}.`,
                 });
             }
         }
+    }
+
+    /**
+     * " — 9 of 18 tasks unfinished…" appended to a halt notice, or '' when
+     * nothing is outstanding. A halted run used to abandon its task list
+     * silently, so the stranded plan only became visible turns later when the
+     * UI resurfaced it. Duck-typed like the other plugin fan-outs.
+     */
+    private unfinishedWorkSummary(): string {
+        for (const plugin of this.plugins) {
+            const p = plugin as { unfinishedSummary?: () => string | null };
+            const summary = p.unfinishedSummary?.();
+            if (summary) return ` — ${summary}`;
+        }
+        return '';
     }
 }
 

@@ -505,6 +505,23 @@ RULES:
         });
     }
 
+    /**
+     * One line naming work left in flight, or null when nothing is outstanding.
+     *
+     * Read when a run halts early (budget/loop breach): a stopped run used to
+     * leave its task list half-done with nothing said about it, so the stranded
+     * plan only resurfaced turns later. Reads the in-memory list — no I/O on the
+     * failure path.
+     */
+    unfinishedSummary(): string | null {
+        const open = this.tasks.filter((t) => t.status !== 'completed' && t.status !== 'failed');
+        if (open.length === 0) return null;
+        const active = open.find((t) => t.status === 'in_progress');
+        const done = this.tasks.length - open.length;
+        return `${open.length} of ${this.tasks.length} tasks unfinished (${done} done)`
+            + (active ? `; was working on "${active.title}"` : '');
+    }
+
     async getTasks(): Promise<TaskItem[]> {
         return [...this.tasks];
     }
