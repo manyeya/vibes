@@ -45,6 +45,12 @@ const vibeSchema = z.object({
     search_provider: z.string().nullable().optional(),
     /** Optional execution mode from the UI ('plan' | 'manual' | 'auto-edit' | 'auto'). */
     mode: z.string().nullable().optional(),
+    /**
+     * The user's answer to a context-threshold prompt. The run halts at the
+     * threshold rather than compacting silently; this carries the decision back
+     * so the next turn either summarizes or keeps the full history.
+     */
+    context_decision: z.enum(['compact', 'continue']).nullable().optional(),
 }).passthrough();
 
 type ApiMessage = z.infer<typeof apiMessageSchema>;
@@ -618,6 +624,7 @@ app.post('/vibe', zValidator('json', vibeSchema), async (c) => {
         await applyModelOverride(agent, body.model);
         applySearchProvider(agent, body.search_provider);
         if (body.mode) agent.setMode(body.mode, 'user');
+        if (body.context_decision) agent.setContextDecision(body.context_decision);
 
         const startTime = Date.now();
         // The agent's `generate({messages})` overload accepts ModelMessage[]
@@ -686,6 +693,7 @@ app.post('/vibe/stream', zValidator('json', vibeSchema), async (c) => {
         await applyModelOverride(agent, body.model);
         applySearchProvider(agent, body.search_provider);
         if (body.mode) agent.setMode(body.mode, 'user');
+        if (body.context_decision) agent.setContextDecision(body.context_decision);
 
         // Pass originalMessages so AI SDK reuses message IDs when the client
         // resubmits after a tool approval. We detect that case either by the

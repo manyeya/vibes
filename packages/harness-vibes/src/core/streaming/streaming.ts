@@ -310,6 +310,19 @@ export class DataStreamWriter {
     }
 
     /** Write summarization progress */
+    /**
+     * Ask the user how to proceed at the context threshold. Stable id so the UI
+     * can pin one prompt rather than stacking a card per turn.
+     */
+    writeContextDecision(decision: VibesDataParts['context_decision']): void {
+        if (!this.writer) return;
+        this.writer.write({
+            type: 'data-context_decision',
+            id: `context-decision-${decision.id}`,
+            data: decision,
+        } as const);
+    }
+
     writeSummarization(
         stage: 'starting' | 'in_progress' | 'complete' | 'failed',
         messageCount: number,

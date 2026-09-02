@@ -61,6 +61,24 @@ export interface VibesDataParts extends Record<string, unknown> {
         }>;
     };
 
+    /**
+     * The run paused at the context threshold and needs a decision from the
+     * user: compact, keep going uncompacted, or stop. Emitted instead of
+     * silently summarizing — compaction is lossy and costs a model call that
+     * can itself fail, so it is not done behind the user's back.
+     */
+    context_decision: {
+        id: string;
+        usedTokens: number;
+        contextWindow: number;
+        /** Percent of the window in use, pre-rounded for display. */
+        pct: number;
+        /** 'threshold' = crossed the line; 'compaction-failed' = we tried and couldn't. */
+        reason: 'threshold' | 'compaction-failed';
+        /** Why compaction failed, when reason is 'compaction-failed'. */
+        error?: string;
+    };
+
     /** Context summarization progress updates */
     summarization: {
         stage: 'starting' | 'in_progress' | 'complete' | 'failed';

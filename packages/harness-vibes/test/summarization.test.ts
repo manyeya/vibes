@@ -26,15 +26,27 @@ describe('SummarizationPlugin trigger', () => {
     expect(res).toBeUndefined();
   });
 
-  test('over threshold → actually compacts older turns into a summary system message', async () => {
+  test('over threshold → asks first, and compacts nothing until told to', async () => {
     // compressAt = 1000 * 0.7 = 700 tokens (~2800 chars).
-    const p = new SummarizationPlugin(mockModel() as any, { contextWindow: 1000, compressionRatio: 0.7 });
+    const p: any = new SummarizationPlugin(mockModel() as any, { contextWindow: 1000, compressionRatio: 0.7 });
+    const messages: ModelMessage[] = Array.from({ length: 8 }, () => ({ role: 'user', content: 'x'.repeat(600) }));
+    const res = await p.prepareTurn(step(messages));
+
+    // Compaction is lossy and costs a model call, so it waits for a decision.
+    expect(String(res?.messages?.map((m: ModelMessage) => m.content).join(''))).not.toContain('SUMMARY-OF-OLD-TURNS');
+    expect(p.checkpoint()).toBe('context-threshold');
+  });
+
+  test('over threshold with an explicit "compact" → folds older turns into a summary', async () => {
+    const p: any = new SummarizationPlugin(mockModel() as any, { contextWindow: 1000, compressionRatio: 0.7 });
+    p.setContextDecision('compact');
     const messages: ModelMessage[] = Array.from({ length: 8 }, () => ({ role: 'user', content: 'x'.repeat(600) }));
     const res = await p.prepareTurn(step(messages));
     expect(res?.messages?.[0]?.role).toBe('system');
     expect(String(res?.messages?.[0]?.content)).toContain('SUMMARY-OF-OLD-TURNS');
     // It actually shrank the turn count (older turns folded into the summary).
     expect((res?.messages?.length ?? 99)).toBeLessThan(messages.length);
+    expect(p.checkpoint()).toBeNull();
   });
 
   test('the system prompt is counted in the trigger (gauge/compaction stay consistent)', async () => {
@@ -46,7 +58,8 @@ describe('SummarizationPlugin trigger', () => {
     expect(withoutSystem).toBeUndefined(); // not over threshold yet
 
     // …but a big system prompt (~2000 chars ≈ 500 tok) pushes it over → compacts.
-    const p2 = new SummarizationPlugin(mockModel() as any, { contextWindow: 1000, compressionRatio: 0.7 });
+    const p2: any = new SummarizationPlugin(mockModel() as any, { contextWindow: 1000, compressionRatio: 0.7 });
+    p2.setContextDecision('compact');
     const withSystem = await p2.prepareTurn(step(messages, 'S'.repeat(2000)));
     // A limit-warning system message may precede the summary once the effective
     // payload is this tight, so find the summary rather than assuming index 0.

@@ -289,11 +289,13 @@ describe('Plugin streaming', () => {
     expect(parts.some((p) => p.type === 'data-summarization')).toBe(false);
     expect(parts.some((p) => p.type === 'data-context_usage')).toBe(false);
 
-    // Big conversation (~2000 tok) → over threshold → summarize oldest, keep recent.
+    // Big conversation (~2000 tok) → over threshold. Compaction now waits for an
+    // explicit decision (it is lossy and costs a model call), so opt in first.
     const big = Array.from({ length: 20 }, (_, i) => ({
       role: i % 2 ? 'assistant' : 'user',
       content: 'x'.repeat(400),
     }));
+    (plugin as any).setContextDecision('compact');
     const result: any = await (plugin.prepareTurn as any)({ steps: [], stepNumber: 1, model, messages: big });
     expect(parts.some((p) => p.type === 'data-summarization' && p.data.stage === 'complete')).toBe(true);
     // result prepends a summary system message, keeps a verbatim tail

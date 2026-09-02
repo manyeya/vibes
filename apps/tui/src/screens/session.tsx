@@ -15,6 +15,7 @@ import { PlanReview, type PlanReviewData } from '../components/plan-review';
 import { Prompt } from '../components/prompt';
 import { TaskPanel } from '../components/task-panel';
 import { deriveTasks } from '../derive-tasks';
+import { ContextDecisionPrompt, type ContextDecisionData } from '../components/context-decision';
 import { QuestionPrompt, type ClarificationData } from '../components/question';
 import { sessionTitle } from '../components/session-dialog';
 import { theme } from '../theme';
@@ -52,6 +53,7 @@ export function Session({
   const [title, setTitle] = useState(() => sessionTitle(session));
   const [answered, setAnswered] = useState<Set<string>>(() => new Set());
   const [reviewed, setReviewed] = useState<Set<string>>(() => new Set());
+  const [contextAnswered, setContextAnswered] = useState<Set<string>>(() => new Set());
   // Which agent's activity the transcript shows: 'main' or a delegationId.
   const [activeAgent, setActiveAgent] = useState('main');
   const titledRef = useRef(false);
@@ -64,6 +66,8 @@ export function Session({
   // Same for mode — sent per request; the agent may also switch it mid-run.
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  // Set when the user answers a context prompt; read by the very next request.
+  const contextDecisionRef = useRef<'compact' | 'continue' | null>(null);
 
   const transport = useMemo(
     () =>
@@ -78,6 +82,8 @@ export function Session({
             session_id: session.id,
             model: modelRef.current || undefined,
             mode: modeRef.current || undefined,
+            // Answer to a context-threshold halt; consumed once, then cleared.
+            context_decision: contextDecisionRef.current || undefined,
           },
         }),
         prepareReconnectToStreamRequest: ({ id }) => ({
@@ -331,6 +337,31 @@ export function Session({
     return undefined;
   })();
 
+  // The run halts at the context threshold rather than compacting silently;
+  // pin the choice above the composer, same shape as the plan review.
+  const contextDecision = (() => {
+    if (busy || clarification || !last || last.role !== 'assistant') return undefined;
+    for (let i = last.parts.length - 1; i >= 0; i--) {
+      const part = last.parts[i]!;
+      if (part.type === 'data-context_decision') {
+        const data = (part as { data: ContextDecisionData }).data;
+        return data && !contextAnswered.has(data.id) ? data : undefined;
+      }
+    }
+    return undefined;
+  })();
+
+  const decideContext = (choice: 'compact' | 'continue') => {
+    if (contextDecision) setContextAnswered((prev) => new Set(prev).add(contextDecision.id));
+    // Rides on the next request (see the transport's prepareSendMessagesRequest)
+    // and is cleared straight after so it applies to exactly one turn.
+    contextDecisionRef.current = choice;
+    submit(choice === 'compact'
+      ? 'Compact the context and continue.'
+      : 'Keep the full context and continue.');
+    contextDecisionRef.current = null;
+  };
+
   const decidePlan = (text: string, mode?: 'auto-edit' | 'manual') => {
     if (planReview) setReviewed((prev) => new Set(prev).add(planReview.id));
     // Approving leaves plan mode (Claude Code-style): update the ref now so THIS
@@ -404,6 +435,15 @@ export function Session({
           onDismiss={() => setAnswered((prev) => new Set(prev).add(clarification.id))}
         />
       ) : null}
+      {contextDecision ? (
+        <ContextDecisionPrompt
+          key={contextDecision.id}
+          data={contextDecision}
+          active={active && !artifactsOpen}
+          onChoose={decideContext}
+          onDismiss={() => setContextAnswered((prev) => new Set(prev).add(contextDecision.id))}
+        />
+      ) : null}
       {planReview ? (
         <PlanReview
           key={planReview.id}
@@ -435,7 +475,7 @@ export function Session({
       <TaskPanel tasks={tasks} busy={busy} />
       <Prompt
         placeholder=""
-        focused={active && !clarification && !planReview && !pendingApproval && !artifactsOpen}
+        focused={active && !clarification && !planReview && !contextDecision && !pendingApproval && !artifactsOpen}
         busy={busy}
         statusMsg={statusMsg}
         model={shortModel(model)}

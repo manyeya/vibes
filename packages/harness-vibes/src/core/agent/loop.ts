@@ -67,6 +67,12 @@ export interface LoopConfig {
      * turn to surface it. SubAgentPlugin uses it to drain unsettled tasks.
      */
     onBeforeFinish?: () => Promise<ModelMessage[] | null> | ModelMessage[] | null;
+    /**
+     * Checked after each step: return a stop reason to halt before the next
+     * turn. Used to pause at the context threshold so the user decides whether
+     * to compact, rather than the harness silently summarizing.
+     */
+    onCheckpoint?: () => Promise<StopReason | null> | StopReason | null;
     /** Called after each step completes (usage accounting). */
     onStepFinish?: (step: LoopStep) => void | Promise<void>;
     /** Every raw model stream part (UI adapter + sub-agent fullStream). */
@@ -199,6 +205,11 @@ export async function runAgentLoop(
         if (hasToolCalls && step.toolCalls.some((c) => config.haltOnToolCall.has(c.toolName))) {
             return result('halted-by-tool');
         }
+        // A checkpoint halt (e.g. the context threshold) takes precedence over
+        // continuing: the point is to stop BEFORE another turn grows the context.
+        const checkpoint = await config.onCheckpoint?.();
+        if (checkpoint) return result(checkpoint);
+
         if (steps.length >= config.maxSteps) return result('max-steps');
         if (config.stopWhen.length > 0 && (await anyStop(config.stopWhen, steps))) {
             return result('stop-condition');

@@ -58,6 +58,8 @@ export type StopReason =
     | 'halted-by-tool'
     /** A tool needs user approval before it can run; control returns to the user. */
     | 'approval-required'
+    /** Context crossed the threshold; the user must choose how to proceed. */
+    | 'context-threshold'
     /** The run was aborted via the abort signal. */
     | 'aborted'
     /** The model step errored. */

@@ -60,6 +60,22 @@ export default class SummarizationPlugin implements VibesPlugin {
     /** Per-request model override (the UI's currently-selected model). */
     private modelOverride?: LanguageModel;
     private writer?: DataStreamWriter;
+    /**
+     * The user's standing answer for this session. Undefined means "ask before
+     * compacting" — compaction is never performed without an explicit choice.
+     * 'compact' is cleared after a failed attempt so a rate limit doesn't put
+     * the run into a silent retry loop.
+     */
+    private decision?: 'compact' | 'continue';
+    /** A prompt waiting to be surfaced + halted on (see checkpoint). */
+    private pendingDecision?: {
+        id: string;
+        usedTokens: number;
+        contextWindow: number;
+        pct: number;
+        reason: 'threshold' | 'compaction-failed';
+        error?: string;
+    };
 
     constructor(model: LanguageModel, config: SummarizationConfig = {}) {
         this.model = config.summarizationModel ?? model;
@@ -143,6 +159,25 @@ export default class SummarizationPlugin implements VibesPlugin {
             return this.warnIfTight(this.maybePrependSummary(messages), messages, systemChars);
         }
 
+        // Over the threshold, but compaction is lossy AND costs a model call
+        // that can fail (a rate limit here used to silently drop the
+        // un-summarized messages). So it is never done unprompted: pause and
+        // let the user choose. The full history is returned untouched meanwhile.
+        if (this.decision !== 'compact') {
+            if (this.decision !== 'continue') {
+                this.pendingDecision = {
+                    id: `ctx-${Date.now().toString(36)}`,
+                    usedTokens: used,
+                    contextWindow: this.contextWindow,
+                    pct: Math.round((used / this.contextWindow) * 100),
+                    reason: 'threshold',
+                };
+            }
+            // 'continue' means the user accepted an uncompacted context; keep
+            // the whole history and just nudge the model to wrap up.
+            return this.warnIfTight(this.maybePrependSummary(messages), messages, systemChars);
+        }
+
         const newOldies = oldest.filter(m => !this.summarizedFingerprints.has(this.fingerprint(m)));
 
         if (newOldies.length > 0) {
@@ -157,16 +192,46 @@ export default class SummarizationPlugin implements VibesPlugin {
                 }
                 this.writer?.writeSummarization('complete', messages.length, recent.length, newOldies.length);
             } catch (err) {
-                this.writer?.writeSummarization('failed', messages.length, recent.length, undefined,
-                    err instanceof Error ? err.message : String(err));
-                // Summarisation is best-effort. On failure, fall through to
-                // the trimmed-without-summary case so the conversation can
-                // continue rather than fail the whole step.
+                const error = err instanceof Error ? err.message : String(err);
+                this.writer?.writeSummarization('failed', messages.length, recent.length, undefined, error);
                 console.error('[SummarizationPlugin] summary call failed:', err);
+                // Do NOT fall through to the trimmed tail: that dropped the
+                // oldest messages with no summary standing in for them, losing
+                // real context on a transient rate limit. Keep everything and
+                // halt so the user can retry or continue deliberately.
+                this.decision = undefined;
+                this.pendingDecision = {
+                    id: `ctx-${Date.now().toString(36)}`,
+                    usedTokens: used,
+                    contextWindow: this.contextWindow,
+                    pct: Math.round((used / this.contextWindow) * 100),
+                    reason: 'compaction-failed',
+                    error,
+                };
+                return this.warnIfTight(this.maybePrependSummary(messages), messages, systemChars);
             }
         }
 
         return this.warnIfTight(this.maybePrependSummary(recent), recent, systemChars);
+    }
+
+    /**
+     * Halt the run when a context decision is outstanding, emitting the prompt
+     * the UI pins above the composer. Called by the agent after each step.
+     */
+    checkpoint(): 'context-threshold' | null {
+        if (!this.pendingDecision) return null;
+        this.writer?.writeContextDecision(this.pendingDecision);
+        this.pendingDecision = undefined;
+        return 'context-threshold';
+    }
+
+    /**
+     * Record the user's answer to a context prompt. 'compact' summarizes on the
+     * next turn; 'continue' keeps the full history for the rest of the session.
+     */
+    setContextDecision(decision: 'compact' | 'continue' | undefined): void {
+        this.decision = decision;
     }
 
     /**

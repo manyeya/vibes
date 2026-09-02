@@ -319,6 +319,7 @@ export class VibesAgent {
                     prepareTurn: this.makePrepareTurn(instructions),
                     onBeforeFinish: () => this.drainPendingWork(),
                     onStepFinish: (s) => this.recordStepUsage(s),
+                    onCheckpoint: () => this.runCheckpoints(),
                     onToolCallError: (t, m) => this.logError(t, m, 'invalid tool input'),
                     onModelPart: (part) => { ui.handlePart(part); fullController?.enqueue(part); },
                 }, streamModelStep);
@@ -389,6 +390,7 @@ export class VibesAgent {
             prepareTurn: this.makePrepareTurn(instructions),
             onBeforeFinish: () => this.drainPendingWork(),
             onStepFinish: (s) => this.recordStepUsage(s),
+            onCheckpoint: () => this.runCheckpoints(),
             onToolCallError: (t, m) => this.logError(t, m, 'invalid tool input'),
         }, streamModelStep);
 
@@ -600,6 +602,27 @@ export class VibesAgent {
             if (messages?.length) pending.push(...messages);
         }
         return pending.length ? pending : null;
+    }
+
+    /**
+     * Ask plugins whether the run should pause before the next turn. Used for
+     * the context threshold: compaction is lossy and can fail, so the user
+     * decides rather than the harness doing it silently.
+     */
+    private async runCheckpoints(): Promise<StopReason | null> {
+        for (const plugin of this.plugins) {
+            const p = plugin as { checkpoint?: () => Promise<StopReason | null> | StopReason | null };
+            const reason = await p.checkpoint?.();
+            if (reason) return reason;
+        }
+        return null;
+    }
+
+    /** Answer an outstanding context prompt (compact / continue). */
+    setContextDecision(decision: 'compact' | 'continue' | undefined): void {
+        for (const plugin of this.plugins) {
+            (plugin as { setContextDecision?: (d?: 'compact' | 'continue') => void }).setContextDecision?.(decision);
+        }
     }
 
     private async runStreamFinishHooks(text: string, messages: ModelMessage[], steps: LoopStep[]): Promise<void> {
