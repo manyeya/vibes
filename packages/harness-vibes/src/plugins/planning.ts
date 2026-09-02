@@ -490,6 +490,28 @@ For a quick, low-stakes checklist, \`generate_tasks\` (above) is fine without a 
 
         return Object.assign({}, baseTools, {
 
+            // `generate_tasks_from_plan` refuses until the plan is approved, to
+            // make "review before work" mechanical rather than a prompt the model
+            // might skip. `generate_tasks` reached the same outcome by another
+            // door — it creates tasks too, and TasksPlugin knows nothing about
+            // plans — so gate it the same way here, where the plan state lives.
+            // Only when an UNREVIEWED plan exists: with no plan at all it stays
+            // the quick-checklist tool the prompt advertises.
+            generate_tasks: tool({
+                ...(baseTools.generate_tasks as any),
+                execute: async (input: any, options: any) => {
+                    const plan = this.currentPlan ?? (await this.loadPlanFromFile()) ?? undefined;
+                    if (plan && !this.reviewedPlanIds.has(plan.id)) {
+                        const msg =
+                            `A plan ("${plan.title}") exists but has not been approved. Call ${PLAN_REVIEW_TOOL_NAME}() and wait ` +
+                            `for the user, then use generate_tasks_from_plan() — do not create tasks around the review.`;
+                        this.writer?.writeError(msg, { toolName: 'generate_tasks', recoverable: true });
+                        return { success: false, error: msg };
+                    }
+                    return (baseTools.generate_tasks as any).execute(input, options);
+                },
+            }),
+
             [PLAN_REVIEW_TOOL_NAME]: tool({
                 description:
                     'Put your plan in front of the user for sign-off BEFORE doing any work. Pass the plan directly ' +
