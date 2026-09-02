@@ -315,36 +315,4 @@ export interface VibesDataParts extends Record<string, unknown> {
         summary?: string;
     };
 
-    /**
-     * A declarative workflow (WorkflowPlugin) being saved or executed. The
-     * workflow engine runs a graph of AI-SDK-pattern steps (prompt chain,
-     * route, parallel, orchestrator-worker, evaluator-optimizer, sub-workflow)
-     * making real model calls. Emitted with a stable id so step updates replace
-     * the same part in place as the run progresses.
-     */
-    workflow: {
-        id: string;
-        name: string;
-        /** saved = library write · run = an execution snapshot, re-emitted as it progresses. */
-        action: 'saved' | 'run';
-        description?: string;
-        /** Run status (action === 'run'). */
-        status?: 'running' | 'complete' | 'failed';
-        /** Live, accumulating list of executed steps in order (action === 'run'). */
-        steps?: Array<{
-            id: string;
-            kind: 'prompt' | 'route' | 'parallel' | 'orchestrator' | 'evaluator' | 'pipeline' | 'workflow' | 'action';
-            title?: string;
-            status: 'running' | 'complete' | 'failed';
-            /** Nesting depth for indentation (top-level = 0). */
-            depth?: number;
-            /** Short summary of the step's output (complete) or the error. */
-            summary?: string;
-            /** Fuller output preview, shown when the step is expanded in the UI. */
-            detail?: string;
-        }>;
-        /** Running count of model calls so far (cost awareness). */
-        modelCalls?: number;
-        error?: string;
-    };
 }

@@ -3,7 +3,7 @@ import type { TextareaRenderable } from '@opentui/core';
 import { useKeyboard } from '@opentui/react';
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses } from 'ai';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { API_URL, abortSession, getMessages, patchSession, runWorkflow, shortModel, type GitInfo, type SessionInfo, type WorkflowInfo, type WorkspaceInfo } from '../api';
+import { API_URL, abortSession, getMessages, patchSession, shortModel, type GitInfo, type SessionInfo, type WorkspaceInfo } from '../api';
 import { deriveAgents } from '../agents';
 import { COMMANDS, parseCommand, type AppAction } from '../commands';
 import { AgentTabs, SubAgentActivity } from '../components/agent-tabs';
@@ -15,7 +15,6 @@ import { PlanReview, type PlanReviewData } from '../components/plan-review';
 import { Prompt } from '../components/prompt';
 import { TaskPanel, type Task } from '../components/task-panel';
 import { QuestionPrompt, type ClarificationData } from '../components/question';
-import { WorkflowRunForm } from '../components/workflow-run-form';
 import { sessionTitle } from '../components/session-dialog';
 import { theme } from '../theme';
 import { playDone } from '../sound';
@@ -52,8 +51,6 @@ export function Session({
   const [title, setTitle] = useState(() => sessionTitle(session));
   const [answered, setAnswered] = useState<Set<string>>(() => new Set());
   const [reviewed, setReviewed] = useState<Set<string>>(() => new Set());
-  // A workflow picked from the slash palette, awaiting its run form.
-  const [runWf, setRunWf] = useState<WorkflowInfo | null>(null);
   // Which agent's activity the transcript shows: 'main' or a delegationId.
   const [activeAgent, setActiveAgent] = useState('main');
   const titledRef = useRef(false);
@@ -367,21 +364,6 @@ export function Session({
     addToolApprovalResponse({ id: pendingApproval.id, approved, reason: approved ? 'Approved' : 'Denied' });
   };
 
-  // Run a workflow via the direct-run endpoint (bypasses the agent), then tail
-  // its resumable stream into this thread — same flow as the web demo.
-  const runWorkflowNow = async (inputs: Record<string, unknown>) => {
-    const wf = runWf;
-    if (!wf) return;
-    setRunWf(null);
-    setActiveAgent('main');
-    try {
-      await runWorkflow(session.id, wf.id, inputs, modelRef.current);
-      await resumeStream?.();
-    } catch (err) {
-      setHint(`workflow failed — ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
   // Live task list for the sticky panel: the task_graph snapshot as the base,
   // with later task_update parts overriding status in place (merged by id, last
   // wins) — so the panel always shows current state instead of scrolling spam.
@@ -457,15 +439,6 @@ export function Session({
           onDeny={() => respondApproval(false)}
         />
       ) : null}
-      {runWf ? (
-        <WorkflowRunForm
-          key={runWf.id}
-          workflow={runWf}
-          active={active && !artifactsOpen}
-          onSubmit={runWorkflowNow}
-          onCancel={() => setRunWf(null)}
-        />
-      ) : null}
       {artifactsOpen ? <ArtifactDialog artifacts={artifacts} onClose={() => setArtifactsOpen(false)} /> : null}
       {queue.length > 0 ? (
         <box flexShrink={0} paddingLeft={1}>
@@ -479,14 +452,13 @@ export function Session({
       <TaskPanel tasks={tasks} busy={busy} />
       <Prompt
         placeholder=""
-        focused={active && !clarification && !planReview && !pendingApproval && !runWf && !artifactsOpen}
+        focused={active && !clarification && !planReview && !pendingApproval && !artifactsOpen}
         busy={busy}
         statusMsg={statusMsg}
         model={shortModel(model)}
         leftLabel={hint || title}
         tokens={tokens}
         onSubmit={submit}
-        onWorkflow={setRunWf}
         inputRef={promptRef}
       />
       <Footer connected={connected} workspace={workspace} git={git} ctxPct={ctxPct} mode={mode} />

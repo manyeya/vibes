@@ -413,31 +413,6 @@ export function DataPart({ part, busy }: { part: Part; busy: boolean }) {
           flexShrink={0}
         />
       );
-    case 'data-workflow': {
-      const steps = Array.isArray(data.steps)
-        ? (data.steps as Array<{ id: string; title?: string; kind?: string; status: string; summary?: string }>)
-        : [];
-      const running = data.status === 'running';
-      return (
-        <box marginTop={1} flexShrink={0}>
-          <Row
-            icon="⚡"
-            label={`Workflow ${String(data.name ?? '')} ${String(data.status ?? data.action ?? '')}`}
-            color={data.status === 'failed' ? theme.error : running ? theme.text : undefined}
-            spinner={running && busy}
-          />
-          {steps.map((s) => (
-            <box key={s.id} paddingLeft={5} flexShrink={0}>
-              <text fg={s.status === 'failed' ? theme.error : s.status === 'running' ? theme.warning : theme.textMuted}>
-                {s.status === 'complete' ? '✔' : s.status === 'failed' ? '✗' : s.status === 'running' ? '◐' : '☐'}{' '}
-                {s.title ?? s.kind ?? s.id}
-                {s.summary ? ` — ${truncate(s.summary, 40)}` : ''}
-              </text>
-            </box>
-          ))}
-        </box>
-      );
-    }
     case 'data-clarification': {
       // Interactive form is pinned above the composer (see QuestionPrompt);
       // inline this is just the historical record.

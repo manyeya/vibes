@@ -115,38 +115,3 @@ export interface AgentInfo {
 /** The built-in sub-agent roster the slash palette can target work at. */
 export const getAgents = () =>
   api<{ agents: AgentInfo[] }>('/agents').then((r) => r.agents ?? []);
-
-export type WorkflowInputType = 'string' | 'number' | 'boolean' | 'array' | 'json';
-
-/** A declared workflow input — mirrors harness-vibes WorkflowPlugin JSON. */
-export interface WorkflowInput {
-  name: string;
-  description?: string;
-  required?: boolean;
-  type?: WorkflowInputType;
-  enum?: string[];
-  default?: string | number | boolean;
-}
-
-export interface WorkflowInfo {
-  id: string;
-  name: string;
-  description?: string;
-  /** Declared inputs the run form collects (see WorkflowRunForm). */
-  inputs?: WorkflowInput[];
-}
-
-/** Saved workflows (WorkflowPlugin library). */
-export const getWorkflows = () =>
-  api<{ workflows: WorkflowInfo[] }>('/workflows').then((r) => r.workflows ?? []);
-
-/**
- * Run a saved workflow directly (bypassing the agent). The server registers a
- * resumable stream and returns its id; the caller tails it via useChat's
- * `resumeStream()`. Same endpoint the web demo's WorkflowRunForm posts to.
- */
-export const runWorkflow = (sessionId: string, nameOrId: string, inputs: Record<string, unknown>, model?: string) =>
-  api<{ streamId: string }>(`/vibe/${sessionId}/workflows/${encodeURIComponent(nameOrId)}/run`, {
-    method: 'POST',
-    body: JSON.stringify({ inputs, model: model || undefined }),
-  });

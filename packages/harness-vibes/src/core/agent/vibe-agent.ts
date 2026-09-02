@@ -13,7 +13,6 @@ import {
     ClarificationPlugin,
     GuardrailsPlugin,
     type Guardrail,
-    WorkflowPlugin,
     WebSearchPlugin,
 } from '../../plugins';
 import MemoryPlugin from '../../plugins/memory';
@@ -68,7 +67,7 @@ export interface DefaultPluginFactoryOptions {
      */
     stateDir?: string;
     /**
-     * Directory for cross-session shared state (memories.json, workflows.json).
+     * Directory for cross-session shared state (memories.json).
      * Defaults to a value derived from `workspaceDir`.
      */
     sharedDir?: string;
@@ -86,7 +85,7 @@ export interface DefaultPluginFactoryOptions {
 /**
  * Climb from a per-session directory to the cross-session shared root.
  * Handles both the legacy `workspace/sessions/{id}` layout and the workspace
- * `workspace/projects/{id}` layout, so memories/workflows stay global at
+ * `workspace/projects/{id}` layout, so memories stay global at
  * `workspace/` in both cases.
  */
 function resolveSharedWorkspaceDir(workspaceDir: string): string {
@@ -141,16 +140,6 @@ export function createDefaultPlugins(config: DefaultPluginFactoryOptions): Plugi
         // plus any caller-defined input/output content checks. Tool-output
         // secrets are masked separately at the tool-execute layer.
         new GuardrailsPlugin({ guardrails: config.guardrails }),
-        // Reusable, saveable workflows built from low-level AI SDK patterns
-        // (chain / route / parallel / orchestrator / evaluator). Library is
-        // shared across sessions, like memories.
-        new WorkflowPlugin(config.model, {
-            workflowsPath: path.join(sharedWorkspaceDir, 'workflows.json'),
-            // So import_workflow can read a definition file the agent wrote via
-            // bash — the reliable path for large/deeply-nested workflows.
-            workspaceDir: config.workspaceDir,
-            sandbox: config.sandbox,
-        }),
         // Rolling-summary plugin: keeps long conversations within token
         // budget by summarising the oldest excess messages once we exceed
         // 1.5x its threshold. Triggers before the agent's pruneMessages

@@ -193,8 +193,8 @@ export class VibesAgent {
 
     setModelOverride(model?: LanguageModel): void {
         this.modelOverride = model;
-        // Fan out to plugins that make their own model calls (e.g. the workflow
-        // engine) so they run on the user's picked model, not the constructed
+        // Fan out to plugins that make their own model calls (e.g. summarization,
+        // planning) so they run on the user's picked model, not the constructed
         // default. Duck-typed so core stays decoupled from concrete plugins.
         for (const plugin of this.plugins) {
             const p = plugin as { setModelOverride?: (m?: LanguageModel) => void };

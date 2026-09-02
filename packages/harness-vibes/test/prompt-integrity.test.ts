@@ -48,15 +48,15 @@ describe('prompt integrity', () => {
             const prompt = await assemblePrompt(agent);
 
             // (a) Relics of the old prompt stack must never come back.
-            // (`write_file` alone is NOT banned: it's a legitimate workflow-DSL
-            // action kind; tool-style misuse is caught by check (b) below.)
+            // (`write_file` is banned outright now the workflow DSL — the only
+            // thing that legitimately named it — is gone; the tool is `write`.)
             for (const banned of [
                 'write_todos',
                 'save_reflection',
                 'SuperCoder',
                 'BrowserAgent',
                 '`view_file`',
-                'Use `write_file`',
+                'write_file',
                 'Chief Architect',
                 'Awwwards',
             ]) {

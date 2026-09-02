@@ -6,19 +6,17 @@ import { FolderPicker } from './components/chat/FolderPicker';
 import { ChatArea } from './components/chat/ChatArea';
 import { LeftNav } from './components/LeftNav';
 import { SettingsPage, type SearchProviderId } from './components/SettingsPage';
-import { WorkflowsPage } from './components/WorkflowsPage';
 import { PromptsPage } from './components/PromptsPage';
 import { WorkspacesPage } from './components/WorkspacesPage';
 import type { ModelOption } from './components/chat/ModelSelector';
 import type { Session } from './components/chat/session-types';
 import type { Workspace } from './components/chat/workspace-types';
 
-type Route = 'chat' | 'settings' | 'workflows' | 'prompts' | 'workspaces';
+type Route = 'chat' | 'settings' | 'prompts' | 'workspaces';
 
 const parseRoute = (hash: string): Route => {
   const path = hash.replace(/^#\/?/, '');
   if (path === 'settings') return 'settings';
-  if (path === 'workflows') return 'workflows';
   if (path === 'prompts') return 'prompts';
   if (path === 'workspaces') return 'workspaces';
   return 'chat';
@@ -60,7 +58,6 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
   const goSettings = useCallback(() => { window.location.hash = '#/settings'; }, []);
-  const goWorkflows = useCallback(() => { window.location.hash = '#/workflows'; }, []);
   const goPrompts = useCallback(() => { window.location.hash = '#/prompts'; }, []);
   const goWorkspaces = useCallback(() => { window.location.hash = '#/workspaces'; }, []);
   const goChat = useCallback(() => { window.location.hash = '#/'; }, []);
@@ -269,13 +266,12 @@ export default function App() {
   return (
     <MotionConfig reducedMotion="user">
     <div className="flex h-screen bg-[color:var(--color-ground)] text-[color:var(--color-ink)] bg-paper-grain">
-      {/* Far-left icon rail: Sessions · Workspaces · Workflows · Prompts · Settings. */}
+      {/* Far-left icon rail: Sessions · Workspaces · Prompts · Settings. */}
       <LeftNav
         active={route}
         sessionsOpen={sidebarOpen}
         onToggleSessions={handleToggleSessions}
         onOpenWorkspaces={goWorkspaces}
-        onOpenWorkflows={goWorkflows}
         onOpenPrompts={goPrompts}
         onOpenSettings={goSettings}
       />
@@ -312,8 +308,6 @@ export default function App() {
             searchProvider={searchProvider}
             onSearchProviderChange={setSearchProvider}
           />
-        ) : route === 'workflows' ? (
-          <WorkflowsPage />
         ) : route === 'prompts' ? (
           <PromptsPage />
         ) : route === 'workspaces' ? (

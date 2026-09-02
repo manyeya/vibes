@@ -1,10 +1,9 @@
 import React, { useEffect, useRef } from 'react';
-import { Workflow, Bot, Sparkles, MessageSquareText, CornerDownLeft, type LucideIcon } from 'lucide-react';
+import { Bot, Sparkles, MessageSquareText, CornerDownLeft, type LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { Command } from './command-providers';
 
 const KIND_ICON: Record<Command['kind'], LucideIcon> = {
-    workflow: Workflow,
     agent: Bot,
     skill: Sparkles,
     prompt: MessageSquareText,

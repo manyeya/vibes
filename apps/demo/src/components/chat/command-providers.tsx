@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { WorkflowRunForm, type RunnableWorkflow } from './WorkflowRunForm';
 
 /** Actions a command can take when selected from the palette. */
 export interface PaletteCtx {
@@ -7,12 +6,11 @@ export interface PaletteCtx {
     closeForm: () => void;
     sendUserMessage: (text: string) => void;
     insertText: (text: string) => void;
-    runWorkflow: (nameOrId: string, inputs: Record<string, unknown>) => void;
 }
 
 export interface Command {
     id: string;
-    kind: 'workflow' | 'agent' | 'skill' | 'prompt';
+    kind: 'agent' | 'skill' | 'prompt';
     label: string;
     description?: string;
     keywords?: string[];
@@ -33,31 +31,6 @@ function useJson<T>(url: string, pick: (data: any) => T, deps: unknown[] = []): 
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, deps);
     return val;
-}
-
-/** Workflows → open the typed run form → run via the direct endpoint. */
-export function useWorkflowCommands(): Command[] {
-    const workflows = useJson<RunnableWorkflow[]>('/api/workflows', (d) => d.workflows ?? []);
-    return useMemo(
-        () =>
-            (workflows ?? []).map((w) => ({
-                id: `wf:${w.id}`,
-                kind: 'workflow' as const,
-                label: w.name,
-                description: w.description,
-                slug: (w as { slug?: string }).slug,
-                keywords: [w.name, (w as { slug?: string }).slug ?? '', ...(w.inputs ?? []).map((i) => i.name)],
-                run: (ctx) =>
-                    ctx.openForm(
-                        <WorkflowRunForm
-                            workflow={w}
-                            onSubmit={(inputs) => ctx.runWorkflow(w.name, inputs)}
-                            onCancel={ctx.closeForm}
-                        />,
-                    ),
-            })),
-        [workflows],
-    );
 }
 
 /** Sub-agents → seed the composer with a delegation prefix (agent-mediated). */
@@ -113,9 +86,8 @@ export function usePromptCommands(): Command[] {
 
 /** All providers merged — the palette is provider-agnostic. */
 export function useCommands(): Command[] {
-    const workflows = useWorkflowCommands();
     const agents = useAgentCommands();
     const skills = useSkillCommands();
     const prompts = usePromptCommands();
-    return useMemo(() => [...workflows, ...agents, ...skills, ...prompts], [workflows, agents, skills, prompts]);
+    return useMemo(() => [...agents, ...skills, ...prompts], [agents, skills, prompts]);
 }

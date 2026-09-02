@@ -1,17 +1,16 @@
 import { TextAttributes } from '@opentui/core';
 import { useKeyboard } from '@opentui/react';
 import { useEffect, useMemo, useState } from 'react';
-import { getAgents, getWorkflows, type AgentInfo, type WorkflowInfo } from '../api';
+import { getAgents, type AgentInfo } from '../api';
 import { COMMANDS } from '../commands';
 import { theme } from '../theme';
 import { useScrollFollow } from './ui';
 
 export type SlashResult =
   | { kind: 'command'; name: string }
-  | { kind: 'agent'; name: string }
-  | { kind: 'workflow'; workflow: WorkflowInfo };
+  | { kind: 'agent'; name: string };
 
-type Group = 'Commands' | 'Agents' | 'Workflows';
+type Group = 'Commands' | 'Agents';
 interface Entry {
   group: Group;
   label: string;
@@ -19,11 +18,11 @@ interface Entry {
   result: SlashResult;
 }
 
-const GLYPH: Record<Group, string> = { Commands: '/', Agents: '◇', Workflows: '⚡' };
+const GLYPH: Record<Group, string> = { Commands: '/', Agents: '◇' };
 
 /**
  * The slash launcher: one searchable, grouped list of everything you can invoke
- * from the composer — commands, sub-agents, and saved workflows. Type to filter
+ * from the composer — commands and sub-agents. Type to filter
  * (prefix matches rank first), ↑↓ to move, enter to pick, esc to dismiss. Its
  * own input holds focus so filtering never fights the composer.
  */
@@ -36,25 +35,22 @@ export function SlashPalette({
 }) {
   const [query, setQuery] = useState('');
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [workflows, setWorkflows] = useState<WorkflowInfo[]>([]);
   const [selected, setSelected] = useState(0);
 
   useEffect(() => {
     getAgents().then(setAgents).catch(() => {});
-    getWorkflows().then(setWorkflows).catch(() => {});
   }, []);
 
   const entries = useMemo<Entry[]>(() => [
     ...COMMANDS.map((c): Entry => ({ group: 'Commands', label: `/${c.name}`, desc: c.desc, result: { kind: 'command', name: c.name } })),
     ...agents.map((a): Entry => ({ group: 'Agents', label: a.name, desc: a.description ?? 'Sub-agent', result: { kind: 'agent', name: a.name } })),
-    ...workflows.map((w): Entry => ({ group: 'Workflows', label: w.name, desc: w.description ?? 'Saved workflow', result: { kind: 'workflow', workflow: w } })),
-  ], [agents, workflows]);
+  ], [agents]);
 
   // Filter + rank: prefix hits first, then substring, then alphabetical; keep
   // the group order stable so headers stay grouped.
   const q = query.trim().toLowerCase();
   const filtered = useMemo(() => {
-    const order: Group[] = ['Commands', 'Agents', 'Workflows'];
+    const order: Group[] = ['Commands', 'Agents'];
     return entries
       .map((e) => {
         const label = e.label.toLowerCase();
@@ -122,7 +118,7 @@ export function SlashPalette({
       <box paddingLeft={2} paddingRight={2} paddingTop={1}>
         <input
           focused
-          placeholder="Search commands, agents, workflows…"
+          placeholder="Search commands, agents…"
           placeholderColor={theme.textMuted}
           cursorColor={theme.primary}
           backgroundColor={theme.backgroundPanel}

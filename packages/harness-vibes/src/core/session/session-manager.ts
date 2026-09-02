@@ -54,7 +54,7 @@ export interface SessionContext {
      * an opened external repo.
      */
     stateDir: string;
-    /** Cross-session shared-state dir (memories.json, workflows.json). Global. */
+    /** Cross-session shared-state dir (memories.json). Global. */
     sharedDir: string;
     /** A sandbox rooted at {@link workspaceDir}. */
     sandbox: Sandbox;
@@ -268,7 +268,7 @@ export class SessionStore {
         // (the old backend got this for free from an eager insert that defaulted
         // workspace_id to 'default'; we now make it explicit).
         const workspaceId = config.workspaceId ?? existingSession?.workspaceId ?? 'default';
-        // Cross-session shared state (memories.json / workflows.json) is global,
+        // Cross-session shared state (memories.json) is global,
         // one level up from the projects dir — NEVER inside an opened repo.
         const sharedDir = path.dirname(this.projectsDir);
         let workspaceDir: string;   // sandbox root (file/shell work)
@@ -346,8 +346,8 @@ export class SessionStore {
         const baseConfig = this.defaultAgentConfig || {};
 
         // Sandbox-rooted file/shell work uses workspaceDir; per-session plugin
-        // state (plan/tasks/scratchpad) uses stateDir; global memories/workflows
-        // use sharedDir.
+        // state (plan/tasks/scratchpad) uses stateDir; global memories use
+        // sharedDir.
         return {
             ...baseConfig,
             workspaceDir,

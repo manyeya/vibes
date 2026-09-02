@@ -8,7 +8,8 @@ import { createUIMessageStream, createUIMessageStreamResponse, type UIMessageChu
 import { logger } from "../logger";
 import streamCoordinator from "../stream-coordinator";
 import { vibeRuntime, defaultSubAgents } from "../vibe-coder";
-import { createAgentStreamResponse, validateWorkflow, runWorkflowToStream, createDataStreamWriter } from "../../../../packages/harness-vibes/index";
+import { homePath } from "../paths";
+import { createAgentStreamResponse } from "../../../../packages/harness-vibes/index";
 import { agent as simpleAgent } from "../simple-agent";
 import { getModel, getAvailableModels, resolveContextWindow, getDefaultModelId, isKnownModelId } from "../model-factory";
 
@@ -129,137 +130,8 @@ app.get('/skills', async (c) => {
     }
 });
 
-/**
- * List the saved workflows (WorkflowPlugin library). The plugin persists them
- * to the shared workspace root as `workflows.json` — the same file every
- * session reads/writes — so the UI can browse them read-only without going
- * through a per-session agent instance.
- */
-const WORKFLOWS_PATH = resolve(process.cwd(), 'workspace/workflows.json');
-
-async function readWorkflowsFile(): Promise<any[]> {
-    try {
-        const parsed = JSON.parse(await readFile(WORKFLOWS_PATH, 'utf8'));
-        return Array.isArray(parsed) ? parsed : [];
-    } catch {
-        return [];
-    }
-}
-
-async function writeWorkflowsFile(list: unknown[]): Promise<void> {
-    await mkdir(dirname(WORKFLOWS_PATH), { recursive: true });
-    await writeFile(WORKFLOWS_PATH, JSON.stringify(list, null, 2), 'utf8');
-}
-
-const findWorkflow = (list: any[], nameOrId: string) => list.find((w) => w?.id === nameOrId || w?.name === nameOrId);
-const newWorkflowId = () => `wf_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-
-app.get('/workflows', async (c) => {
-    try {
-        return c.json({ success: true, workflows: await readWorkflowsFile() });
-    } catch (error) {
-        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to list workflows');
-        return c.json({ success: false, error: 'Failed to list workflows' }, 500);
-    }
-});
-
-/** Validate a (hand-authored) workflow definition without saving it. */
-app.post('/workflows/validate', async (c) => {
-    try {
-        const body = await c.req.json().catch(() => ({}));
-        const { name = 'workflow', inputs = [], steps = [] } = body ?? {};
-        const list = await readWorkflowsFile();
-        const result = validateWorkflow({ name, inputs, steps }, (n) => findWorkflow(list, n));
-        return c.json({ success: true, ...result });
-    } catch (error) {
-        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to validate workflow');
-        return c.json({ success: false, error: 'Failed to validate workflow' }, 500);
-    }
-});
-
-/** Create (or overwrite) a workflow by hand — same validation as the agent's create_workflow. */
-app.post('/workflows', async (c) => {
-    try {
-        const body = await c.req.json().catch(() => ({}));
-        const { name, slug, description = '', inputs = [], steps = [], tags = [], overwrite = false } = body ?? {};
-        if (typeof name !== 'string' || !name.trim()) {
-            return c.json({ success: false, error: 'name is required' }, 400);
-        }
-        const list = await readWorkflowsFile();
-        const existing = findWorkflow(list, name);
-        if (existing && !overwrite) {
-            return c.json({ success: false, error: `A workflow named "${name}" already exists.` }, 409);
-        }
-        const validation = validateWorkflow({ name, inputs, steps }, (n) => findWorkflow(list, n));
-        if (!validation.valid) {
-            return c.json({ success: false, errors: validation.errors, warnings: validation.warnings }, 400);
-        }
-        const now = new Date().toISOString();
-        const workflow = {
-            id: existing?.id ?? newWorkflowId(),
-            name,
-            ...(typeof slug === 'string' && slug.trim() ? { slug: slug.trim() } : {}),
-            description, tags, inputs, steps,
-            createdAt: existing?.createdAt ?? now,
-            updatedAt: now,
-            version: existing ? (existing.version ?? 1) + 1 : 1,
-        };
-        await writeWorkflowsFile(existing ? list.map((w) => (w.id === existing.id ? workflow : w)) : [...list, workflow]);
-        return c.json({ success: true, workflow, warnings: validation.warnings });
-    } catch (error) {
-        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to create workflow');
-        return c.json({ success: false, error: 'Failed to create workflow' }, 500);
-    }
-});
-
-/** Update a workflow by id. */
-app.put('/workflows/:id', async (c) => {
-    try {
-        const id = c.req.param('id');
-        const body = await c.req.json().catch(() => ({}));
-        const list = await readWorkflowsFile();
-        const existing = list.find((w) => w?.id === id);
-        if (!existing) return c.json({ success: false, error: 'Workflow not found' }, 404);
-        const updated = {
-            ...existing,
-            name: body.name ?? existing.name,
-            slug: body.slug !== undefined ? (typeof body.slug === 'string' && body.slug.trim() ? body.slug.trim() : undefined) : existing.slug,
-            description: body.description ?? existing.description,
-            inputs: body.inputs ?? existing.inputs,
-            steps: body.steps ?? existing.steps,
-            tags: body.tags ?? existing.tags,
-            updatedAt: new Date().toISOString(),
-            version: (existing.version ?? 1) + 1,
-        };
-        const validation = validateWorkflow({ name: updated.name, inputs: updated.inputs, steps: updated.steps }, (n) => findWorkflow(list, n));
-        if (!validation.valid) {
-            return c.json({ success: false, errors: validation.errors, warnings: validation.warnings }, 400);
-        }
-        await writeWorkflowsFile(list.map((w) => (w.id === id ? updated : w)));
-        return c.json({ success: true, workflow: updated, warnings: validation.warnings });
-    } catch (error) {
-        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to update workflow');
-        return c.json({ success: false, error: 'Failed to update workflow' }, 500);
-    }
-});
-
-/** Delete a workflow by id. */
-app.delete('/workflows/:id', async (c) => {
-    try {
-        const id = c.req.param('id');
-        const list = await readWorkflowsFile();
-        const next = list.filter((w) => w?.id !== id);
-        if (next.length === list.length) return c.json({ success: false, error: 'Workflow not found' }, 404);
-        await writeWorkflowsFile(next);
-        return c.json({ success: true });
-    } catch (error) {
-        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to delete workflow');
-        return c.json({ success: false, error: 'Failed to delete workflow' }, 500);
-    }
-});
-
 // ── saved prompts (reusable composer snippets — a slash-command provider) ──────
-const PROMPTS_PATH = resolve(process.cwd(), 'workspace/prompts.json');
+const PROMPTS_PATH = homePath('prompts.json');
 async function readPromptsFile(): Promise<any[]> {
     try { const parsed = JSON.parse(await readFile(PROMPTS_PATH, 'utf8')); return Array.isArray(parsed) ? parsed : []; }
     catch { return []; }
@@ -1075,98 +947,6 @@ app.get('/vibe/:sessionId/reconnect', async (c) => {
         stream,
         headers: { 'X-Accel-Buffering': 'no', 'x-vibes-stream-id': streamId },
     });
-});
-
-/**
- * Direct, token-free workflow run (the slash-command / Run-button path). Runs
- * the WorkflowEngine for `:nameOrId` with the posted `inputs`, streaming live
- * `data-workflow` step parts + a canvas artifact + a text breadcrumb into the
- * session thread. Registered as a resumable stream so the client tails it via
- * `resumeStream()` (GET …/reconnect). No agent loop — deterministic + cheap.
- */
-app.post('/vibe/:sessionId/workflows/:nameOrId/run', async (c) => {
-    const sessionId = c.req.param('sessionId');
-    const nameOrId = c.req.param('nameOrId');
-    const body = await c.req.json().catch(() => ({} as any));
-    const inputs: Record<string, unknown> = body?.inputs ?? {};
-
-    const list = await readWorkflowsFile();
-    const workflow = findWorkflow(list, nameOrId);
-    if (!workflow) return c.json({ success: false, error: `No workflow "${nameOrId}".` }, 404);
-
-    const missing = (workflow.inputs ?? [])
-        .filter((i: any) => i.required && i.default === undefined && (inputs[i.name] === undefined || inputs[i.name] === null || inputs[i.name] === ''))
-        .map((i: any) => i.name);
-    if (missing.length) {
-        return c.json({ success: false, error: `Missing required input(s): ${missing.join(', ')}.`, requiredInputs: workflow.inputs }, 400);
-    }
-
-    const modelId = typeof body?.model === 'string' && isKnownModelId(body.model) ? body.model : getDefaultModelId();
-    const model = getModel({ provider: 'openrouter', id: modelId });
-
-    const session = await vibeRuntime.session(sessionId);
-    const backend = session.backend!;
-
-    // Register a resumable stream so the client tails it via resumeStream().
-    const streamId = crypto.randomUUID();
-    streamCoordinator.streamRegistry.create(streamId, sessionId);
-    await backend.beginStream(streamId, sessionId);
-
-    const onChunk = (chunk: unknown) => {
-        const entry = streamCoordinator.streamRegistry.get(streamId);
-        if (!entry) return;
-        entry.lastSeq += 1;
-        const seq = entry.lastSeq;
-        backend.appendStreamChunk(streamId, seq, chunk).catch((err: unknown) => console.error('[wf-run] appendStreamChunk failed:', err));
-        for (const sub of entry.subscribers) { try { sub(seq, chunk); } catch (err) { console.error('[wf-run] subscriber threw:', err); } }
-    };
-
-    const stream = createUIMessageStream({
-        async execute({ writer }) {
-            const dsw = createDataStreamWriter(writer as any);
-            const outcome = await runWorkflowToStream(workflow as any, {
-                model,
-                inputs,
-                writer: dsw,
-                workspaceDir: 'workspace',
-                resolveWorkflow: (n) => findWorkflow(list, n) as any,
-            });
-            const summary = outcome.success
-                ? `Ran workflow **${workflow.name}**` +
-                  (outcome.outputPath ? ` → output saved to \`${outcome.outputPath}\`${outcome.rendered ? ' (rendered in the canvas)' : ''}` : '') +
-                  (outcome.modelCalls != null ? ` · ${outcome.modelCalls} model call${outcome.modelCalls === 1 ? '' : 's'}` : '') + '.'
-                : `Workflow **${workflow.name}** failed: ${outcome.error ?? 'unknown error'}`;
-            const id = 'wf-breadcrumb';
-            writer.write({ type: 'text-start', id } as any);
-            writer.write({ type: 'text-delta', id, delta: summary } as any);
-            writer.write({ type: 'text-end', id } as any);
-        },
-        async onFinish({ messages }) {
-            try { await backend.setUIMessages(messages); } catch (err) { console.error('[wf-run] persist UI messages failed:', err); }
-        },
-    });
-
-    // Drain the stream → persist + fan out to any live reconnect subscriber.
-    void (async () => {
-        const reader = (stream as unknown as ReadableStream<UIMessageChunk<unknown, never>>).getReader();
-        let status: 'completed' | 'failed' = 'completed';
-        try {
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                onChunk(value);
-            }
-        } catch (err) {
-            status = 'failed';
-            console.error('[wf-run] run errored:', err);
-        } finally {
-            reader.releaseLock();
-            await backend.endStream(streamId, status).catch(() => { /* ignore */ });
-            streamCoordinator.streamRegistry.complete(streamId, status);
-        }
-    })();
-
-    return c.json({ success: true, streamId });
 });
 
 app.post('/simple/stream', zValidator('json', vibeSchema), async (c) => {

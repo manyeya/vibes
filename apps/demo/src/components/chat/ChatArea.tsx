@@ -724,35 +724,11 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
 
   useEffect(() => { setMenuIndex(0); }, [slashQuery, slashActive]);
 
-  const runWorkflowCmd = useCallback(async (nameOrId: string, inputs: Record<string, unknown>) => {
-    setCommandForm(null);
-    setInput('');
-    try {
-      const res = await fetch(`/api/vibe/${sessionId}/workflows/${encodeURIComponent(nameOrId)}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inputs, model: modelRef.current || undefined }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!data?.success) { console.error('[workflow run] failed:', data); return; }
-      // Tail the (resumable) run into the thread.
-      setActiveAgent('main');
-      stick.current = true;
-      setAtBottom(true);
-      requestAnimationFrame(() => scrollToBottom(false));
-      await resumeStream?.();
-    } catch (err) {
-      console.error('[workflow run] error:', err);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, resumeStream]);
-
   const paletteCtx: PaletteCtx = {
     openForm: (form) => { setCommandForm(form); setInput(''); },
     closeForm: () => setCommandForm(null),
     sendUserMessage,
     insertText: (t) => setInput(t),
-    runWorkflow: runWorkflowCmd,
   };
   const selectCommand = (c: Command) => c.run(paletteCtx);
 
@@ -1048,25 +1024,6 @@ export const ChatArea = ({ sessionId, model, models, onModelChange, searchProvid
               autoResize
               className="block w-full min-h-[76px] px-0 py-0 text-[15px] leading-relaxed text-[color:var(--color-ink)] placeholder:text-[color:var(--color-ink-faint)]"
               onKeyDown={(e) => {
-                // Inline args: "/<name> key=val key2=\"…\"" + Enter → run directly
-                // (works even when the arg tokens don't match any menu item).
-                if (slashActive && e.key === 'Enter' && !e.shiftKey) {
-                  const bodyStr = input.slice(1);
-                  const sp = bodyStr.indexOf(' ');
-                  if (sp > 0) {
-                    const token = bodyStr.slice(0, sp).toLowerCase();
-                    const rest = bodyStr.slice(sp + 1).trim();
-                    const wf = commands.find((c) => c.kind === 'workflow' && (c.label.toLowerCase() === token || c.slug?.toLowerCase() === token));
-                    if (wf && rest) {
-                      e.preventDefault();
-                      const args: Record<string, string> = {};
-                      for (const m of rest.matchAll(/([A-Za-z0-9_]+)=("([^"]*)"|'([^']*)'|(\S+))/g)) args[m[1]] = m[3] ?? m[4] ?? m[5] ?? '';
-                      runWorkflowCmd(wf.label, args);
-                      setInput('');
-                      return;
-                    }
-                  }
-                }
                 if (slashActive && filteredCommands.length > 0) {
                   if (e.key === 'ArrowDown') { e.preventDefault(); setMenuIndex((i) => (i + 1) % filteredCommands.length); return; }
                   if (e.key === 'ArrowUp') { e.preventDefault(); setMenuIndex((i) => (i - 1 + filteredCommands.length) % filteredCommands.length); return; }

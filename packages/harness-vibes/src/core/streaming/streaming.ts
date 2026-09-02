@@ -545,19 +545,6 @@ export class DataStreamWriter {
         } as const);
     }
 
-    /**
-     * Write/replace a workflow update (library save or execution progress).
-     * Stable `workflow-<id>` id so run/step updates replace in place.
-     */
-    writeWorkflow(workflow: VibesDataParts['workflow']): void {
-        if (!this.writer) return;
-        this.writer.write({
-            type: 'data-workflow',
-            id: `workflow-${workflow.id}`,
-            data: workflow,
-        } as const);
-    }
-
     /** Raw write method for custom data parts */
     write(part: {
         type: `data-${string}`;

@@ -1,7 +1,6 @@
 import type { TextareaRenderable } from '@opentui/core';
 import { useKeyboard } from '@opentui/react';
 import { useEffect, useRef, useState } from 'react';
-import type { WorkflowInfo } from '../api';
 import { fmtElapsed, fmtTokens, theme } from '../theme';
 import { SlashPalette, type SlashResult } from './slash-palette';
 import { Spinner } from './spinner';
@@ -17,7 +16,6 @@ export function Prompt({
   leftLabel,
   tokens,
   onSubmit,
-  onWorkflow,
   focused = true,
   inputRef,
 }: {
@@ -29,8 +27,6 @@ export function Prompt({
   /** Estimated tokens streamed so far this turn (null when idle). */
   tokens?: number | null;
   onSubmit: (text: string) => void;
-  /** Picking a workflow from the slash palette opens its run form (not a chip). */
-  onWorkflow?: (workflow: WorkflowInfo) => void;
   focused?: boolean;
   /** Lets the parent reach the textarea (e.g. to restore text on failure). */
   inputRef?: React.RefObject<TextareaRenderable | null>;
@@ -52,7 +48,6 @@ export function Prompt({
 
   const [slashOpen, setSlashOpen] = useState(false);
   // A selected sub-agent shown as a chip in the composer; the message you type
-  // is directed at it on submit. (Workflows use their run form instead.)
   const [target, setTarget] = useState<{ kind: 'agent'; name: string } | null>(null);
 
   const submit = () => {
@@ -91,10 +86,6 @@ export function Prompt({
     setSlashOpen(false);
     if (r.kind === 'command') {
       onSubmit(`/${r.name}`); // parent parses → runs the app action
-      return;
-    }
-    if (r.kind === 'workflow') {
-      onWorkflow?.(r.workflow); // opens the run form above the composer
       return;
     }
     // Agent → attach as a chip; the composer stays for the message.

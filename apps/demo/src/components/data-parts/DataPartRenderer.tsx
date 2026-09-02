@@ -16,7 +16,6 @@ import {
   ArtifactPart,
   AgentMessagePart,
   AgentThoughtPart,
-  WorkflowPart,
   GuardrailPart,
 } from './index';
 
@@ -44,7 +43,6 @@ const dataPartRenderers: Record<string, React.FC<{ data: unknown }>> = {
   'data-artifact': ArtifactPart as React.FC<{ data: unknown }>,
   'data-agent_message': AgentMessagePart as React.FC<{ data: unknown }>,
   'data-agent_thought': AgentThoughtPart as React.FC<{ data: unknown }>,
-  'data-workflow': WorkflowPart as React.FC<{ data: unknown }>,
   'data-guardrail': GuardrailPart as React.FC<{ data: unknown }>,
 };
 

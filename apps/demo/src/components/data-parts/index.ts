@@ -15,7 +15,6 @@ export { DelegationPart } from './DelegationPart';
 export { ArtifactPart } from './ArtifactPart';
 export { AgentMessagePart } from './AgentMessagePart';
 export { AgentThoughtPart } from './AgentThoughtPart';
-export { WorkflowPart } from './WorkflowPart';
 export { GuardrailPart } from './GuardrailPart';
 export { DataPartRenderer, isDataPart, supportedDataPartTypes } from './DataPartRenderer';
 export type { DataPartWrapper, DataPartRendererProps } from './DataPartRenderer';

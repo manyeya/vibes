@@ -404,7 +404,7 @@ export interface VibesAgentConfig {
      */
     stateDir?: string;
     /**
-     * Cross-session shared-state directory (memories.json, workflows.json).
+     * Cross-session shared-state directory (memories.json).
      * Defaults to a value derived from `workspaceDir`. Set explicitly so that
      * an opened external repo never receives global vibes state.
      */
