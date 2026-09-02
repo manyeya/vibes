@@ -68,6 +68,15 @@ const emitToolCall = (input: string) => (push: (p: any) => void) => {
     push({ type: 'finish', finishReason: 'tool-calls', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } });
 };
 
+/** Emit a tool call under an arbitrary (possibly mangled) name. */
+const emitToolCallNamed = (name: string, input: string) => (push: (p: any) => void) => {
+    push({ type: 'tool-input-start', id: 'c1', toolName: name });
+    push({ type: 'tool-input-delta', id: 'c1', delta: input });
+    push({ type: 'tool-input-end', id: 'c1' });
+    push({ type: 'tool-call', toolCallId: 'c1', toolName: name, input });
+    push({ type: 'finish', finishReason: 'tool-calls', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } });
+};
+
 async function runStep(model: any, onToolCallError?: (t: string, m: string) => void) {
     return streamModelStep({
         model,
@@ -138,4 +147,38 @@ describe('repair error-class handling', () => {
         expect(err.toolInput).toBe('{}');
         expect(NoSuchToolError.isInstance(err)).toBe(false);
     });
+});
+
+describe('the real-world failures from the killed run', () => {
+    test('a GLM-syntax leak in the tool NAME is repaired with no model call', async () => {
+        // Verbatim from the transcript. Previously a NoSuchToolError that the
+        // SDK docs say not to repair; the name and args were both recoverable.
+        repairAnswer = 'THIS SHOULD NOT BE USED';
+        const leaked = 'writeFile<arg_key>path</arg_key><arg_value>index.html</arg_value>'
+            + '<arg_key>content</arg_key><arg_value>hello</arg_value>';
+        const model = stubModel([emitToolCallNamed(leaked, '{}')]);
+
+        const outcome = await runStep(model);
+        expect(outcome.toolCalls).toHaveLength(1);
+        expect(outcome.toolCalls[0].toolName).toBe('writeFile');
+        expect(outcome.toolCalls[0].input).toEqual({ path: 'index.html', content: 'hello' });
+    }, 20_000);
+
+    test('a camelCase/underscore name variant resolves deterministically', async () => {
+        repairAnswer = JSON.stringify({ path: 'a.txt', content: 'x' });
+        const model = stubModel([emitToolCallNamed('functions.write_file', '{}')]);
+
+        const outcome = await runStep(model);
+        expect(outcome.toolCalls[0].toolName).toBe('writeFile');
+    }, 20_000);
+
+    test('a genuinely unknown tool is reported with the available list', async () => {
+        const errors: Array<[string, string]> = [];
+        const model = stubModel([emitToolCallNamed('launch_missiles', '{}')]);
+
+        await runStep(model, (t, m) => errors.push([t, m]));
+        expect(errors).toHaveLength(1);
+        expect(errors[0][1]).toContain('unknown tool');
+        expect(errors[0][1]).toContain('writeFile');
+    }, 20_000);
 });

@@ -21,6 +21,7 @@ import {
     type ToolSet,
 } from 'ai';
 import type { ModelStreamPart, StepUsage } from './loop-events';
+import { repairDeterministically } from './tool-call-repair';
 
 export interface StepCallConfig {
     model: LanguageModel;
@@ -139,25 +140,44 @@ export async function streamModelStep(cfg: StepCallConfig): Promise<StepModelOut
         // Rescue a tool call the model malformed, instead of handing back a raw
         // TypeValidationError dump and letting it retry the same broken call
         // until loop detection kills the run.
-        experimental_repairToolCall: async ({ toolCall, error, inputSchema }) => {
-            const toolName = toolCall.toolName;
-
-            // A hallucinated tool name isn't guessable — don't burn a call on it.
-            if (NoSuchToolError.isInstance(error)) {
-                cfg.onToolCallError?.(
-                    toolName,
-                    `Called unknown tool "${toolName}"${error.availableTools?.length ? `; available: ${error.availableTools.join(', ')}` : ''}.`,
-                );
-                return null;
-            }
-            if (!InvalidToolInputError.isInstance(error)) return null;
+        experimental_repairToolCall: async ({ toolCall, error, inputSchema, tools }) => {
+            const rawName = toolCall.toolName;
+            const isUnknownTool = NoSuchToolError.isInstance(error);
+            if (!isUnknownTool && !InvalidToolInputError.isInstance(error)) return null;
 
             if (repairAttempted.has(toolCall.toolCallId)) {
-                cfg.onToolCallError?.(toolName, `Repair already attempted for this ${toolName} call; giving up.`);
+                cfg.onToolCallError?.(rawName, `Repair already attempted for this ${rawName} call; giving up.`);
                 return null;
             }
             repairAttempted.add(toolCall.toolCallId);
 
+            const available = Object.keys(tools ?? {});
+
+            // Deterministic pass first — free, instant, and it handles the real
+            // cause of most of these: a model's native tool-call syntax leaking
+            // through a provider parser that expected JSON. The SDK docs say not
+            // to repair unknown tool names, which assumes hallucination; a
+            // format leak carries recoverable intent, so we try to match it.
+            const fixed = repairDeterministically({ toolName: rawName, rawInput: toolCall.input, availableTools: available });
+
+            if (!fixed) {
+                cfg.onToolCallError?.(
+                    rawName,
+                    isUnknownTool
+                        ? `Called unknown tool "${rawName}". Available: ${available.join(', ')}.`
+                        : `Called ${rawName} with invalid arguments (${toolCall.input || 'no arguments'}).`,
+                );
+                return null;
+            }
+
+            // Arguments recovered wholesale — no model call needed.
+            if (fixed.args) {
+                return { ...toolCall, toolName: fixed.toolName, input: JSON.stringify(fixed.args) };
+            }
+
+            // Name resolved but arguments are still missing or malformed: fall
+            // back to one bounded re-ask against the MATCHED tool's schema.
+            const toolName = fixed.toolName;
             let schema: unknown;
             try {
                 schema = await inputSchema({ toolName });
@@ -182,7 +202,7 @@ export async function streamModelStep(cfg: StepCallConfig): Promise<StepModelOut
                 );
                 return null;
             }
-            return { ...toolCall, input: repaired };
+            return { ...toolCall, toolName, input: repaired };
         },
         // In v7 a provider/stream error is delivered here and the stream
         // finishes without throwing (then collapses to a generic message
