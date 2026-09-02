@@ -16,10 +16,12 @@ import { wrapLanguageModel, type LanguageModel } from 'ai';
 import { devToolsMiddleware } from '@ai-sdk/devtools';
 import { vibePrompt } from './prompts/vibe';
 import { getModel, getContextWindow, getDefaultModelId } from './model-factory';
-import { dotenvLoad } from 'dotenv-mono';
+import { homePath } from './paths';
+import { loadEnv } from './env';
 
-// Load env (API keys, etc.) before the harness resolves its model below.
-dotenvLoad();
+// Load env (API keys, etc.) — repo .env in dev, ~/.vibes/.env when installed —
+// before the harness resolves its model below.
+loadEnv();
 
 /**
  * The default roster of sub-agents shipped with every Vibe session.
@@ -169,10 +171,13 @@ export const vibeRuntime: AgentRuntime = createRuntime(
 
     },
     {
-        dbPath: 'workspace/vibes.db',
-        sessionsDir: 'workspace/sessions',
+        // State lives under ~/.vibes (VIBES_HOME), not the cwd — so `vibes` runs
+        // in any repo without dropping a workspace/ dir into it. See paths.ts.
+        dbPath: homePath('vibes.db'),
+        sessionsDir: homePath('sessions'),
         // Workspaces (projects) get an app-managed shared dir under here; all
-        // sessions in a workspace root their sandbox at workspace/projects/{id}.
-        projectsDir: 'workspace/projects',
+        // sessions in a workspace root their sandbox at ~/.vibes/projects/{id}.
+        // (An "open folder" workspace instead roots at the repo dir it points to.)
+        projectsDir: homePath('projects'),
     },
 );

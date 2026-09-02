@@ -61,6 +61,16 @@ export const createWorkspace = (opts: { name?: string; rootDir?: string }) =>
     body: JSON.stringify(opts),
   }).then((r) => r.workspace);
 
+/**
+ * Open a folder as the active workspace, reusing an existing one for that path.
+ * Used by the `vibes` CLI (via VIBES_PROJECT_DIR) to land straight in the repo
+ * the user launched from, without accumulating a duplicate per launch.
+ */
+export const openProject = async (rootDir: string): Promise<WorkspaceInfo> => {
+  const existing = (await listWorkspaces()).find((w) => w.rootDir === rootDir);
+  return existing ?? createWorkspace({ rootDir });
+};
+
 export const listSessions = (workspaceId?: string) =>
   api<{ sessions: SessionInfo[] }>(
     workspaceId ? `/sessions?workspace_id=${encodeURIComponent(workspaceId)}` : '/sessions',

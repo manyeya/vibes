@@ -12,6 +12,7 @@
   "dependencies": {
     "@ai-sdk/devtools": "^1.0.0",
     "@ai-sdk/mcp": "^2.0.0",
+    "@napi-rs/keyring": "^1.3.0",
     "@ai-sdk/openai": "^4.0.0",
     "@exalabs/ai-sdk": "^2.1.0",
     "@hono/zod-validator": "^0.7.6",

@@ -1,11 +1,11 @@
 import { VibeAgent } from "../../../packages/harness-vibes/index";
-import { dotenvLoad } from "dotenv-mono";
+import { loadEnv } from "./env";
 import { wrapLanguageModel } from "ai";
 import { createZhipu } from "zhipu-ai-provider";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 
-// Load env vars from root .env (automatically walks up directories)
-dotenvLoad();
+// Load env vars (repo .env in dev, ~/.vibes/.env when installed).
+loadEnv();
 
 const zhipu = createZhipu({
   baseURL: 'https://api.z.ai/api/paas/v4',

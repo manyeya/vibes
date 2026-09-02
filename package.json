@@ -6,7 +6,12 @@
     "packages/*",
     "apps/*"
   ],
+  "bin": {
+    "vibes": "./bin/vibes.ts"
+  },
   "scripts": {
+    "vibes": "bun run ./bin/vibes.ts",
+    "vibes:build": "bun build apps/api/src/index.ts --target bun --external @napi-rs/keyring --outfile dist/api.js && bun build apps/tui/src/index.tsx --target bun --external @opentui/core --external @opentui/react --outfile dist/tui.js",
     "dev": "bun run --filter ./apps/api/src/index.ts",
     "dev:api": "bun run --filter @vibes/api dev",
     "dev:tui": "bun run --filter @vibes/tui dev",
@@ -24,6 +29,7 @@
   },
   "private": true,
   "dependencies": {
+    "@napi-rs/keyring": "^1.3.0",
     "dotenv-mono": "^1.5.1"
   },
   "//overrides": "Force a single ai version: the OpenRouter/Exa/Zhipu providers still peer-depend on ai@^6, which otherwise installs a second ai@6 copy alongside ai@7 and makes editors resolve `ai` types inconsistently (e.g. a stale 3-arg ToolLoopAgent). They emit v3-spec models that ai@7 accepts, so pinning ai to 7 is safe.",

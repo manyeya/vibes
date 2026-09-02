@@ -1,7 +1,7 @@
 import { MouseButton } from '@opentui/core';
 import { useKeyboard, useRenderer, useSelectionHandler } from '@opentui/react';
 import { useEffect, useRef, useState } from 'react';
-import { createSession, getModels, getWorkspaceGit, health, listWorkspaces, type GitInfo, type SessionInfo, type WorkspaceInfo } from './api';
+import { createSession, getModels, getWorkspaceGit, health, listWorkspaces, openProject, type GitInfo, type SessionInfo, type WorkspaceInfo } from './api';
 import { parseCommand, type AppAction } from './commands';
 import { loadPref, savePref } from './config';
 import { ContextMenu, type MenuItem } from './components/context-menu';
@@ -75,9 +75,18 @@ export function App() {
     if (model) savePref('model', model);
   }, [model]);
 
-  // Land in the most recently used workspace so sessions (and their sub-agents)
-  // start in a real project dir. The user can open/switch via the dialog.
+  // Choose the starting workspace. When launched by the `vibes` CLI in a repo,
+  // VIBES_PROJECT_DIR points at that repo — open it directly so the agent works
+  // on the cwd. Otherwise land in the most recently used workspace. Either way
+  // the user can open/switch via the dialog.
   useEffect(() => {
+    const projectDir = process.env.VIBES_PROJECT_DIR;
+    if (projectDir) {
+      openProject(projectDir)
+        .then((ws) => setWorkspace((w) => w ?? ws))
+        .catch(() => {});
+      return;
+    }
     listWorkspaces()
       .then((all) => {
         if (all.length === 0) return;

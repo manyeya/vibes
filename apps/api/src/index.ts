@@ -1,16 +1,21 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger as honoLogger } from "hono/logger";
-import vibeRouter from "./routers/vibe";
+import { hasProviderKey, PROVIDER_KEYS } from "./env";
+import vibeRouter from "./routers/vibe"; // imports vibe-coder, which loads env on import
 import { logger } from "./logger";
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
-if (NODE_ENV === 'production' && !process.env.OPENAI_API_KEY) {
-  logger.error('OPENAI_API_KEY is required in production');
-  throw new Error('OPENAI_API_KEY is required in production');
+if (!hasProviderKey()) {
+  // Not fatal: the UI still loads and the provider throws a clear error on the
+  // first model call. The `vibes` CLI onboards the user before reaching here.
+  logger.warn(
+    `No model-provider key set (${PROVIDER_KEYS.join(', ')}). ` +
+    `Run \`vibes login\` (or set the key in the environment) before sending a message.`,
+  );
 }
 
 const app = new Hono();
