@@ -317,6 +317,7 @@ export class VibesAgent {
                     abortSignal,
                     transformContext: (m) => this.pruneMessages(m),
                     prepareTurn: this.makePrepareTurn(instructions),
+                    onBeforeFinish: () => this.drainPendingWork(),
                     onStepFinish: (s) => this.recordStepUsage(s),
                     onModelPart: (part) => { ui.handlePart(part); fullController?.enqueue(part); },
                 }, streamModelStep);
@@ -385,6 +386,7 @@ export class VibesAgent {
             abortSignal,
             transformContext: (m) => this.pruneMessages(m),
             prepareTurn: this.makePrepareTurn(instructions),
+            onBeforeFinish: () => this.drainPendingWork(),
             onStepFinish: (s) => this.recordStepUsage(s),
         }, streamModelStep);
 
@@ -579,6 +581,23 @@ export class VibesAgent {
         if (this.budgets) stops.push(...(resolveBudgetStops(this.budgets) as unknown as StopPredicate[]));
         if (this.loopDetection) stops.push(...(resolveLoopStops(this.loopDetection) as unknown as StopPredicate[]));
         return stops;
+    }
+
+    /**
+     * Give plugins a chance to keep the run alive when the model has stopped
+     * calling tools. Used by SubAgentPlugin to drain background delegations that
+     * are still in flight — without this their results land after the loop has
+     * already returned and are lost. Duck-typed so core stays decoupled from
+     * concrete plugins, matching `setModelOverride`.
+     */
+    private async drainPendingWork(): Promise<ModelMessage[] | null> {
+        const pending: ModelMessage[] = [];
+        for (const plugin of this.plugins) {
+            const p = plugin as { onBeforeFinish?: () => Promise<ModelMessage[] | null> | ModelMessage[] | null };
+            const messages = await p.onBeforeFinish?.();
+            if (messages?.length) pending.push(...messages);
+        }
+        return pending.length ? pending : null;
     }
 
     private async runStreamFinishHooks(text: string, messages: ModelMessage[], steps: LoopStep[]): Promise<void> {

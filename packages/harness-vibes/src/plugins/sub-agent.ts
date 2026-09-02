@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { type LanguageModel, type Tool, type UIMessageStreamWriter, tool } from 'ai';
+import { type LanguageModel, type ModelMessage, type Tool, type UIMessageStreamWriter, tool } from 'ai';
 import z from 'zod';
 import {
     VibesUIMessage,
@@ -14,6 +14,11 @@ import {
     type DataStreamWriter,
 } from '../core/types';
 import { VibesAgent, type VibesAgentConfig } from '../core/agent/agent';
+import {
+    BackgroundTaskRegistry,
+    ConcurrencyLimitError,
+    type BackgroundTaskView,
+} from './background-tasks';
 
 // Optional structured-handoff tool. Sub-agents are NOT required to call it —
 // a normal final answer is a perfectly good result. Calling it just lets a
@@ -45,6 +50,7 @@ const delegationInputSchema = z.object({
     context: z.record(z.string(), z.unknown()).optional().describe('Optional structured context for the sub-agent.'),
     relevantFiles: z.array(z.string()).optional().describe('Optional file paths that are likely relevant to the task.'),
     fresh: z.boolean().optional().describe('Bypass the cache and force a fresh run, even if an identical task was run recently.'),
+    background: z.boolean().default(true).describe('Run in the background (default): returns a task id immediately so you can keep working, and you collect the result with await_tasks. Set false to block until the sub-agent finishes.'),
 });
 
 export type CompletionPayload = z.infer<typeof completionSchema>;
@@ -426,6 +432,10 @@ export default class SubAgentPlugin implements Plugin {
      */
     private parentContextWindow = 128_000;
     private parentCompressionRatio = 0.7;
+    /** In-flight background delegations (see background-tasks.ts). */
+    private readonly background: BackgroundTaskRegistry<DelegationSuccessResult | DelegationErrorResult>;
+    /** Task ids already reported to the model, so a drained result isn't re-injected. */
+    private readonly reportedTasks = new Set<string>();
 
     constructor(
         private readonly subAgents: Map<string, SubAgent>,
@@ -439,6 +449,7 @@ export default class SubAgentPlugin implements Plugin {
         private readonly createAgent: AgentFactory = config => new VibesAgent(config)
     ) {
         this.registry = new DelegationRegistry(cacheTTL);
+        this.background = new BackgroundTaskRegistry(maxConcurrentAgents);
         this.normalizedSubAgents = this.normalizeSubAgents(subAgents);
         this.generalPurposeToolNames = this.buildGeneralPurposeToolNames();
         this.validateNormalizedSubAgents();
@@ -873,8 +884,82 @@ export default class SubAgentPlugin implements Plugin {
         };
     }
 
-    private async runDelegationTask(subAgent: NormalizedSubAgent, request: DelegationInput, abortSignal?: AbortSignal): Promise<DelegationSuccessResult | DelegationErrorResult> {
-        const delegationId = `${sanitizeFileComponent(subAgent.name)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    /**
+     * Launch a delegation in the background and return its handle immediately.
+     *
+     * The parent's loop is not blocked: the run settles into the registry, and
+     * the model collects it with `await_tasks` / `check_tasks`, or the loop's
+     * `onBeforeFinish` drain picks it up if the model stops talking first.
+     */
+    private startBackgroundDelegation(
+        subAgent: NormalizedSubAgent,
+        request: DelegationInput,
+        parentSignal?: AbortSignal,
+    ): { taskId: string; status: 'running'; agentName: string } {
+        const taskId = this.newDelegationId(subAgent);
+        // Own controller per task so one cancellation doesn't take down siblings;
+        // still chained to the parent so aborting the run kills every child.
+        const controller = new AbortController();
+        parentSignal?.addEventListener('abort', () => controller.abort(), { once: true });
+
+        this.background.start({
+            id: taskId,
+            agentName: subAgent.name,
+            task: truncateTask(request.task),
+            run: () => this.runDelegationTask(subAgent, request, controller.signal, taskId),
+            cancel: () => controller.abort(),
+        });
+
+        return { taskId, status: 'running', agentName: subAgent.name };
+    }
+
+    /** Compact, model-facing view of a settled (or running) background task. */
+    private describeTask(t: BackgroundTaskView<DelegationSuccessResult | DelegationErrorResult>) {
+        const base = {
+            taskId: t.id,
+            agentName: t.agentName,
+            task: t.task,
+            status: t.status,
+            elapsedMs: t.elapsedMs,
+        };
+        if (t.status === 'running') return base;
+        if (t.error) return { ...base, error: t.error };
+        const r = t.result;
+        return r?.status === 'completed'
+            ? { ...base, summary: r.summary, savedTo: r.savedTo, filesCreated: r.filesCreated }
+            : { ...base, summary: r?.summary, error: r?.error, errorCode: r?.errorCode };
+    }
+
+    /**
+     * Loop hook: the model has stopped calling tools but background delegations
+     * are still in flight. Drain them and hand the results back as a message so
+     * the run continues with the answers rather than discarding them.
+     */
+    async onBeforeFinish(): Promise<ModelMessage[] | null> {
+        if (!this.background.hasUnsettled) return null;
+
+        const settled = await this.background.await();
+        const fresh = settled.filter((t) => !this.reportedTasks.has(t.id));
+        if (!fresh.length) return null;
+        for (const t of fresh) this.reportedTasks.add(t.id);
+
+        return [{
+            role: 'user',
+            content:
+                `[background delegation] ${fresh.length} task(s) you started have finished. ` +
+                `Use these results to complete your answer; do not re-delegate them.\n` +
+                JSON.stringify(fresh.map((t) => this.describeTask(t)), null, 2),
+        }];
+    }
+
+    /** The id a delegation streams under. Pre-generated for background runs so
+     *  the tool can hand it back before the run settles. */
+    private newDelegationId(subAgent: NormalizedSubAgent): string {
+        return `${sanitizeFileComponent(subAgent.name)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    private async runDelegationTask(subAgent: NormalizedSubAgent, request: DelegationInput, abortSignal?: AbortSignal, presetDelegationId?: string): Promise<DelegationSuccessResult | DelegationErrorResult> {
+        const delegationId = presetDelegationId ?? this.newDelegationId(subAgent);
         const delegationOperation = this.streamContext?.createOperation({
             name: `delegation-${subAgent.name}`,
             toolName: 'delegate',
@@ -1189,17 +1274,51 @@ export default class SubAgentPlugin implements Plugin {
                     };
                 }
 
+                if (input.background) {
+                    try {
+                        return this.startBackgroundDelegation(subAgent, input, options?.abortSignal);
+                    } catch (err) {
+                        if (err instanceof ConcurrencyLimitError) {
+                            return { status: 'error', delegationId: `capacity-${Date.now()}`, summary: 'Concurrency limit reached', error: err.message, errorCode: 'invalid_config' as const };
+                        }
+                        throw err;
+                    }
+                }
+
                 return this.runDelegationTask(subAgent, input, options?.abortSignal);
             },
         });
 
         const parallelDelegateTool = tool({
-            description: `Delegate multiple independent tasks to sub-agents in parallel. Each task names an existing agent (see list_agents).`,
+            description: `Delegate multiple independent tasks to sub-agents in parallel. Each task names an existing agent (see list_agents). Background by default: returns task ids immediately — collect them with await_tasks.`,
             inputSchema: z.object({
                 tasks: z.array(delegationInputSchema).min(1).max(10).describe('Tasks to execute in parallel.'),
                 continueOnError: z.boolean().default(false).describe('If true, continue scheduling tasks after a failure.'),
+                background: z.boolean().default(true).describe('Return task ids immediately instead of blocking until every task finishes.'),
             }),
-            execute: async ({ tasks, continueOnError }, options) => {
+            execute: async ({ tasks, continueOnError, background }, options) => {
+                if (background) {
+                    const started: Array<{ taskId: string; agentName: string } | { agentName: string; error: string }> = [];
+                    for (const task of tasks) {
+                        const subAgent = this.normalizedSubAgents.get(task.agent_name);
+                        if (!subAgent) {
+                            started.push({ agentName: task.agent_name, error: `Sub-agent not found: ${task.agent_name}` });
+                            continue;
+                        }
+                        try {
+                            const { taskId } = this.startBackgroundDelegation(subAgent, task, options?.abortSignal);
+                            started.push({ taskId, agentName: task.agent_name });
+                        } catch (err) {
+                            // At capacity: report the ones that didn't start rather
+                            // than failing the whole batch — the started ones are live.
+                            started.push({ agentName: task.agent_name, error: err instanceof Error ? err.message : String(err) });
+                        }
+                    }
+                    const launched = started.filter((s) => 'taskId' in s).length;
+                    this.writer?.writeStatus(`Started ${launched}/${tasks.length} background delegations.`);
+                    return { status: 'running', started, launched, total: tasks.length };
+                }
+
                 const result = await this.scheduleParallelDelegations(tasks, continueOnError, options?.abortSignal);
                 this.writer?.writeStatus(result.summary);
                 return result;
@@ -1244,6 +1363,7 @@ export default class SubAgentPlugin implements Plugin {
                 name: z.string().optional().describe('Optional name to reuse it later; otherwise an ephemeral one is generated.'),
                 context: z.record(z.string(), z.unknown()).optional(),
                 relevant_files: z.array(z.string()).optional(),
+                background: z.boolean().default(true).describe('Return a task id immediately instead of blocking; collect with await_tasks.'),
             }),
             execute: async (input, options) => {
                 const name = input.name ?? `spawned-${Date.now().toString(36)}`;
@@ -1253,11 +1373,25 @@ export default class SubAgentPlugin implements Plugin {
                     systemPrompt: input.system_prompt,
                     allowedTools: input.allowed_tools,
                 });
-                return this.runDelegationTask(
-                    subAgent,
-                    { agent_name: name, task: input.task, context: input.context, relevantFiles: input.relevant_files, fresh: true },
-                    options?.abortSignal,
-                );
+                const request: DelegationInput = {
+                    agent_name: name,
+                    task: input.task,
+                    context: input.context,
+                    relevantFiles: input.relevant_files,
+                    fresh: true,
+                    background: input.background,
+                };
+                if (input.background) {
+                    try {
+                        return this.startBackgroundDelegation(subAgent, request, options?.abortSignal);
+                    } catch (err) {
+                        if (err instanceof ConcurrencyLimitError) {
+                            return { status: 'error', delegationId: `capacity-${Date.now()}`, summary: 'Concurrency limit reached', error: err.message, errorCode: 'invalid_config' as const };
+                        }
+                        throw err;
+                    }
+                }
+                return this.runDelegationTask(subAgent, request, options?.abortSignal);
             },
         });
 
@@ -1273,10 +1407,34 @@ export default class SubAgentPlugin implements Plugin {
             }),
         });
 
+        const checkTasksTool = tool({
+            description: `Check background delegations without blocking. Shows what is still running and the results of anything that has finished.`,
+            inputSchema: z.object({}),
+            execute: async () => {
+                const tasks = this.background.list().map((t) => this.describeTask(t));
+                return { running: this.background.runningCount, tasks };
+            },
+        });
+
+        const awaitTasksTool = tool({
+            description: `Wait for background delegations to finish and return their results. Omit taskIds to wait for all of them. This is how you collect a delegated answer before using it.`,
+            inputSchema: z.object({
+                taskIds: z.array(z.string()).optional().describe('Task ids to wait for. Omit to wait for every outstanding task.'),
+            }),
+            execute: async ({ taskIds }) => {
+                const settled = await this.background.await(taskIds);
+                // Mark reported so onBeforeFinish doesn't inject them a second time.
+                for (const t of settled) this.reportedTasks.add(t.id);
+                return { tasks: settled.map((t) => this.describeTask(t)) };
+            },
+        });
+
         return {
             task: delegateTool,
             delegate: delegateTool,
             parallel_delegate: parallelDelegateTool,
+            check_tasks: checkTasksTool,
+            await_tasks: awaitTasksTool,
             create_agent: createAgentTool,
             spawn_agent: spawnAgentTool,
             list_agents: listAgentsTool,
@@ -1284,6 +1442,6 @@ export default class SubAgentPlugin implements Plugin {
     }
 
     modifySystemPrompt(prompt: string): string {
-        return `${prompt}\n\n## Sub-Agent Delegation\n\nYou can offload focused work to sub-agents — lean workers with their own tools that report back a result. Built-in sub-agents:\n${this.describeAgents()}\n\nHow to use them:\n- \`task()\` / \`delegate()\` — run one focused task on a named agent.\n- \`parallel_delegate()\` — run several independent tasks at once.\n- \`create_agent()\` — define a NEW specialist on the fly (name, description, system prompt, allowed tools), then delegate to it. You are not limited to the built-in roster.\n- \`spawn_agent()\` — define AND run a one-off agent in a single call.\n- \`list_agents()\` — see everyone currently available.\n\nGuidance:\n- Delegate genuinely separable work (research, a self-contained file/module, parallel investigations). Keep the orchestration and final synthesis yourself.\n- A successful delegation returns \`status: "completed"\` with a \`summary\`; a failed one returns \`status: "error"\` with an error code and any partial output.\n- Treat the returned summary as the handoff; only read the saved artifact (under \`subagent_results/\` in your workspace) for audit/debug detail.\n- If parallel results touch the same file, resolve the merge yourself — don't let the last write win.\n- Don't re-delegate an identical task unless requirements changed.`;
+        return `${prompt}\n\n## Sub-Agent Delegation\n\nYou can offload focused work to sub-agents — lean workers with their own tools that report back a result. Built-in sub-agents:\n${this.describeAgents()}\n\nHow to use them:\n- \`task()\` / \`delegate()\` — run one focused task on a named agent.\n- \`parallel_delegate()\` — run several independent tasks at once.\n- \`check_tasks()\` — see which background delegations are still running, without waiting.\n- \`await_tasks()\` — wait for background delegations and collect their results.\n\nBackground delegation:\n- Delegations run in the BACKGROUND by default: the call returns a \`taskId\` immediately and you keep working. It does NOT return the answer.\n- Do useful local work (read files, run commands) while a delegation is in flight — that is the point.\n- When you actually need the answer, call \`await_tasks()\`. Never guess or invent a delegated result.\n- Pass \`background: false\` when the very next thing you do depends on the result and there is nothing else to get on with.\n- \`create_agent()\` — define a NEW specialist on the fly (name, description, system prompt, allowed tools), then delegate to it. You are not limited to the built-in roster.\n- \`spawn_agent()\` — define AND run a one-off agent in a single call.\n- \`list_agents()\` — see everyone currently available.\n\nGuidance:\n- Delegate genuinely separable work (research, a self-contained file/module, parallel investigations). Keep the orchestration and final synthesis yourself.\n- A successful delegation returns \`status: "completed"\` with a \`summary\`; a failed one returns \`status: "error"\` with an error code and any partial output.\n- Treat the returned summary as the handoff; only read the saved artifact (under \`subagent_results/\` in your workspace) for audit/debug detail.\n- If parallel results touch the same file, resolve the merge yourself — don't let the last write win.\n- Don't re-delegate an identical task unless requirements changed.`;
     }
 }

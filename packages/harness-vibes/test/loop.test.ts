@@ -121,4 +121,52 @@ describe('runAgentLoop', () => {
         expect(result.stopReason).toBe('error');
         expect((logged as Error).message).toBe('provider boom');
     });
+
+    test('onBeforeFinish keeps the run alive and its messages reach the next turn', async () => {
+        // Both turns are final answers. Without the hook the loop returns on the
+        // first; the hook makes it take a second with the injected message.
+        const { callModel, count } = scripted([
+            outcome({ text: 'first', responseMessages: [{ role: 'assistant', content: 'first' }] }),
+            outcome({ text: 'second', responseMessages: [{ role: 'assistant', content: 'second' }] }),
+        ]);
+
+        let calls = 0;
+        const seen: string[] = [];
+        const result = await runAgentLoop(baseConfig({
+            onBeforeFinish: async () => {
+                calls += 1;
+                // Feed the pending result once, then let the run end.
+                return calls === 1 ? [{ role: 'user', content: 'background task finished: done' }] : null;
+            },
+            prepareTurn: ({ system, model, messages }) => {
+                seen.push(messages.map((m) => String(m.content)).join('|'));
+                return { system, model, messages };
+            },
+        }), callModel);
+
+        expect(result.stopReason).toBe('finished');
+        expect(count()).toBe(2);
+        expect(calls).toBe(2);
+        expect(result.text).toBe('second');
+        // The injected message must be visible to the turn that follows it.
+        expect(seen[1]).toContain('background task finished: done');
+    });
+
+    test('a final answer still ends the run when onBeforeFinish returns nothing', async () => {
+        const { callModel, count } = scripted([
+            outcome({ text: 'done', responseMessages: [{ role: 'assistant', content: 'done' }] }),
+        ]);
+        const result = await runAgentLoop(baseConfig({ onBeforeFinish: async () => null }), callModel);
+        expect(result.stopReason).toBe('finished');
+        expect(count()).toBe(1);
+    });
+
+    test('an empty array from onBeforeFinish does not spin the loop', async () => {
+        const { callModel, count } = scripted([
+            outcome({ text: 'done', responseMessages: [{ role: 'assistant', content: 'done' }] }),
+        ]);
+        const result = await runAgentLoop(baseConfig({ onBeforeFinish: async () => [] }), callModel);
+        expect(result.stopReason).toBe('finished');
+        expect(count()).toBe(1);
+    });
 });

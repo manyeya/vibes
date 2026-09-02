@@ -56,6 +56,17 @@ export interface LoopConfig {
         system: string;
         messages: ModelMessage[];
     }) => Promise<ResolvedTurn> | ResolvedTurn;
+    /**
+     * Last chance to keep the run alive when the model gave a final answer.
+     * Return messages to append to the transcript and take another turn, or
+     * null/[] to let the run finish.
+     *
+     * This exists because background work outlives the turn that started it: a
+     * sub-agent delegated in the background is still running when the model
+     * stops talking, and without this its result would be dropped with no later
+     * turn to surface it. SubAgentPlugin uses it to drain unsettled tasks.
+     */
+    onBeforeFinish?: () => Promise<ModelMessage[] | null> | ModelMessage[] | null;
     /** Called after each step completes (usage accounting). */
     onStepFinish?: (step: LoopStep) => void | Promise<void>;
     /** Every raw model stream part (UI adapter + sub-agent fullStream). */
@@ -189,8 +200,15 @@ export async function runAgentLoop(
         if (config.stopWhen.length > 0 && (await anyStop(config.stopWhen, steps))) {
             return result('stop-condition');
         }
-        // A final answer (no tool calls) ends the run.
-        if (!hasToolCalls) return result('finished');
+        // A final answer (no tool calls) ends the run — unless something still
+        // owes us output (background sub-agents), in which case we take its
+        // messages and keep going rather than dropping the result.
+        if (!hasToolCalls) {
+            const pending = await config.onBeforeFinish?.();
+            if (!pending?.length) return result('finished');
+            transcript.push(...pending);
+            continue;
+        }
     }
 }
 
