@@ -3,7 +3,7 @@ import type { TextareaRenderable } from '@opentui/core';
 import { useKeyboard } from '@opentui/react';
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses } from 'ai';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { API_URL, abortSession, getMessages, patchSession, shortModel, type GitInfo, type SessionInfo, type WorkspaceInfo } from '../api';
+import { API_URL, abortSession, getMessages, patchSession, shortModel, type GitInfo, type SessionInfo } from '../api';
 import { deriveAgents } from '../agents';
 import { COMMANDS, parseCommand, type AppAction } from '../commands';
 import { AgentTabs, SubAgentActivity } from '../components/agent-tabs';
@@ -16,6 +16,7 @@ import { Prompt } from '../components/prompt';
 import { TaskPanel } from '../components/task-panel';
 import { deriveTasks } from '../derive-tasks';
 import { ContextDecisionPrompt, type ContextDecisionData } from '../components/context-decision';
+import { RewindDialog } from '../components/rewind-dialog';
 import { QuestionPrompt, type ClarificationData } from '../components/question';
 import { sessionTitle } from '../components/session-dialog';
 import { theme } from '../theme';
@@ -34,7 +35,7 @@ export function Session({
   model,
   mode = 'auto',
   onModeChange,
-  workspace,
+  cwd,
   git,
   onAppAction,
 }: {
@@ -45,7 +46,7 @@ export function Session({
   model?: string;
   mode?: string;
   onModeChange?: (mode: string) => void;
-  workspace?: WorkspaceInfo;
+  cwd?: string;
   git?: GitInfo | null;
   onAppAction: (action: AppAction) => void;
 }) {
@@ -54,6 +55,7 @@ export function Session({
   const [answered, setAnswered] = useState<Set<string>>(() => new Set());
   const [reviewed, setReviewed] = useState<Set<string>>(() => new Set());
   const [contextAnswered, setContextAnswered] = useState<Set<string>>(() => new Set());
+  const [rewindOpen, setRewindOpen] = useState(false);
   // Which agent's activity the transcript shows: 'main' or a delegationId.
   const [activeAgent, setActiveAgent] = useState('main');
   const titledRef = useRef(false);
@@ -169,6 +171,7 @@ export function Session({
       // Commands run immediately, even mid-turn — they never queue.
       if (cmd === 'unknown') setHint(`unknown command — ${COMMANDS.map((c) => `/${c.name}`).join(' ')}`);
       else if (cmd.action === 'artifacts') setArtifactsOpen(true);
+      else if (cmd.action === 'rewind') setRewindOpen(true);
       else onAppAction(cmd.action);
       return;
     }
@@ -462,6 +465,19 @@ export function Session({
           onDeny={() => respondApproval(false)}
         />
       ) : null}
+      {rewindOpen ? (
+        <RewindDialog
+          sessionId={session.id}
+          messageCount={messages.length}
+          onDone={({ kept }) => {
+            setRewindOpen(false);
+            // Drop the truncated tail locally so the view matches the server
+            // (and the agent's context) without a refetch.
+            setMessages((prev) => prev.slice(0, kept));
+          }}
+          onClose={() => setRewindOpen(false)}
+        />
+      ) : null}
       {artifactsOpen ? <ArtifactDialog artifacts={artifacts} onClose={() => setArtifactsOpen(false)} /> : null}
       {queue.length > 0 ? (
         <box flexShrink={0} paddingLeft={1}>
@@ -484,7 +500,7 @@ export function Session({
         onSubmit={submit}
         inputRef={promptRef}
       />
-      <Footer connected={connected} workspace={workspace} git={git} ctxPct={ctxPct} mode={mode} />
+      <Footer connected={connected} cwd={cwd} git={git} ctxPct={ctxPct} mode={mode} />
     </box>
   );
 }

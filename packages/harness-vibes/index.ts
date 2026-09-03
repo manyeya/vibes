@@ -57,7 +57,7 @@ import { redactSecrets, redactString } from './src/core/redact';
 import DrizzleBackend from './src/storage/drizzle-backend';
 import StateBackend from './src/storage/state-backend';
 import { connectStore, type StoreConnection, type ConnectOptions } from './src/storage/connect';
-export type { SessionInfo, WorkspaceInfo, StreamChunk, StreamMeta, LatestStream } from './src/storage/state-backend';
+export type { SessionInfo, StreamChunk, StreamMeta, LatestStream } from './src/storage/state-backend';
 import {
     type AgentState,
     type SubAgent,

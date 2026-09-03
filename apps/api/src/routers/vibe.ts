@@ -384,125 +384,14 @@ app.post('/fs/pick-native', async (c) => {
     }
 });
 
-// ============ WORKSPACE (project) MANAGEMENT ENDPOINTS ============
-
-/** List all workspaces (with session counts). */
-app.get('/workspaces', async (c) => {
-    try {
-        const workspaces = await vibeRuntime.listWorkspaces();
-        return c.json({ success: true, workspaces });
-    } catch (error) {
-        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to list workspaces');
-        return c.json({ success: false, error: 'Failed to list workspaces' }, 500);
-    }
-});
-
 /**
- * Create a workspace. Body: { name?, rootDir?, metadata? }.
- *  - app-managed: provide `name` (fresh project dir under workspace/projects).
- *  - open folder: provide `rootDir` (an EXISTING dir on disk, Codex-style);
- *    `name` then defaults to the folder's basename.
- */
-app.post('/workspaces', async (c) => {
-    try {
-        const body = await c.req.json().catch(() => ({}));
-        const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : undefined;
-        const rootDir = typeof body.rootDir === 'string' && body.rootDir.trim() ? body.rootDir.trim() : undefined;
-        if (!name && !rootDir) return c.json({ success: false, error: 'name or rootDir is required' }, 400);
-
-        const workspace = await vibeRuntime.createWorkspace({ name, rootDir, metadata: body.metadata || {} });
-        return c.json({ success: true, workspace });
-    } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        logger.error({ error: msg }, 'Failed to create workspace');
-        // A bad/missing folder path is a client error, not a server fault.
-        const clientError = /Not a directory/.test(msg);
-        return c.json({ success: false, error: clientError ? msg : 'Failed to create workspace' }, clientError ? 400 : 500);
-    }
-});
-
-/** Get one workspace. */
-app.get('/workspaces/:id', async (c) => {
-    try {
-        const workspace = await vibeRuntime.getWorkspace(c.req.param('id'));
-        if (!workspace) return c.json({ success: false, error: 'Workspace not found' }, 404);
-        return c.json({ success: true, workspace });
-    } catch (error) {
-        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to get workspace');
-        return c.json({ success: false, error: 'Failed to get workspace' }, 500);
-    }
-});
-
-/**
- * Git status of a workspace's project dir, for the status bar: the current
- * branch and whether the tree is dirty. Returns `{ git: null }` when the dir
- * isn't a git repo (or git isn't available) — the UI just omits the branch.
- */
-app.get('/workspaces/:id/git', async (c) => {
-    try {
-        const workspace = await vibeRuntime.getWorkspace(c.req.param('id'));
-        if (!workspace) return c.json({ success: false, error: 'Workspace not found' }, 404);
-
-        const runGit = async (args: string[]): Promise<string | null> => {
-            try {
-                const proc = Bun.spawn(['git', '-C', workspace.rootDir, ...args], { stdout: 'pipe', stderr: 'ignore' });
-                const out = await new Response(proc.stdout).text();
-                return (await proc.exited) === 0 ? out : null;
-            } catch {
-                return null;
-            }
-        };
-
-        const branchOut = await runGit(['rev-parse', '--abbrev-ref', 'HEAD']);
-        if (branchOut === null) return c.json({ success: true, git: null }); // not a repo
-        const branch = branchOut.trim() || 'HEAD';
-        const statusOut = await runGit(['status', '--porcelain']);
-        const dirty = !!statusOut && statusOut.trim().length > 0;
-        return c.json({ success: true, git: { branch, dirty } });
-    } catch (error) {
-        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to read workspace git');
-        return c.json({ success: false, error: 'Failed to read workspace git' }, 500);
-    }
-});
-
-/** Rename / update a workspace. Body: { name?, metadata? }. */
-app.patch('/workspaces/:id', async (c) => {
-    try {
-        const id = c.req.param('id');
-        const body = await c.req.json().catch(() => ({}));
-        await vibeRuntime.updateWorkspace(id, { name: body.name, metadata: body.metadata });
-        const workspace = await vibeRuntime.getWorkspace(id);
-        return c.json({ success: true, workspace });
-    } catch (error) {
-        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to update workspace');
-        return c.json({ success: false, error: 'Failed to update workspace' }, 500);
-    }
-});
-
-/** Delete a workspace, its sessions, and its project directory. */
-app.delete('/workspaces/:id', async (c) => {
-    try {
-        const id = c.req.param('id');
-        if (id === 'default') {
-            return c.json({ success: false, error: 'The Default workspace cannot be deleted.' }, 400);
-        }
-        await vibeRuntime.deleteWorkspace(id);
-        return c.json({ success: true });
-    } catch (error) {
-        logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to delete workspace');
-        return c.json({ success: false, error: 'Failed to delete workspace' }, 500);
-    }
-});
-
-// ============ SESSION MANAGEMENT ENDPOINTS ============
-
-/**
- * List sessions, optionally scoped to one workspace (?workspace_id=).
+ * List sessions, optionally scoped to one directory (?cwd=). A session is a
+ * conversation rooted at a directory — there is no workspace object.
  */
 app.get('/sessions', async (c) => {
     try {
-        const workspaceId = c.req.query('workspace_id') || undefined;
-        const sessions = await vibeRuntime.listSessions(workspaceId);
+        const cwd = c.req.query('cwd') || undefined;
+        const sessions = await vibeRuntime.listSessions(cwd);
         return c.json({
             success: true,
             sessions,
@@ -560,9 +449,11 @@ app.post('/sessions', async (c) => {
         const body = await c.req.json().catch(() => ({}));
         const title = body.title;
         const metadata = body.metadata || {};
-        const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : undefined;
+        // The directory the session works in. Defaults to the server's cwd,
+        // which is what the `vibes` CLI relies on when launched inside a repo.
+        const cwd = typeof body.cwd === 'string' ? body.cwd : undefined;
 
-        const sessionId = await vibeRuntime.createSession({ title, metadata, workspaceId });
+        const sessionId = await vibeRuntime.createSession({ title, metadata, cwd });
 
         return c.json({
             success: true,

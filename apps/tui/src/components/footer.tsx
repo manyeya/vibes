@@ -1,9 +1,9 @@
-import type { GitInfo, WorkspaceInfo } from '../api';
+import type { GitInfo } from '../api';
 import { modeStyle } from '../modes';
 import { ctxColor, theme } from '../theme';
 
 /**
- * The status bar. Left = where you are (workspace + git branch/dirty); right =
+ * The status bar. Left = where you are (directory + git branch/dirty); right =
  * live state (context-window fullness, connection). Actions live in the F1 help
  * and the Ctrl+P / right-click menu — a status bar shows state, not shortcuts.
  * Convention borrowed from helix/lazygit/k9s: identity on the left, at-a-glance
@@ -11,13 +11,13 @@ import { ctxColor, theme } from '../theme';
  */
 export function Footer({
   connected,
-  workspace,
+  cwd,
   git,
   ctxPct,
   mode,
 }: {
   connected: boolean;
-  workspace?: WorkspaceInfo;
+  cwd?: string;
   git?: GitInfo | null;
   ctxPct?: number | null;
   mode?: string;
@@ -26,20 +26,16 @@ export function Footer({
   return (
     <box flexDirection="row" justifyContent="space-between" gap={2} flexShrink={0} height={1}>
       <box flexDirection="row" gap={2} flexShrink={1} minWidth={0}>
-        {workspace ? (
+        {cwd ? (
           <box flexDirection="row" gap={1} flexShrink={1} minWidth={0}>
             <text fg={theme.accent} wrapMode="none">
               ◆
             </text>
             <text fg={theme.text} wrapMode="none" truncate>
-              {workspace.name}
+              {cwd.split('/').filter(Boolean).pop() ?? cwd}
             </text>
           </box>
-        ) : (
-          <text fg={theme.textMuted} wrapMode="none">
-            no workspace
-          </text>
-        )}
+        ) : null}
         {git ? (
           <box flexDirection="row" gap={1} flexShrink={0}>
             <text fg={theme.textMuted} wrapMode="none">

@@ -21,6 +21,7 @@
  */
 
 import * as path from 'path';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import { stat, mkdir, rm } from 'fs/promises';
 import { VibesAgent } from '../agent/agent';
@@ -28,7 +29,7 @@ import type { VibesAgentConfig, AgentState } from '../types';
 import type { Sandbox } from '../sandbox';
 import { LocalSandbox } from '../../sandbox/local-sandbox';
 import type StateBackend from '../../storage/state-backend';
-import type { SessionInfo, WorkspaceInfo } from '../../storage/state-backend';
+import type { SessionInfo } from '../../storage/state-backend';
 import { connectStore, type StoreConnection } from '../../storage/connect';
 import type { UIMessageStreamWriter } from 'ai';
 import type { VibesUIMessage } from '../streaming/streaming';
@@ -50,7 +51,7 @@ export interface SessionContext {
      * Per-session plugin-state dir (plan.md, tasks.json, scratchpad.md,
      * tracked_files.json). Equals {@link workspaceDir} for legacy sessions; for
      * a workspace session it is an app-managed
-     * `{projectsDir}/{workspaceId}/.vibes/sessions/{sessionId}/` — kept out of
+     * `{projectsDir}/{escapedCwd}/sessions/{sessionId}/` — kept out of
      * an opened external repo.
      */
     stateDir: string;
@@ -84,7 +85,12 @@ export interface SessionConfig {
     sessionsDir?: string;
     /** Workspace (project) this session belongs to. Sessions in a workspace
      *  share the workspace's project dir as their sandbox root. */
-    workspaceId?: string;
+    /**
+     * The directory this session works in. A session IS a conversation rooted
+     * at a directory — there is no separate workspace object (see `cwd` in the
+     * runtime). Defaults to the process cwd.
+     */
+    cwd?: string;
 }
 
 /**
@@ -135,6 +141,19 @@ export interface CleanupOptions {
  * Manages complete session lifecycle with per-session isolated workspaces.
  * Session working state is isolated while long-term memory stays shared.
  */
+/**
+ * Directory → a filesystem-safe key for per-session state, mirroring how Claude
+ * Code names its project folders: non-alphanumerics become '-', and an
+ * over-long path is truncated with a hash appended so two long paths cannot
+ * collide. This is our own rule; the upstream algorithm is not published.
+ */
+export function escapeDirKey(dir: string): string {
+    const resolved = path.resolve(dir);
+    const flat = resolved.replace(/[^a-zA-Z0-9]/g, '-');
+    if (flat.length <= 200) return flat;
+    return `${flat.slice(0, 200)}-${createHash('sha256').update(resolved).digest('hex').slice(0, 12)}`;
+}
+
 export class SessionStore {
     private sessions: Map<string, StoredSession> = new Map();
     private databaseUrl?: string;
@@ -205,8 +224,6 @@ export class SessionStore {
      * data is stored.
      */
     async getOrCreateSession(config: SessionConfig = {}): Promise<StoredSession> {
-        await this.ensureDefaultWorkspace();
-
         // Use provided ID or generate a new one
         const sessionId = config.id || this.generateSessionId();
 
@@ -257,37 +274,18 @@ export class SessionStore {
         const existingSession = await backend.getSession(sessionId);
         const existingMeta = existingSession?.metadata ?? {};
 
-        // Resolve the session's directories. Order matters so a RELOAD honours
-        // what was persisted at creation (a workspace session's shared project
-        // dir), since the caller (e.g. the HTTP layer) usually reloads knowing
-        // only the session id, not its workspace:
-        //   1. persisted metadata.workspaceDir  → reuse (legacy or workspace)
-        //   2. config.workspaceId / stored workspace_id → shared project dir
-        //   3. fallback → legacy per-session dir
-        // A session with no explicit workspace joins the Default workspace
-        // (the old backend got this for free from an eager insert that defaulted
-        // workspace_id to 'default'; we now make it explicit).
-        const workspaceId = config.workspaceId ?? existingSession?.workspaceId ?? 'default';
-        // Cross-session shared state (memories.json) is global,
-        // one level up from the projects dir — NEVER inside an opened repo.
-        const sharedDir = path.dirname(this.projectsDir);
-        let workspaceDir: string;   // sandbox root (file/shell work)
-        let stateDir: string;       // per-session plugin state
-        if (typeof existingMeta.workspaceDir === 'string') {
-            workspaceDir = existingMeta.workspaceDir;
-            stateDir = typeof existingMeta.stateDir === 'string' ? existingMeta.stateDir : workspaceDir;
-        } else if (workspaceId) {
-            const ws = await backend.getWorkspace(workspaceId);
-            workspaceDir = ws?.rootDir ?? path.join(this.projectsDir, workspaceId);
-            // Per-session plugin state lives in an APP-MANAGED dir keyed by the
-            // workspace + session — not under workspaceDir. For an app-managed
-            // workspace this still resolves to `{rootDir}/.vibes/...`; for an
-            // OPENED external folder it stays out of the user's repo.
-            stateDir = path.join(this.projectsDir, workspaceId, '.vibes', 'sessions', sessionId);
-        } else {
-            workspaceDir = path.join(this.sessionsDir, sessionId);
-            stateDir = workspaceDir;
-        }
+        // A session is rooted at a directory, full stop. What was persisted at
+        // creation wins on reload (the caller usually knows only the session
+        // id); otherwise the caller's cwd; otherwise the process cwd.
+        const sharedDir = this.projectsDir;
+        const workspaceDir = typeof existingMeta.workspaceDir === 'string'
+            ? existingMeta.workspaceDir
+            : path.resolve(config.cwd ?? process.cwd());
+        // Per-session plugin state is keyed by the directory but stored under
+        // our own root, so we never write into the user's project.
+        const stateDir = typeof existingMeta.stateDir === 'string'
+            ? existingMeta.stateDir
+            : path.join(this.projectsDir, escapeDirKey(workspaceDir), 'sessions', sessionId);
 
         await this.ensureDirectory(workspaceDir);
         if (stateDir !== workspaceDir) await this.ensureDirectory(stateDir);
@@ -297,7 +295,6 @@ export class SessionStore {
         if (config.title !== undefined || config.metadata !== undefined || !alreadyTitled || !dirsPersisted) {
             await backend.updateSession(sessionId, {
                 title: config.title,
-                ...(workspaceId ? { workspaceId } : {}),
                 metadata: {
                     ...existingMeta,
                     ...config.metadata,
@@ -390,9 +387,10 @@ export class SessionStore {
     /**
      * List all sessions (including unloaded ones)
      */
-    async listSessions(workspaceId?: string): Promise<SessionInfo[]> {
+    /** Sessions for a directory (all sessions when omitted). */
+    async listSessions(cwd?: string): Promise<SessionInfo[]> {
         const backend = await this.makeBackend('default');
-        return backend.listSessions(workspaceId);
+        return backend.listSessions(cwd ? path.resolve(cwd) : undefined);
     }
 
     /**
@@ -444,96 +442,6 @@ export class SessionStore {
                 instance.metadata = { ...instance.metadata, ...updates.metadata };
             }
         }
-    }
-
-    // ── Workspace (project) lifecycle ────────────────────────────────────
-
-    /**
-     * Ensure a Default workspace exists and points at this store's configured
-     * `projectsDir`. `connectStore` creates the schema but seeds no rows, so we
-     * create the Default workspace on first use; if the store is rooted
-     * elsewhere (tests, alternative deployments) we repoint it here. No-op once
-     * the workspace already matches.
-     */
-    private async ensureDefaultWorkspace(): Promise<void> {
-        if (this.defaultWorkspaceEnsured) return;
-        this.defaultWorkspaceEnsured = true;
-        const desiredRoot = path.join(this.projectsDir, 'default');
-        const backend = await this.makeBackend('default');
-        const ws = await backend.getWorkspace('default');
-        if (!ws) {
-            await backend.createWorkspace({ id: 'default', name: 'Default', rootDir: desiredRoot });
-        } else if (ws.rootDir !== desiredRoot) {
-            await backend.setWorkspaceRootDir('default', desiredRoot);
-        }
-    }
-
-    /** List all workspaces (with session counts). */
-    async listWorkspaces(): Promise<WorkspaceInfo[]> {
-        await this.ensureDefaultWorkspace();
-        const backend = await this.makeBackend('default');
-        return backend.listWorkspaces();
-    }
-
-    /** Get one workspace, or null. */
-    async getWorkspace(workspaceId: string): Promise<WorkspaceInfo | null> {
-        const backend = await this.makeBackend('default');
-        return backend.getWorkspace(workspaceId);
-    }
-
-    /**
-     * Create a workspace. Two flavours:
-     *  - **app-managed** (default): allocate an id + a fresh project directory
-     *    under `projectsDir` and create it on disk.
-     *  - **open folder** (`rootDir` given): point the workspace at an EXISTING
-     *    directory on disk (Codex / Claude-cowork style). The directory must
-     *    already exist; per-session `.vibes` state stays app-managed so the
-     *    opened repo isn't polluted.
-     */
-    async createWorkspace(config: { id?: string; name?: string; rootDir?: string; metadata?: Record<string, any> }): Promise<WorkspaceInfo> {
-        const id = config.id || this.generateWorkspaceId();
-        const metadata: Record<string, any> = { ...(config.metadata ?? {}) };
-        let rootDir: string;
-        let name = config.name?.trim();
-
-        if (config.rootDir) {
-            rootDir = path.resolve(config.rootDir);
-            let isDir = false;
-            try { isDir = (await stat(rootDir)).isDirectory(); } catch { isDir = false; }
-            if (!isDir) throw new Error(`Not a directory: ${rootDir}`);
-            metadata.external = true;
-            if (!name) name = path.basename(rootDir) || rootDir;
-        } else {
-            rootDir = path.join(this.projectsDir, id);
-            await this.ensureDirectory(rootDir);
-            if (!name) name = 'Untitled workspace';
-        }
-
-        const backend = await this.makeBackend('default');
-        return backend.createWorkspace({ id, name, rootDir, metadata });
-    }
-
-    /** Rename / update a workspace's metadata. */
-    async updateWorkspace(workspaceId: string, updates: { name?: string; metadata?: Record<string, any> }): Promise<void> {
-        const backend = await this.makeBackend('default');
-        await backend.updateWorkspace(workspaceId, updates);
-    }
-
-    /**
-     * Delete a workspace, its sessions (DB rows + cached agents), and its
-     * on-disk project directory.
-     */
-    async deleteWorkspace(workspaceId: string): Promise<void> {
-        const backend = await this.makeBackend('default');
-        const sessions = await backend.listSessions(workspaceId);
-        for (const s of sessions) this.unloadSession(s.id);
-        await backend.deleteWorkspace(workspaceId);
-
-        // Remove only the APP-MANAGED directory (per-session `.vibes` state, and
-        // for an app-managed workspace its project files too). We deliberately
-        // never delete an opened external folder — that is the user's own repo,
-        // which always lives outside `projectsDir/{workspaceId}`.
-        await this.deleteDirectory(path.join(this.projectsDir, workspaceId));
     }
 
     /**

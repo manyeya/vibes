@@ -9,7 +9,8 @@ export interface SessionInfo {
   createdAt?: string;
   updatedAt?: string;
   messageCount?: number;
-  workspaceId?: string;
+  /** Directory this session works in. */
+  cwd?: string;
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -33,50 +34,22 @@ export const health = async (): Promise<boolean> => {
   }
 };
 
-export interface WorkspaceInfo {
-  id: string;
-  name: string;
-  /** The project directory shared by the workspace's sessions. */
-  rootDir: string;
-  sessionCount?: number;
-  updatedAt?: string;
-}
-
 export interface GitInfo {
   branch: string;
   dirty: boolean;
 }
 
-/** Git branch + dirty state of a workspace's project dir, or null if not a repo. */
-export const getWorkspaceGit = (id: string) =>
-  api<{ git: GitInfo | null }>(`/workspaces/${id}/git`).then((r) => r.git);
+/** Git branch + dirty state of a session's project dir, or null if not a repo. */
+export const getSessionGit = (sessionId: string) =>
+  api<{ git: GitInfo | null }>(`/sessions/${sessionId}/git`).then((r) => r.git);
 
-export const listWorkspaces = () =>
-  api<{ workspaces: WorkspaceInfo[] }>('/workspaces').then((r) => r.workspaces);
 
-/** Create a workspace: `rootDir` opens an existing folder, `name` makes a fresh project dir. */
-export const createWorkspace = (opts: { name?: string; rootDir?: string }) =>
-  api<{ workspace: WorkspaceInfo }>('/workspaces', {
-    method: 'POST',
-    body: JSON.stringify(opts),
-  }).then((r) => r.workspace);
-
-/**
- * Open a folder as the active workspace, reusing an existing one for that path.
- * Used by the `vibes` CLI (via VIBES_PROJECT_DIR) to land straight in the repo
- * the user launched from, without accumulating a duplicate per launch.
- */
-export const openProject = async (rootDir: string): Promise<WorkspaceInfo> => {
-  const existing = (await listWorkspaces()).find((w) => w.rootDir === rootDir);
-  return existing ?? createWorkspace({ rootDir });
-};
-
-export const listSessions = (workspaceId?: string) =>
+export const listSessions = (cwd?: string) =>
   api<{ sessions: SessionInfo[] }>(
-    workspaceId ? `/sessions?workspace_id=${encodeURIComponent(workspaceId)}` : '/sessions',
+    cwd ? `/sessions?cwd=${encodeURIComponent(cwd)}` : '/sessions',
   ).then((r) => r.sessions);
 
-export const createSession = (opts: { title?: string; workspaceId?: string } = {}) =>
+export const createSession = (opts: { title?: string; cwd?: string } = {}) =>
   api<{ sessionId: string }>('/sessions', {
     method: 'POST',
     body: JSON.stringify(opts),
@@ -115,3 +88,29 @@ export interface AgentInfo {
 /** The built-in sub-agent roster the slash palette can target work at. */
 export const getAgents = () =>
   api<{ agents: AgentInfo[] }>('/agents').then((r) => r.agents ?? []);
+
+export interface CheckpointInfo {
+  id: string;
+  sha: string;
+  label: string;
+  createdAt: string;
+}
+
+/** Restore points for this session, newest first. */
+export const getCheckpoints = (sessionId: string) =>
+  api<{ checkpoints: CheckpointInfo[] }>(`/sessions/${sessionId}/checkpoints`).then((r) => r.checkpoints ?? []);
+
+/**
+ * Rewind a session. `both` restores files AND truncates the conversation so the
+ * agent's context matches what is on disk. Returns an undo sha — the rewind
+ * itself is reversible.
+ */
+export const rewindSession = (
+  sessionId: string,
+  checkpointId: string,
+  opts: { mode?: 'both' | 'files' | 'conversation'; messageCount?: number } = {},
+) =>
+  api<{ undoSha?: string; messagesKept?: number }>(`/sessions/${sessionId}/rewind`, {
+    method: 'POST',
+    body: JSON.stringify({ checkpointId, mode: opts.mode ?? 'both', messageCount: opts.messageCount ?? 0 }),
+  });

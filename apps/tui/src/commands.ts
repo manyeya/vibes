@@ -1,4 +1,4 @@
-export type AppAction = 'models' | 'themes' | 'sessions' | 'workspaces' | 'new' | 'help';
+export type AppAction = 'models' | 'themes' | 'sessions' | 'new' | 'help' | 'rewind';
 
 export interface SlashCommand {
   name: string;
@@ -10,7 +10,7 @@ export const COMMANDS: SlashCommand[] = [
   { name: 'model', desc: 'switch model', action: 'models' },
   { name: 'theme', desc: 'switch color theme', action: 'themes' },
   { name: 'sessions', desc: 'open session list', action: 'sessions' },
-  { name: 'workspace', desc: 'open / switch workspace', action: 'workspaces' },
+  { name: 'rewind', desc: 'restore files + conversation to an earlier turn', action: 'rewind' },
   { name: 'new', desc: 'new session', action: 'new' },
   { name: 'artifacts', desc: 'view artifacts', action: 'artifacts' },
   { name: 'help', desc: 'keys & commands', action: 'help' },

@@ -1,5 +1,5 @@
 import { useTerminalDimensions } from '@opentui/react';
-import { shortModel, type GitInfo, type WorkspaceInfo } from '../api';
+import { shortModel, type GitInfo } from '../api';
 import { Footer } from '../components/footer';
 import { Logo } from '../components/logo';
 import { Prompt } from '../components/prompt';
@@ -11,7 +11,7 @@ export function Home({
   connected,
   model,
   mode,
-  workspace,
+  cwd,
   git,
   focused,
   onSubmit,
@@ -19,7 +19,7 @@ export function Home({
   connected: boolean;
   model?: string;
   mode?: string;
-  workspace?: WorkspaceInfo;
+  cwd?: string;
   git?: GitInfo | null;
   focused: boolean;
   onSubmit: (text: string) => void;
@@ -36,9 +36,9 @@ export function Home({
         </box>
         <box height={1} />
         <box width="100%" maxWidth={promptWidth} flexShrink={0} alignItems="center">
-          {workspace ? null : (
+          {cwd ? null : (
             <text fg={theme.textMuted} wrapMode="none" truncate>
-              no workspace — press <span fg={theme.accent}>ctrl+w</span> to open a folder (sub-agents need one)
+              no project directory — start vibes inside a repo
             </text>
           )}
         </box>
@@ -56,7 +56,7 @@ export function Home({
         <box flexGrow={1} minHeight={0} />
       </box>
       <box width="100%" flexShrink={0} paddingLeft={2} paddingRight={2}>
-        <Footer connected={connected} workspace={workspace} git={git} mode={mode} />
+        <Footer connected={connected} cwd={cwd} git={git} mode={mode} />
       </box>
     </box>
   );

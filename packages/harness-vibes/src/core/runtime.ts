@@ -7,7 +7,7 @@ import type { AgentState } from './types';
 import type { Sandbox } from './sandbox';
 import { SessionStore } from './session/session-manager';
 import type StateBackend from '../storage/state-backend';
-import type { SessionInfo, WorkspaceInfo } from '../storage/state-backend';
+import type { SessionInfo } from '../storage/state-backend';
 
 /**
  * Public agent definition (Phase 2).
@@ -62,7 +62,8 @@ export interface SessionOptions {
     metadata?: Record<string, unknown>;
     /** Workspace (project) this session belongs to. Sessions in a workspace
      *  share the workspace's project dir as their sandbox root. */
-    workspaceId?: string;
+    /** Directory this session works in. A session is rooted at a directory. */
+    cwd?: string;
 }
 
 export interface PromptOptions<T> {
@@ -246,7 +247,7 @@ export class AgentRuntime {
             id: opts.id,
             title: opts.title,
             metadata: opts.metadata as Record<string, any> | undefined,
-            workspaceId: opts.workspaceId,
+            cwd: opts.cwd,
         });
 
         let session = this.cache.get(stored.id);
@@ -279,48 +280,14 @@ export class AgentRuntime {
     // ── Session catalog (single source of truth) ─────────────────────────
 
     /** Create (or return) a persisted session record and return its id. */
-    async createSession(opts: { id?: string; title?: string; metadata?: Record<string, any>; workspaceId?: string } = {}): Promise<string> {
+    async createSession(opts: { id?: string; title?: string; metadata?: Record<string, any>; cwd?: string } = {}): Promise<string> {
         const stored = await this.store.getOrCreateSession(opts);
         return stored.id;
     }
 
-    /** List all known sessions, optionally scoped to one workspace. */
-    listSessions(workspaceId?: string): Promise<SessionInfo[]> {
-        return this.store.listSessions(workspaceId);
-    }
-
-    // ── Workspace (project) catalog ──────────────────────────────────────
-
-    /** List all workspaces (with session counts). */
-    listWorkspaces(): Promise<WorkspaceInfo[]> {
-        return this.store.listWorkspaces();
-    }
-
-    /** Read one workspace, or null. */
-    getWorkspace(id: string): Promise<WorkspaceInfo | null> {
-        return this.store.getWorkspace(id);
-    }
-
-    /**
-     * Create a workspace. Omit `rootDir` for a fresh app-managed project dir,
-     * or pass `rootDir` to open an EXISTING folder on disk (Codex / Claude-
-     * cowork style).
-     */
-    createWorkspace(opts: { id?: string; name?: string; rootDir?: string; metadata?: Record<string, any> }): Promise<WorkspaceInfo> {
-        return this.store.createWorkspace(opts);
-    }
-
-    /** Rename / update a workspace's metadata. */
-    updateWorkspace(id: string, updates: { name?: string; metadata?: Record<string, any> }): Promise<void> {
-        return this.store.updateWorkspace(id, updates);
-    }
-
-    /** Delete a workspace, its sessions, and its on-disk project dir. */
-    async deleteWorkspace(id: string): Promise<void> {
-        // Drop cached Session handles for this workspace's sessions first.
-        const sessions = await this.store.listSessions(id);
-        for (const s of sessions) this.cache.delete(s.id);
-        await this.store.deleteWorkspace(id);
+    /** Sessions for a directory (all sessions when omitted). */
+    listSessions(cwd?: string): Promise<SessionInfo[]> {
+        return this.store.listSessions(cwd);
     }
 
     /** Read session metadata without loading the agent. */

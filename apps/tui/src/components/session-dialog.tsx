@@ -20,12 +20,12 @@ function category(s: SessionInfo): string {
 // session, selected row on primary.
 export function SessionDialog({
   currentId,
-  workspaceId,
+  cwd,
   onSelect,
   onClose,
 }: {
   currentId?: string;
-  workspaceId?: string;
+  cwd?: string;
   onSelect: (session: SessionInfo) => void;
   onClose: () => void;
 }) {
@@ -35,7 +35,7 @@ export function SessionDialog({
   const [selected, setSelected] = useState(0);
 
   const refresh = () =>
-    listSessions(workspaceId)
+    listSessions(cwd)
       .then((all) =>
         setSessions([...all].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))),
       )

@@ -1,7 +1,7 @@
 import { MouseButton } from '@opentui/core';
 import { useKeyboard, useRenderer, useSelectionHandler } from '@opentui/react';
 import { useEffect, useRef, useState } from 'react';
-import { createSession, getModels, getWorkspaceGit, health, listWorkspaces, openProject, type GitInfo, type SessionInfo, type WorkspaceInfo } from './api';
+import { createSession, getModels, getSessionGit, health, type GitInfo, type SessionInfo } from './api';
 import { parseCommand, type AppAction } from './commands';
 import { loadPref, savePref } from './config';
 import { ContextMenu, type MenuItem } from './components/context-menu';
@@ -9,14 +9,13 @@ import { HelpDialog } from './components/help-dialog';
 import { ModelDialog } from './components/model-dialog';
 import { SessionDialog } from './components/session-dialog';
 import { ThemeDialog } from './components/theme-dialog';
-import { WorkspaceDialog } from './components/workspace-dialog';
 import { Home } from './screens/home';
 import { Session } from './screens/session';
 import { nextMode } from './modes';
 import { theme, useTheme } from './theme';
 
 type Route = { name: 'home' } | { name: 'session'; session: SessionInfo; initialText?: string };
-type Dialog = 'sessions' | 'workspaces' | 'models' | 'themes' | 'help' | null;
+type Dialog = 'sessions' | 'models' | 'themes' | 'help' | null;
 
 export function App() {
   const renderer = useRenderer();
@@ -27,7 +26,8 @@ export function App() {
   // Execution mode (plan/manual/auto-edit/auto). Sent with each turn; the agent
   // may switch it mid-run (data-mode), which flows back here via onModeChange.
   const [mode, setMode] = useState('auto');
-  const [workspace, setWorkspace] = useState<WorkspaceInfo>();
+  // The project IS the directory (Claude Code's model): no workspace object.
+  const [cwd, setCwd] = useState<string>();
   const [git, setGit] = useState<GitInfo | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [menu, setMenu] = useState<{ variant: 'popup' | 'palette'; x?: number; y?: number } | null>(null);
@@ -75,39 +75,28 @@ export function App() {
     if (model) savePref('model', model);
   }, [model]);
 
-  // Choose the starting workspace. When launched by the `vibes` CLI in a repo,
-  // VIBES_PROJECT_DIR points at that repo — open it directly so the agent works
-  // on the cwd. Otherwise land in the most recently used workspace. Either way
-  // the user can open/switch via the dialog.
+  // The directory is the project — there is no workspace to pick. The `vibes`
+  // CLI sets VIBES_PROJECT_DIR to the repo it was launched in; otherwise we use
+  // the process cwd, exactly like running `claude` in a folder.
   useEffect(() => {
-    const projectDir = process.env.VIBES_PROJECT_DIR;
-    if (projectDir) {
-      openProject(projectDir)
-        .then((ws) => setWorkspace((w) => w ?? ws))
-        .catch(() => {});
-      return;
-    }
-    listWorkspaces()
-      .then((all) => {
-        if (all.length === 0) return;
-        const recent = [...all].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0];
-        setWorkspace((w) => w ?? recent);
-      })
-      .catch(() => {});
+    setCwd((c) => c ?? (process.env.VIBES_PROJECT_DIR || process.cwd()));
   }, []);
 
-  // Track the workspace's git branch + dirty state for the status bar. Poll so
+  // Track the project's git branch + dirty state for the status bar. Poll so
   // the dirty flag reflects edits the agent makes as it works.
+  // Scoped to the active session: git status is read from that session's
+  // project dir, so there is nothing to show on the home screen.
+  const activeSessionId = route.name === 'session' ? route.session.id : undefined;
   useEffect(() => {
-    if (!workspace) {
+    if (!activeSessionId) {
       setGit(null);
       return;
     }
-    const refresh = () => void getWorkspaceGit(workspace.id).then(setGit).catch(() => setGit(null));
+    const refresh = () => void getSessionGit(activeSessionId).then(setGit).catch(() => setGit(null));
     refresh();
     const timer = setInterval(refresh, 5_000);
     return () => clearInterval(timer);
-  }, [workspace]);
+  }, [activeSessionId]);
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === 'c') {
@@ -115,7 +104,6 @@ export function App() {
       process.exit(0);
     }
     if (key.ctrl && key.name === 'l') setDialog('sessions');
-    if (key.ctrl && key.name === 'w') setDialog('workspaces');
     if (key.ctrl && key.name === 'o') setDialog('models');
     if (key.ctrl && key.name === 'g') setDialog('themes');
     // shift+tab cycles execution mode (Claude Code muscle memory).
@@ -147,13 +135,15 @@ export function App() {
       setRoute({ name: 'home' });
       return;
     }
+    // 'rewind' and 'artifacts' are session-scoped — the Session screen owns
+    // them, because they need the thread's messages.
+    if (action === 'rewind') return;
     setDialog(action);
   };
 
   const menuItems: MenuItem[] = [
-    { label: 'New session', hint: 'ctrl+n', description: 'Start a fresh session in this workspace', onSelect: () => runAppAction('new') },
+    { label: 'New session', hint: 'ctrl+n', description: 'Start a fresh session in this directory', onSelect: () => runAppAction('new') },
     { label: 'Sessions', hint: 'ctrl+l', description: 'Browse and switch between sessions', onSelect: () => runAppAction('sessions') },
-    { label: 'Workspace', hint: 'ctrl+w', description: 'Open a folder or switch workspace', onSelect: () => runAppAction('workspaces') },
     { label: 'Model', hint: 'ctrl+o', description: 'Switch the language model', onSelect: () => runAppAction('models') },
     { label: `Mode: ${mode}`, hint: 'shift+tab', description: 'Cycle plan → manual → auto-edit → auto', onSelect: () => setMode((m) => nextMode(m)) },
     { label: 'Theme', hint: 'ctrl+g', description: 'Switch the color theme (Bearded family)', onSelect: () => runAppAction('themes') },
@@ -175,8 +165,8 @@ export function App() {
     }
     if (creating.current) return;
     creating.current = true;
-    createSession({ workspaceId: workspace?.id })
-      .then((id) => setRoute({ name: 'session', session: { id, workspaceId: workspace?.id }, initialText: text }))
+    createSession({ cwd: cwd ?? undefined })
+      .then((id) => setRoute({ name: 'session', session: { id, cwd: cwd ?? undefined }, initialText: text }))
       .catch(() => {})
       .finally(() => {
         creating.current = false;
@@ -199,7 +189,7 @@ export function App() {
           connected={connected}
           model={model}
           mode={mode}
-          workspace={workspace}
+          cwd={cwd}
           git={git}
           focused={dialog === null && menu === null}
           onSubmit={startSession}
@@ -214,7 +204,7 @@ export function App() {
           model={model}
           mode={mode}
           onModeChange={setMode}
-          workspace={workspace}
+          cwd={cwd}
           git={git}
           onAppAction={runAppAction}
         />
@@ -222,21 +212,10 @@ export function App() {
       {dialog === 'sessions' ? (
         <SessionDialog
           currentId={route.name === 'session' ? route.session.id : undefined}
-          workspaceId={workspace?.id}
+          cwd={cwd}
           onSelect={(session) => {
             setDialog(null);
             setRoute({ name: 'session', session });
-          }}
-          onClose={() => setDialog(null)}
-        />
-      ) : null}
-      {dialog === 'workspaces' ? (
-        <WorkspaceDialog
-          currentId={workspace?.id}
-          onSelect={(w) => {
-            setWorkspace(w);
-            setDialog(null);
-            setRoute({ name: 'home' });
           }}
           onClose={() => setDialog(null)}
         />

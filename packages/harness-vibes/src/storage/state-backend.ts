@@ -10,26 +10,8 @@ export interface SessionInfo {
     createdAt?: string;
     updatedAt?: string;
     messageCount?: number;
-    /** The workspace (project) this session belongs to, if any. */
-    workspaceId?: string;
-}
-
-/**
- * Workspace (project) metadata. A workspace groups multiple sessions that
- * share one project directory (`rootDir`). See the session manager for how
- * the shared sandbox + per-session `.vibes/sessions/{id}/` state dirs hang
- * off `rootDir`.
- */
-export interface WorkspaceInfo {
-    id: string;
-    name: string;
-    /** Absolute or workspace-relative project directory shared by the sessions. */
-    rootDir: string;
-    metadata?: Record<string, any>;
-    createdAt?: string;
-    updatedAt?: string;
-    /** Number of sessions in this workspace (populated by listWorkspaces). */
-    sessionCount?: number;
+    /** Directory this session works in (mirrors metadata.workspaceDir). */
+    cwd?: string;
 }
 
 /** A single persisted resumable-stream chunk. */
@@ -75,22 +57,16 @@ export default abstract class StateBackend {
     abstract getUIMessages(): Promise<unknown[] | null>;
 
     // ---- session management ----
-    abstract listSessions(workspaceId?: string): Promise<SessionInfo[]>;
+    /** Sessions rooted at `cwd` (all sessions when omitted). */
+    abstract listSessions(cwd?: string): Promise<SessionInfo[]>;
     abstract getSession(sessionId: string): Promise<SessionInfo | null>;
-    abstract createSession(title?: string, metadata?: Record<string, any>, workspaceId?: string): Promise<string>;
+    abstract createSession(title?: string, metadata?: Record<string, any>): Promise<string>;
     abstract deleteSession(sessionId: string): Promise<void>;
     abstract updateSession(
         sessionId: string,
-        updates: { title?: string; summary?: string; metadata?: Record<string, any>; workspaceId?: string },
+        updates: { title?: string; summary?: string; metadata?: Record<string, any> },
     ): Promise<void>;
 
-    // ---- workspace (project) management ----
-    abstract listWorkspaces(): Promise<WorkspaceInfo[]>;
-    abstract getWorkspace(workspaceId: string): Promise<WorkspaceInfo | null>;
-    abstract createWorkspace(workspace: { id: string; name: string; rootDir: string; metadata?: Record<string, any> }): Promise<WorkspaceInfo>;
-    abstract setWorkspaceRootDir(workspaceId: string, rootDir: string): Promise<void>;
-    abstract updateWorkspace(workspaceId: string, updates: { name?: string; metadata?: Record<string, any> }): Promise<void>;
-    abstract deleteWorkspace(workspaceId: string): Promise<void>;
 
     // ---- resumable stream persistence ----
     abstract beginStream(streamId: string, sessionId: string): Promise<void>;

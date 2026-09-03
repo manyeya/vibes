@@ -10,7 +10,8 @@ export interface Session {
   id: string;
   metadata?: { title?: string; usage?: SessionUsage };
   /** The workspace (project) this session belongs to. */
-  workspaceId?: string;
+  /** Directory this session works in. */
+  cwd?: string;
   createdAt: string;
   updatedAt: string;
   messageCount: number;

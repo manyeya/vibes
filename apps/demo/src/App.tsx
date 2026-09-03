@@ -7,18 +7,15 @@ import { ChatArea } from './components/chat/ChatArea';
 import { LeftNav } from './components/LeftNav';
 import { SettingsPage, type SearchProviderId } from './components/SettingsPage';
 import { PromptsPage } from './components/PromptsPage';
-import { WorkspacesPage } from './components/WorkspacesPage';
 import type { ModelOption } from './components/chat/ModelSelector';
 import type { Session } from './components/chat/session-types';
-import type { Workspace } from './components/chat/workspace-types';
 
-type Route = 'chat' | 'settings' | 'prompts' | 'workspaces';
+type Route = 'chat' | 'settings' | 'prompts';
 
 const parseRoute = (hash: string): Route => {
   const path = hash.replace(/^#\/?/, '');
   if (path === 'settings') return 'settings';
   if (path === 'prompts') return 'prompts';
-  if (path === 'workspaces') return 'workspaces';
   return 'chat';
 };
 
@@ -35,12 +32,6 @@ export default function App() {
   });
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
 
-  // Workspaces (projects) — each groups sessions sharing one project dir.
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [currentWorkspaceId, setCurrentWorkspaceId] = useState<string>(() => {
-    return localStorage.getItem('vibes_workspace_id') || 'default';
-  });
-  const [isLoadingWorkspaces, setIsLoadingWorkspaces] = useState(false);
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
 
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -59,14 +50,13 @@ export default function App() {
   }, []);
   const goSettings = useCallback(() => { window.location.hash = '#/settings'; }, []);
   const goPrompts = useCallback(() => { window.location.hash = '#/prompts'; }, []);
-  const goWorkspaces = useCallback(() => { window.location.hash = '#/workspaces'; }, []);
   const goChat = useCallback(() => { window.location.hash = '#/'; }, []);
 
   // ── Sessions (scoped to the active workspace) ──────────────────────────
-  const fetchSessions = useCallback(async (workspaceId: string = currentWorkspaceId): Promise<Session[]> => {
+  const fetchSessions = useCallback(async (): Promise<Session[]> => {
     setIsLoadingSessions(true);
     try {
-      const res = await fetch(`/api/sessions?workspace_id=${encodeURIComponent(workspaceId)}`);
+      const res = await fetch('/api/sessions');
       const data = await res.json();
       if (data.success) {
         setSessions(data.sessions);
@@ -78,14 +68,14 @@ export default function App() {
       setIsLoadingSessions(false);
     }
     return [];
-  }, [currentWorkspaceId]);
+  }, []);
 
   const createSession = useCallback(async (title?: string) => {
     try {
       const res = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId: currentWorkspaceId, ...(title ? { title } : {}) }),
+        body: JSON.stringify({ ...(title ? { title } : {}) }),
       });
       const data = await res.json();
       if (data.success) {
@@ -95,7 +85,7 @@ export default function App() {
     } catch (err) {
       console.error('Failed to create session:', err);
     }
-  }, [fetchSessions, currentWorkspaceId]);
+  }, [fetchSessions]);
 
   const deleteSession = useCallback(async (sessionId: string) => {
     if (sessionId === 'default') return;
@@ -110,96 +100,6 @@ export default function App() {
     }
   }, [currentSessionId, fetchSessions]);
 
-  // ── Workspaces ─────────────────────────────────────────────────────────
-  const fetchWorkspaces = useCallback(async (): Promise<Workspace[]> => {
-    setIsLoadingWorkspaces(true);
-    try {
-      const res = await fetch('/api/workspaces');
-      const data = await res.json();
-      if (data.success) {
-        setWorkspaces(data.workspaces);
-        return data.workspaces as Workspace[];
-      }
-    } catch (err) {
-      console.error('Failed to fetch workspaces:', err);
-    } finally {
-      setIsLoadingWorkspaces(false);
-    }
-    return [];
-  }, []);
-
-  const createWorkspace = useCallback(async (name: string) => {
-    try {
-      const res = await fetch('/api/workspaces', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        await fetchWorkspaces();
-        setCurrentWorkspaceId(data.workspace.id);
-        setCurrentSessionId(''); // fresh workspace → no session yet (effect resolves)
-        goChat();
-      }
-    } catch (err) {
-      console.error('Failed to create workspace:', err);
-    }
-  }, [fetchWorkspaces, goChat]);
-
-  const openFolder = useCallback(async (rootDir: string) => {
-    const dir = rootDir.trim();
-    if (!dir) return;
-    try {
-      const res = await fetch('/api/workspaces', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rootDir: dir }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        await fetchWorkspaces();
-        setCurrentWorkspaceId(data.workspace.id);
-        setCurrentSessionId('');
-        goChat();
-      } else {
-        window.alert(data.error || 'Could not open that folder. Check the path exists on the server.');
-      }
-    } catch (err) {
-      console.error('Failed to open folder:', err);
-    }
-  }, [fetchWorkspaces, goChat]);
-
-  const renameWorkspace = useCallback(async (id: string, name: string) => {
-    try {
-      await fetch(`/api/workspaces/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-      await fetchWorkspaces();
-    } catch (err) {
-      console.error('Failed to rename workspace:', err);
-    }
-  }, [fetchWorkspaces]);
-
-  const deleteWorkspace = useCallback(async (id: string) => {
-    if (id === 'default') return;
-    if (!window.confirm('Delete this workspace and all of its sessions? This cannot be undone.')) return;
-    try {
-      await fetch(`/api/workspaces/${id}`, { method: 'DELETE' });
-      await fetchWorkspaces();
-      if (currentWorkspaceId === id) setCurrentWorkspaceId('default');
-    } catch (err) {
-      console.error('Failed to delete workspace:', err);
-    }
-  }, [fetchWorkspaces, currentWorkspaceId]);
-
-  const openWorkspace = useCallback((id: string) => {
-    setCurrentWorkspaceId(id);
-    goChat();
-  }, [goChat]);
-
   useEffect(() => {
     localStorage.setItem('vibes_session_id', currentSessionId);
   }, [currentSessionId]);
@@ -208,26 +108,17 @@ export default function App() {
     localStorage.setItem('vibes_sidebar_open', sidebarOpen ? '1' : '0');
   }, [sidebarOpen]);
 
-  useEffect(() => {
-    localStorage.setItem('vibes_workspace_id', currentWorkspaceId);
-  }, [currentWorkspaceId]);
-
-  useEffect(() => {
-    fetchWorkspaces();
-  }, [fetchWorkspaces]);
-
-  // When the active workspace changes, load its sessions and resolve a valid
-  // current session (keep the current one if it belongs here, else the most
-  // recent, else none → empty state).
+  // Load sessions and resolve a valid current one (keep the current if it
+  // still exists, else the most recent, else none → empty state).
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const list = await fetchSessions(currentWorkspaceId);
+      const list = await fetchSessions();
       if (cancelled) return;
       setCurrentSessionId((prev) => (list.some((s) => s.id === prev) ? prev : list[0]?.id ?? ''));
     })();
     return () => { cancelled = true; };
-  }, [currentWorkspaceId, fetchSessions]);
+  }, [fetchSessions]);
 
   // Load available models and resolve the active selection.
   useEffect(() => {
@@ -250,7 +141,6 @@ export default function App() {
   }, [searchProvider]);
 
   const currentSession = sessions.find(s => s.id === currentSessionId);
-  const currentWorkspace = workspaces.find(w => w.id === currentWorkspaceId);
 
   // Right-rail Sessions: from another view it returns to chat (and reveals the
   // list); within chat it just toggles the list.
@@ -266,12 +156,11 @@ export default function App() {
   return (
     <MotionConfig reducedMotion="user">
     <div className="flex h-screen bg-[color:var(--color-ground)] text-[color:var(--color-ink)] bg-paper-grain">
-      {/* Far-left icon rail: Sessions · Workspaces · Prompts · Settings. */}
+      {/* Far-left icon rail: Sessions · Prompts · Settings. */}
       <LeftNav
         active={route}
         sessionsOpen={sidebarOpen}
         onToggleSessions={handleToggleSessions}
-        onOpenWorkspaces={goWorkspaces}
         onOpenPrompts={goPrompts}
         onOpenSettings={goSettings}
       />
@@ -288,12 +177,6 @@ export default function App() {
             onCreate={createSession}
             onDeleteSession={deleteSession}
             onClose={() => setSidebarOpen(false)}
-            workspaces={workspaces}
-            currentWorkspaceId={currentWorkspaceId}
-            onWorkspaceSwitch={setCurrentWorkspaceId}
-            onWorkspaceCreate={createWorkspace}
-            onRequestOpenFolder={() => setFolderPickerOpen(true)}
-            onManageWorkspaces={goWorkspaces}
           />
         )}
       </AnimatePresence>
@@ -310,19 +193,6 @@ export default function App() {
           />
         ) : route === 'prompts' ? (
           <PromptsPage />
-        ) : route === 'workspaces' ? (
-          <WorkspacesPage
-            workspaces={workspaces}
-            currentWorkspaceId={currentWorkspaceId}
-            isLoading={isLoadingWorkspaces}
-            onOpen={openWorkspace}
-            onCreate={createWorkspace}
-            onOpenFolder={openFolder}
-            onRequestOpenFolder={() => setFolderPickerOpen(true)}
-            onRename={renameWorkspace}
-            onDelete={deleteWorkspace}
-            onRefresh={fetchWorkspaces}
-          />
         ) : (
           <>
             {/* Header — compact Linear-style topbar: breadcrumb on the left. */}
@@ -339,15 +209,6 @@ export default function App() {
                 <span className="shrink-0 font-display text-[15px] italic leading-none text-[color:var(--color-ink)]">
                   Vibes
                 </span>
-                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[color:var(--color-ink-faint)]" aria-hidden />
-                <button
-                  type="button"
-                  onClick={goWorkspaces}
-                  title="Manage workspaces"
-                  className="shrink-0 truncate text-[13px] text-[color:var(--color-ink-soft)] transition-colors hover:text-[color:var(--color-ink)]"
-                >
-                  {currentWorkspace?.name ?? 'Default'}
-                </button>
                 {currentSessionId && (
                   <>
                     <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[color:var(--color-ink-faint)]" aria-hidden />
@@ -377,10 +238,10 @@ export default function App() {
                   <Boxes className="h-6 w-6" strokeWidth={1.5} />
                 </span>
                 <h2 className="font-display text-[20px] text-[color:var(--color-ink)]">
-                  {currentWorkspace?.name ?? 'This workspace'} is empty
+                  No sessions yet
                 </h2>
                 <p className="mt-1.5 max-w-sm text-[13px] leading-relaxed text-[color:var(--color-ink-faint)]">
-                  Sessions in this workspace share its project directory. Start one to begin.
+                  A session is a conversation rooted at this directory. Start one to begin.
                 </p>
                 <button
                   type="button"
@@ -395,12 +256,6 @@ export default function App() {
         )}
       </div>
 
-      {/* Server-side folder chooser for the "open folder" workspace flow. */}
-      <FolderPicker
-        open={folderPickerOpen}
-        onClose={() => setFolderPickerOpen(false)}
-        onChoose={openFolder}
-      />
     </div>
     </MotionConfig>
   );

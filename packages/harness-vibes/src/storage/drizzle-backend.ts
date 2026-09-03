@@ -2,7 +2,6 @@ import { eq, and, or, asc, desc, gte, lt, isNull, isNotNull, count } from "drizz
 import type { AgentState } from "../core/types";
 import StateBackend, {
     type SessionInfo,
-    type WorkspaceInfo,
     type StreamChunk,
     type StreamMeta,
     type LatestStream,
@@ -26,7 +25,6 @@ type StorageSchema = typeof PgSchema;
  */
 type AnyDrizzle = any;
 
-const DEFAULT_WORKSPACE_ID = "default";
 
 /**
  * One backend, every SQL dialect. Holds a **shared** connection owned by
@@ -67,7 +65,7 @@ export default class DrizzleBackend extends StateBackend {
         const now = this.now();
         await this.db
             .insert(this.s.sessions)
-            .values({ id: this.sessionId, metadata: "{}", workspaceId: DEFAULT_WORKSPACE_ID, createdAt: now, updatedAt: now })
+            .values({ id: this.sessionId, metadata: "{}", createdAt: now, updatedAt: now })
             .onConflictDoNothing();
     }
 
@@ -157,30 +155,34 @@ export default class DrizzleBackend extends StateBackend {
         id: row.id,
         summary: row.summary || undefined,
         metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        workspaceId: row.workspaceId || undefined,
+        // A session's directory lives in its metadata; the legacy workspace_id
+        // column is left in place (nullable) but no longer read or written.
+        cwd: row.metadata ? JSON.parse(row.metadata)?.workspaceDir : undefined,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         messageCount: Number(row.messageCount ?? 0),
     });
 
-    async listSessions(workspaceId?: string): Promise<SessionInfo[]> {
+    async listSessions(cwd?: string): Promise<SessionInfo[]> {
         const s = this.s;
         const rows = await this.db
             .select({
                 id: s.sessions.id,
                 summary: s.sessions.summary,
                 metadata: s.sessions.metadata,
-                workspaceId: s.sessions.workspaceId,
                 createdAt: s.sessions.createdAt,
                 updatedAt: s.sessions.updatedAt,
                 messageCount: count(s.messages.id),
             })
             .from(s.sessions)
             .leftJoin(s.messages, eq(s.sessions.id, s.messages.sessionId))
-            .where(workspaceId ? eq(s.sessions.workspaceId, workspaceId) : undefined)
             .groupBy(s.sessions.id)
             .orderBy(desc(s.sessions.updatedAt));
-        return rows.map(this.toSessionInfo);
+        const all = rows.map(this.toSessionInfo);
+        // Filtered in JS: the directory lives inside the metadata JSON column,
+        // and JSON predicates differ across sqlite/pg. Session counts are small.
+        // ponytail: linear scan; push into SQL if this ever gets large.
+        return cwd ? all.filter((row: SessionInfo) => row.cwd === cwd) : all;
     }
 
     async getSession(sessionId: string): Promise<SessionInfo | null> {
@@ -190,7 +192,6 @@ export default class DrizzleBackend extends StateBackend {
                 id: s.sessions.id,
                 summary: s.sessions.summary,
                 metadata: s.sessions.metadata,
-                workspaceId: s.sessions.workspaceId,
                 createdAt: s.sessions.createdAt,
                 updatedAt: s.sessions.updatedAt,
                 messageCount: count(s.messages.id),
@@ -202,7 +203,7 @@ export default class DrizzleBackend extends StateBackend {
         return row ? this.toSessionInfo(row) : null;
     }
 
-    async createSession(title?: string, metadata: Record<string, any> = {}, workspaceId?: string): Promise<string> {
+    async createSession(title?: string, metadata: Record<string, any> = {}): Promise<string> {
         const sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
         const now = this.now();
         const finalMetadata = title ? { ...metadata, title } : metadata;
@@ -210,7 +211,6 @@ export default class DrizzleBackend extends StateBackend {
             id: sessionId,
             summary: null,
             metadata: JSON.stringify(finalMetadata),
-            workspaceId: workspaceId ?? DEFAULT_WORKSPACE_ID,
             createdAt: now,
             updatedAt: now,
         });
@@ -227,14 +227,14 @@ export default class DrizzleBackend extends StateBackend {
 
     async updateSession(
         sessionId: string,
-        updates: { title?: string; summary?: string; metadata?: Record<string, any>; workspaceId?: string },
+        updates: { title?: string; summary?: string; metadata?: Record<string, any> },
     ): Promise<void> {
         const now = this.now();
         // Upsert the row first so a freshly-created session can be titled — the
         // old SQLite backend relied on an eager insert in its constructor.
         await this.db
             .insert(this.s.sessions)
-            .values({ id: sessionId, metadata: "{}", workspaceId: DEFAULT_WORKSPACE_ID, createdAt: now, updatedAt: now })
+            .values({ id: sessionId, metadata: "{}", createdAt: now, updatedAt: now })
             .onConflictDoNothing();
         const current = await this.getSession(sessionId);
         if (!current) return;
@@ -248,111 +248,12 @@ export default class DrizzleBackend extends StateBackend {
             .set({
                 summary: updates.summary !== undefined ? updates.summary : current.summary ?? null,
                 metadata: JSON.stringify(finalMetadata),
-                workspaceId: updates.workspaceId !== undefined ? updates.workspaceId : current.workspaceId ?? DEFAULT_WORKSPACE_ID,
                 updatedAt: now,
             })
             .where(eq(this.s.sessions.id, sessionId));
     }
 
     // ---- workspace (project) management ----
-
-    private toWorkspaceInfo = (row: any): WorkspaceInfo => ({
-        id: row.id,
-        name: row.name,
-        rootDir: row.rootDir,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-        sessionCount: Number(row.sessionCount ?? 0),
-    });
-
-    async listWorkspaces(): Promise<WorkspaceInfo[]> {
-        const s = this.s;
-        const rows = await this.db
-            .select({
-                id: s.workspaces.id,
-                name: s.workspaces.name,
-                rootDir: s.workspaces.rootDir,
-                metadata: s.workspaces.metadata,
-                createdAt: s.workspaces.createdAt,
-                updatedAt: s.workspaces.updatedAt,
-                sessionCount: count(s.sessions.id),
-            })
-            .from(s.workspaces)
-            .leftJoin(s.sessions, eq(s.sessions.workspaceId, s.workspaces.id))
-            .groupBy(s.workspaces.id)
-            .orderBy(desc(s.workspaces.updatedAt));
-        return rows.map(this.toWorkspaceInfo);
-    }
-
-    async getWorkspace(workspaceId: string): Promise<WorkspaceInfo | null> {
-        const s = this.s;
-        const [row] = await this.db
-            .select({
-                id: s.workspaces.id,
-                name: s.workspaces.name,
-                rootDir: s.workspaces.rootDir,
-                metadata: s.workspaces.metadata,
-                createdAt: s.workspaces.createdAt,
-                updatedAt: s.workspaces.updatedAt,
-                sessionCount: count(s.sessions.id),
-            })
-            .from(s.workspaces)
-            .leftJoin(s.sessions, eq(s.sessions.workspaceId, s.workspaces.id))
-            .where(eq(s.workspaces.id, workspaceId))
-            .groupBy(s.workspaces.id);
-        return row ? this.toWorkspaceInfo(row) : null;
-    }
-
-    async createWorkspace(workspace: { id: string; name: string; rootDir: string; metadata?: Record<string, any> }): Promise<WorkspaceInfo> {
-        const now = this.now();
-        await this.db.insert(this.s.workspaces).values({
-            id: workspace.id,
-            name: workspace.name,
-            rootDir: workspace.rootDir,
-            metadata: JSON.stringify(workspace.metadata ?? {}),
-            createdAt: now,
-            updatedAt: now,
-        });
-        const created = await this.getWorkspace(workspace.id);
-        if (!created) throw new Error(`Failed to create workspace ${workspace.id}`);
-        return created;
-    }
-
-    async setWorkspaceRootDir(workspaceId: string, rootDir: string): Promise<void> {
-        await this.db
-            .update(this.s.workspaces)
-            .set({ rootDir, updatedAt: this.now() })
-            .where(eq(this.s.workspaces.id, workspaceId));
-    }
-
-    async updateWorkspace(workspaceId: string, updates: { name?: string; metadata?: Record<string, any> }): Promise<void> {
-        const current = await this.getWorkspace(workspaceId);
-        if (!current) return;
-        await this.db
-            .update(this.s.workspaces)
-            .set({
-                name: updates.name !== undefined ? updates.name : current.name,
-                metadata: JSON.stringify(updates.metadata ?? current.metadata ?? {}),
-                updatedAt: this.now(),
-            })
-            .where(eq(this.s.workspaces.id, workspaceId));
-    }
-
-    async deleteWorkspace(workspaceId: string): Promise<void> {
-        const s = this.s;
-        await this.db.transaction(async (tx: AnyDrizzle) => {
-            const sessionRows: Array<{ id: string }> = await tx
-                .select({ id: s.sessions.id })
-                .from(s.sessions)
-                .where(eq(s.sessions.workspaceId, workspaceId));
-            for (const { id } of sessionRows) {
-                await tx.delete(s.messages).where(eq(s.messages.sessionId, id));
-            }
-            await tx.delete(s.sessions).where(eq(s.sessions.workspaceId, workspaceId));
-            await tx.delete(s.workspaces).where(eq(s.workspaces.id, workspaceId));
-        });
-    }
 
     // ---- resumable stream persistence ----
 
